@@ -10,6 +10,22 @@ Status: Plans 270–276 passed; Plans 277–282 and 278 stopped with retained br
 
 **Governor-completion handoff (Plan 454, 2026-10-10):** [Plan 454](../implementation/floodfill/454-shared-bandwidth-enforcement-and-capability-permit.md) **passed** the shared governor and permit scope: one daemon-composed owner shares rate enforcement with enabled transports (the dormant NTCP2 adapter remains Plan-101-safe), uses bounded control/handshake reservations and fair traffic classes, and issues a current capacity permit. It is infrastructure, independent of an available LAN or Java router. Plan 444's owner-side N-class floor is implemented, but the normal stock Java healthy-bootstrap/candidate-preference/store/lookup controls remain blocked. Plan 437/438 still own normal floodfill admission, opt-in, health withdrawal, reachability and two-family qualification. No forced `O`/`fR` letter or public capability promotion.
 
+### Plan 479 — controlled Java candidate preference after Plan 475 NTCP2 (closed 2026-10-15)
+
+[Plan 479](../implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md) **passed**; current status is `plans/closure/floodfill/479-status.md`. It succeeds the **final blocked** Plan 444 resume at Java preference and genuine stock NetDB store/lookup, reusing Plan 454's enforceable current rate/share permit and Plan 475's successful unmodified Java 2.13.0 two-role NTCP2 runner. Two exact-pinned comparator profiles executed: stock Java observes an eligible `fN` i2pr candidate beside a truthful `L` i2pr candidate (reachable, biddable, non-floodfill), selects only the eligible one for its normal local-RouterInfo Store with a daemon-accepted effect, and operates among `{fN, stock i2pd fO}` with the recipient attributed. Passing does not lift Plan 437 normal reachability/transit prerequisites or Plan 438 two-family role; normal public f/R advertisement stays disabled.
+
+### Plan 483 — Plan 479 residual-risk hardening (passed 2026-10-15)
+
+[Plan 483](../implementation/floodfill/483-residual-risk-hardening-deterministic-selection-degenerate-arm-tiered-replication.md)
+**passed** (`plans/closure/floodfill/483-status.md`); it converted 479's three
+recorded limitations into executable evidence without touching normal-role
+gates: a width-1 multi-key no-starvation proof for profile A's XOR-determined
+recipient, a pinned-source pin plus an executed L-only fail-closed profile C
+for the unreachable `fL`-vs-`fN` arm, and tiered-form
+replication/withdrawal regressions through the existing M12 owners with a
+written 437/438 handoff. Per-profile lane budget 1. This was not a
+stock-timeout retry and does not unblock 437/438.
+
 Long-term references:
 - GUARDRAILS.md
 - specs/CONFORMANCE.md
@@ -154,6 +170,8 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 279 | stopped | stopped-m12-java-never-initiates-to-caps-f-only-controlled-ri | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | plans/closure/floodfill/279-status.md |
 | 306 | stopped | stopped-m12-java-requires-bandwidth-tier-beyond-reviewed-fR | plans/implementation/floodfill/306-m12-loopback-reachability-caps-and-java-requalification.md | plans/closure/floodfill/306-status.md |
 | 364 | passed | invariant corrective — the boundary guard for this milestone was silently failing | plans/implementation/floodfill/364-m12-boundary-guard-stale-floor.md | plans/closure/floodfill/364-status.md (`passed-guard-green-in-floor-and-ci-with-nine-traced-assertions`) |
+| 479 | passed | passed-controlled-java-comparator-with-truthful-tiers-and-correlated-store | plans/implementation/floodfill/479-java-candidate-and-netdb-product-qualification-recovery.md | plans/closure/floodfill/479-status.md |
+| 483 | passed | passed-479-residual-risks-executable-no-normal-role-change | plans/implementation/floodfill/483-residual-risk-hardening-deterministic-selection-degenerate-arm-tiered-replication.md | plans/closure/floodfill/483-status.md |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
 

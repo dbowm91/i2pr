@@ -1,6 +1,6 @@
 # `i2pr-runtime` — Deep Dive
 
-Crate: **`i2pr-runtime`** · Path: `crates/i2pr-runtime/` · ~19.5k lines (15 modules + `lib.rs`)
+Crate: **`i2pr-runtime`** · Path: `crates/i2pr-runtime/` · ~25.9k lines (16 modules + `lib.rs`)
 
 **Purpose:** the sole production owner of Tokio in the workspace — it owns
 sockets, timers, bounded channels, tasks, and wakeable cancellation, and
@@ -55,29 +55,30 @@ the production runtime owner. ADR 0002 records that decision.
 
 ## Module layout
 
-Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 21,126).
+Line counts are `wc -l` on `crates/i2pr-runtime/src/*.rs` (total 25,740).
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- | --- |
-| `lib` | `src/lib.rs` | 149 | Crate root: module declarations, all `pub use` re-exports, `run_blocking`/`bounded_timeout` | `#![forbid(unsafe_code)]`, `run_blocking`, `bounded_timeout` |
+| `lib` | `src/lib.rs` | 170 | Crate root: module declarations, all `pub use` re-exports, `run_blocking`/`bounded_timeout` | `#![forbid(unsafe_code)]`, `run_blocking`, `bounded_timeout` |
 | `cancel` | `src/cancel.rs` | 169 | Hierarchical wakeable cancellation with first-reason-wins and parent-chain reason walking over `tokio_util::CancellationToken` | `CancellationToken` |
 | `channel` | `src/channel.rs` | 1908 | Typed bounded service channels (command/event/request/latest-state) with resource charging, overflow policies, privacy-safe counters | `ChannelSpec`, `ChannelName`, `CommunicationClass`, `OverflowPolicy`, `QueueCharge`, `RequestChannelParts`, `LatestState`, `*Sender`/`*Receiver`, `Received`, `ReceivedRequest`, `ChannelSnapshot`, all error types |
-| `bandwidth` | `src/bandwidth.rs` | 558 | Shared cancellable inbound/outbound byte token buckets with bounded FIFO waiter queues, independent direction scheduling and redacted peer keys | `BandwidthGovernor`, `BandwidthGovernorConfig`, `BandwidthDirection`, `BandwidthPeerKey`, `BandwidthGovernorSnapshot` |
-| `context` | `src/context.rs` | 692 | Per-service context bundle, readiness, health publication, `ChildScope` with bounded join/forced abort, internal `RuntimeClock` | `ServiceContext`, `Readiness`, `HealthReporter`, `HealthReceiver`, `ChildScope`, `ChildFailurePolicy`, `ChildTaskFailure`, `ChildScopeError`, `ChildShutdownReport` |
-| `graph` | `src/graph.rs` | 648 | Service registration, deterministic topological ordering, full-graph validation before startup, restart policy | `ServiceGraph`, `ServiceGraphBuilder`, `ServiceSpec`, `ServiceFuture`, `ServiceResult`, `RestartPolicy`, `RestartExhaustion`, `RestartPolicyError`, `GraphError` |
-| `ntcp2_data_oracle` | `src/ntcp2_data_oracle.rs` | 359 | Bounded data-phase receive oracle: one absolute deadline plus cumulative frame/byte/block/non-target-I2NP bounds, strict RouterInfo signature validation, exact DeliveryStatus correlation. Never wired into the production service graph | `OracleConfig`, `OracleCounters`, `OracleAccept`, `MatchedTarget`, `PeerRouterHashBinding`, `DataOracleError` (re-exported also as `DataOracle`) |
-| `ntcp2_driver` | `src/ntcp2_driver.rs` | 1220 | Runtime-owned handshake action executor: exact reads/writes, bounded deadlines, cancellation, replay admission, clock, padding, RouterInfo handoff | `HandshakeDriverConfig`, `HandshakeDriverError`, `HandshakeRun`, `HandshakeRunOutcome`, `HandshakeClock`, `HandshakeCounterSnapshot`, `PaddingProfile`, `drive_initiator_handshake`, `drive_responder_handshake`, `*_observed` variants |
+| `bandwidth` | `src/bandwidth.rs` | 945 | Shared cancellable inbound/outbound byte token buckets with bounded FIFO waiter queues, independent direction scheduling and redacted peer keys | `BandwidthGovernor`, `BandwidthGovernorConfig`, `BandwidthDirection`, `BandwidthPeerKey`, `BandwidthGovernorSnapshot` |
+| `context` | `src/context.rs` | 710 | Per-service context bundle, readiness, health publication, `ChildScope` with bounded join/forced abort, internal `RuntimeClock` | `ServiceContext`, `Readiness`, `HealthReporter`, `HealthReceiver`, `ChildScope`, `ChildFailurePolicy`, `ChildTaskFailure`, `ChildScopeError`, `ChildShutdownReport` |
+| `graph` | `src/graph.rs` | 772 | Service registration, deterministic topological ordering, full-graph validation before startup, restart policy | `ServiceGraph`, `ServiceGraphBuilder`, `ServiceSpec`, `ServiceFuture`, `ServiceResult`, `RestartPolicy`, `RestartExhaustion`, `RestartPolicyError`, `GraphError` |
+| `ntcp2_data_oracle` | `src/ntcp2_data_oracle.rs` | 609 | Bounded data-phase receive oracle: one absolute deadline plus cumulative frame/byte/block/non-target-I2NP bounds, strict RouterInfo signature validation, exact DeliveryStatus correlation. Never wired into the production service graph | `OracleConfig`, `OracleCounters`, `OracleAccept`, `MatchedTarget`, `PeerRouterHashBinding`, `DataOracleError` (re-exported also as `DataOracle`) |
+| `ntcp2_driver` | `src/ntcp2_driver.rs` | 1293 | Runtime-owned handshake action executor: exact reads/writes, bounded deadlines, cancellation, replay admission, clock, padding, RouterInfo handoff | `HandshakeDriverConfig`, `HandshakeDriverError`, `HandshakeRun`, `HandshakeRunOutcome`, `HandshakeClock`, `HandshakeCounterSnapshot`, `PaddingProfile`, `drive_initiator_handshake`, `drive_responder_handshake`, `*_observed` variants |
 | `ntcp2_handshake_observer` | `src/ntcp2_handshake_observer.rs` | 140 | Privacy-safe handshake progress observer trait. Records bounded stage name, octet counts, typed I/O result, elapsed ms — never raw payload, keys, Noise state, transcript, ciphertext, or RouterInfo bytes. Synchronous, infallible, non-blocking | `HandshakeProgressObserver` (trait), `HandshakeStageObservation`, `HandshakeIoResult`, `NoopHandshakeObserver` |
-| `ntcp2_link` | `src/ntcp2_link.rs` | 605 | Authenticated frame reader/writer children and per-frame inbound/outbound queue accounting leases | `AuthenticatedLink`, `AuthenticatedLinkError`, `AuthenticatedLinkStartError`, `AuthenticatedLinkSnapshot`, `ReceivedFrameLease` |
-| `ntcp2_runtime` | `src/ntcp2_runtime.rs` | 2357 | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, global/IP/subnet admission, replay cache, dial backoff, link children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `InboundPermit`, `ActiveLinkAdmission`, `ActiveLinkPermit`, `ReplayCache`, `DialAdmission`, `DialKey`, `IpPrefixPolicy`, `AdmittedInboundStream`, `AuthenticatedInboundStream`, `ExactIoError`, `read_exact`, `write_all_exact` |
-| `observability` | `src/observability.rs` | 360 | Privacy-aware tracing events, bounded aggregate snapshots, shared `pub(crate) TaskCounters` | `RuntimeSnapshot`, `SupervisorSnapshot`, `ServiceSnapshot`, `SimulationSnapshot`, `RouterLifecycle`, `SnapshotError`, `event` |
+| `ntcp2_link` | `src/ntcp2_link.rs` | 1317 | Authenticated frame reader/writer children and per-frame inbound/outbound queue accounting leases | `AuthenticatedLink`, `AuthenticatedLinkError`, `AuthenticatedLinkStartError`, `AuthenticatedLinkSnapshot`, `ReceivedFrameLease` |
+| `ntcp2_runtime` | `src/ntcp2_runtime.rs` | 3421 | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, global/IP/subnet admission, replay cache, dial backoff, link children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `InboundPermit`, `ActiveLinkAdmission`, `ActiveLinkPermit`, `ReplayCache`, `DialAdmission`, `DialKey`, `IpPrefixPolicy`, `AdmittedInboundStream`, `AuthenticatedInboundStream`, `ExactIoError`, `read_exact`, `write_all_exact` |
+| `observability` | `src/observability.rs` | 378 | Privacy-aware tracing events, bounded aggregate snapshots, shared `pub(crate) TaskCounters` | `RuntimeSnapshot`, `SupervisorSnapshot`, `ServiceSnapshot`, `SimulationSnapshot`, `RouterLifecycle`, `SnapshotError`, `event` |
 | `ssu2_controlled_peer_test` | `src/ssu2_controlled_peer_test.rs` | 767 | Bounded driver for the wire-real 7-message peer-test exchange; spawns ephemeral helper loop tasks under a caller-owned `ChildScope` and records nothing itself — outcomes return to the caller | `run_controlled_peer_test`, `ControlledPeerTestParams`, `ControlledPeerTestOutcome`, `ControlledPeerTestSigner` |
-| `ssu2_peer_relay` | `src/ssu2_peer_relay.rs` | 1191 | Plan 160 bounded peer-test/relay coordination: table ownership, per-source rate limits, bounded signer registry, central expiry scheduler, reachability mirroring, privacy-safe snapshots | `Ssu2PeerRelayService`, `Ssu2PeerRelayConfig`, `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission` |
-| `ssu2_runtime` | `src/ssu2_runtime.rs` | 7310 | Plan 158 bounded SSU2 UDP socket/session lifecycle, Plan 159 path validation/migration and conservative reachability observations, Plan 282 publication material, Plan 283 controlled peer test, optional process-shared byte admission | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2SocketConfig`, `Ssu2DialTarget`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2IdentityMaterial`, `Ssu2NetworkCondition`, `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2TestFaults`, `Ssu2BindError`, `ControlledPeerTestError` |
-| `supervisor` | `src/supervisor.rs` | 1703 | Service startup sequencing, health tracking, `JoinSet`-managed restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
+| `ssu2_peer_relay` | `src/ssu2_peer_relay.rs` | 1323 | Plan 160 bounded peer-test/relay coordination: table ownership, per-source rate limits, bounded signer registry, central expiry scheduler, reachability mirroring, privacy-safe snapshots | `Ssu2PeerRelayService`, `Ssu2PeerRelayConfig`, `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission` |
+| `ssu2_qualification_observer` | `src/ssu2_qualification_observer.rs` | 372 | Privacy-safe SSU2 qualification event observer: bounded stage names, counts, and typed outcomes — never raw payloads, keys, addresses, or RouterInfo bytes | `Ssu2QualificationObserver`, `Ssu2QualificationEvent`, `Ssu2QualificationEventKind` |
+| `ssu2_runtime` | `src/ssu2_runtime.rs` | 8992 | Plan 158 bounded SSU2 UDP socket/session lifecycle, Plan 159 path validation/migration and conservative reachability observations, Plan 282 publication material, Plan 283 controlled peer test, Plan 499 the live relay-tag request and the outbound relay carriage, optional process-shared byte admission | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2SocketConfig`, `Ssu2DialTarget`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2InboundBatch`, `Ssu2InboundRelay`, `Ssu2RelayEvent`, `Ssu2RelayCounters`, `Ssu2RelayQueueError`, `Ssu2Snapshot`, `Ssu2IdentityMaterial`, `Ssu2NetworkCondition`, `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2TestFaults`, `Ssu2BindError`, `ControlledPeerTestError` |
+| `supervisor` | `src/supervisor.rs` | 2454 | Service startup sequencing, health tracking, `JoinSet`-managed restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
-`ssu2_runtime` is by far the largest module (7,235 lines, ~37% of the crate),
-followed by `ntcp2_runtime` (2,357) and `channel` (1,908).
+`ssu2_runtime` is by far the largest module (8,992 lines, ~35% of the crate),
+followed by `ntcp2_runtime` (3,421) and `channel` (1,908).
 
 ## Public surface
 
@@ -132,7 +133,8 @@ are `pub(crate)` and are **not** part of it.
   `ExactIoError`, `InboundAdmission`, `InboundChunk`, `InboundPermit`,
   `IoErrorKind`, `IpPrefixPolicy`, `LinkHandle`, `LinkId`, `LinkSendError`,
   `LinkSnapshot`, `LinkStartError`, `LinkTermination`, `ListenerHandle`,
-  `ListenerSnapshot`, `Ntcp2Deadline`, `Ntcp2DeadlineError`, `Ntcp2Event`,
+  `ListenerSnapshot`, `Ntcp2Deadline`, `Ntcp2DeadlineError`, `Ntcp2DialScope`,
+  `Ntcp2Event`,
   `Ntcp2EventKind`, `Ntcp2RuntimeConfig`, `Ntcp2RuntimeConfigError`,
   `Ntcp2RuntimeDeadlines`, `Ntcp2RuntimeLimits`, `Ntcp2RuntimeService`,
   `ReplayCache`, `ReplayCacheDecision`, `ReplayCacheSnapshot`,
@@ -163,7 +165,8 @@ are `pub(crate)` and are **not** part of it.
   `Ssu2PublicationMaterial`, `Ssu2PublicationUnavailable`, `Ssu2RuntimeConfig`,
   `Ssu2RuntimeConfigError`, `Ssu2RuntimeDeadlines`, `Ssu2RuntimeLimits`,
   `Ssu2RuntimeService`, `Ssu2SendOutcome`, `Ssu2ServiceHandle`, `Ssu2Snapshot`,
-  `Ssu2SocketConfig`, `Ssu2TestFaults`
+  `Ssu2SocketConfig`, `Ssu2TestFaults`, `Ssu2InboundBatch`, `Ssu2InboundRelay`,
+  `Ssu2RelayCounters`, `Ssu2RelayEvent`, `Ssu2RelayQueueError`
 - `supervisor`: `MAX_SHUTDOWN_DEADLINE`, `ShutdownOutcome`, `ShutdownReport`,
   `Supervisor`, `SupervisorConfigError`, `SupervisorError`, `SupervisorHandle`
 - Crate-root free functions: `run_blocking` (builds a disposable
@@ -173,7 +176,12 @@ are `pub(crate)` and are **not** part of it.
   identity/address material without depending on the transport crate directly
   (Plan 184; `pq` KEM-scheme metadata added in Plan 197): `IntroKey`,
   `PqCapabilities`, `Ssu2PqKem`, `Ssu2PublicKey`, `Ssu2RouterAddress`,
-  `constants`
+  `constants`. Plan 490 adds the bounded relay vocabulary the daemon's
+  introducer (Bob) role owner needs, without the daemon depending on the
+  transport crate directly: `IntroducerResponseOutcome`, `RelayError`,
+  `RelayIntroBlock`, `RelayRequestBlock`, `RelayResponseBlock`,
+  `RelayResponseCode`, `Ssu2Endpoint`, `relay_request_preimage`,
+  `relay_response_preimage`
 - Re-exported from `i2pr-core`: `CancellationReason`, `DegradationCode`,
   `FailureCategory`, `HealthDetail`, `HealthSnapshot`, `HealthState`,
   `InvalidLifecycleTransition`, `LifecycleState`, `ServiceClassification`,
@@ -430,6 +438,51 @@ time.
   (`Closed`, `Deadline`, `Cancelled`, `Failed`); `read_exact` and
   `write_all_exact` are the only raw-socket helpers.
 
+#### The address scope (`Ntcp2DialScope`)
+
+`Ntcp2DialScope` is the runtime's dial admission boundary. It has two
+variants and one predicate:
+
+| Variant | Admits | Refuses |
+| --- | --- | --- |
+| `Loopback` | loopback addresses only — **exactly** the historical clamp | every non-loopback address |
+| `PrivateLan` | RFC1918 IPv4 literals only (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) | loopback, the unspecified address, public IPv4, and every IPv6 form including ULA and IPv4-mapped literals |
+
+`admits(&self, ip: IpAddr) -> bool` is the whole rule; `name()` returns the
+stable scope name used in tracing stages and receipts (`loopback`,
+`private_lan`).
+
+`dial_authenticated_peer_in_scope(scope, ...)` is the scope-parameterized
+dial. Every other check is unchanged: the peer signature, the network id, the
+expected router hash, the address expiry, the admission and backoff rules,
+the deadline, the cancellation, and the link promotion. The address filter is
+`if !scope.admits(endpoint.ip())`.
+
+`dial_authenticated_loopback_peer(..)` remains and now delegates to
+`dial_authenticated_peer_in_scope` with `Ntcp2DialScope::Loopback`, so its
+behaviour is **unchanged**. The scope is always the caller's: the runtime
+never widens it, and it is never derived from configuration inside the
+runtime.
+
+`DialOutcome` gained one variant, `AddressOutOfScope`: no advertised address
+fell inside the caller's permitted scope. It is distinct from `Failed`,
+because "every advertised address was out of scope" is a policy outcome and
+not a transport failure — a refusal that the caller should see rather than
+retry.
+
+#### Installing the dual-transport RouterInfo (`ssu2_runtime.rs`)
+
+`Ssu2RuntimeService::install_scoped_dual_router_info(encoded, wall_now_ms,
+ntcp2_endpoint, scope)` installs the dual-transport RouterInfo form after
+verifying that its NTCP2 address names the separately bound endpoint **and**
+falls inside `scope`, with an unprivileged port. An endpoint outside the scope
+is refused exactly as the controlled profile refuses a non-loopback one, and
+the scope is never widened here.
+
+`install_controlled_dual_router_info(..)` remains and delegates with
+`Ntcp2DialScope::Loopback`, so the controlled profile keeps its historical
+loopback-only admission.
+
 ### `AuthenticatedLink` reader/writer supervision (`ntcp2_link.rs`)
 
 `reader_task` (and its `writer_task` counterpart) loop: read a 2-byte length
@@ -452,7 +505,7 @@ leave that counter at zero (`queue_release_returns_to_baseline`).
 `QueueLimitTooLarge`, `ChildScope`. Public surface: `send_blocks`, `recv`,
 `correlated_receive_oracle`, `close`, `snapshot`.
 
-### `Ssu2RuntimeService` (`ssu2_runtime.rs`, Plans 158/159/282)
+### `Ssu2RuntimeService` (`ssu2_runtime.rs`, Plans 158/159/282/499)
 
 `Ssu2RuntimeService::new(config, identity)` validates without opening a socket;
 `.start(&ChildScope, Ssu2SocketConfig) -> Result<Ssu2ServiceHandle, Ssu2BindError>`
@@ -473,9 +526,9 @@ min-merging against a stale past value would burn the retry budget to
 explicit bind literals; the `ipv4` field is documented as "loopback tests use
 `127.0.0.1:0`" and every integration suite passes exactly
 `Some("127.0.0.1:0")` with `ipv6: None` so the OS assigns an ephemeral port
-(`tests/ssu2_local.rs:179`, `tests/ssu2_peer_relay.rs:401`,
+(`tests/ssu2_local.rs:180`, `tests/ssu2_peer_relay.rs:401`,
 `tests/ssu2_controlled_peer_test.rs:150`). Raw probe/spoofer/forwarder sockets
-also bind `127.0.0.1:0` (`tests/ssu2_local.rs:530,546`,
+also bind `127.0.0.1:0` (`tests/ssu2_local.rs:626,642`,
 `tests/ssu2_peer_relay.rs:223`). `start_controlled_peer_test` additionally
 *enforces* loopback and a non-zero port, returning
 `ControlledPeerTestError::BindingMismatch` otherwise — the guard is in
@@ -509,13 +562,162 @@ categorical/expiry evidence only. `install_local_router_info` accepts future
 handshake RouterInfo bytes only after signature and local identity checks,
 preserved network id, strict endpoint/key binding to the actual socket, and a
 size-bounded decode; replacement is atomic and already-established sessions are
-not rewritten. Plan 283 adds the Plan 103 freshness windows mirrored locally
+not rewritten. **Plan 520** relaxes one thing: the record may carry **no** SSU2
+address. Every address it *does* carry is still bound to the router's own
+bound endpoint with the router's own static and intro keys, and two conflicting
+SSU2 addresses are still refused, but the transport's **endpoint-less** form is
+now installable -- which is what makes the withdrawal of a lapsed address
+possible, and what lets the transport's own publication policy (rather than an
+unconditional ad-hoc address) decide whether an endpoint may be published at
+all. Plan 283 adds the Plan 103 freshness windows mirrored locally
 (dependency direction forbids importing them from `i2pr-netdb`) and the
 opt-in explicit-bind corroboration flag. The bind-plus-observation pair yields
 exactly `CandidateReachable`; `publication_material` still requires above-floor
 `Reachable`, so static loopback-homogeneous traffic stops at the evidence
 boundary by design (Plan 282 stopped; Plan 283 owns the third-class strategy and
 activation).
+
+**Plan 490 — the relay handoff.** The runtime decodes and authenticates the
+relay blocks; it never interprets the role. `handle_datagram` and
+`drive_timeouts_locked` now return an `Ssu2InboundBatch { i2np, relay }`: the
+I2NP handoff is unchanged, and the relay blocks (a Relay Request, a Relay
+Intro, a Relay Response) travel on a **second bounded channel**
+(`max_inbound_relay_queue`, default 16, ceiling
+`MAX_SSU2_INBOUND_QUEUE_CEILING`). `Ssu2ServiceHandle::next_relay_event()`
+hands them to the daemon; the channel is bounded, and a full queue counts an
+`inbound_queue_drops` rather than growing. The runtime also exposes the
+daemon-facing role API — `introducer_service_enabled`, `issue_relay_tag`,
+`relay_tag_owner`, `on_relay_request`, `on_introducer_relay_response` — and
+`introducer_publication_material(now_secs)`, which builds the specification's
+introducer-only address form from the validated introducer set
+(`Ssu2PublicationUnavailable::NoIntroducers` when the set is empty).
+
+**Plan 498 — one non-blocking accessor on the relay handoff.** The runtime's
+relay channel was fed by the authenticated transport path but never drained by
+the daemon, so a Relay Request a peer really sent was decoded, authenticated,
+and then dropped. Plan 498 adds exactly one accessor to the runtime:
+`Ssu2ServiceHandle::try_next_relay_event()`, which pulls from the **existing**
+bounded relay channel (`mpsc::channel(max_inbound_relay_queue)` — default 16,
+ceiling `MAX_SSU2_INBOUND_QUEUE_CEILING` = 1024). It adds **no** channel and
+**no** capacity, and it changes nothing about the runtime's authentication
+path; `next_relay_event()` keeps its awaiting contract beside it.
+
+The accessor is non-blocking because the drain must run on its own bounded
+tick: `tokio::select!` over the two handle receivers is impossible, since
+`next_inbound()` and `next_relay_event()` both take `&mut self` on the same
+handle. `try_next_relay_event()` returns `None` when the channel is empty
+**or** disconnected, so a closed handoff is indistinguishable from an idle one
+and neither can stall the drain.
+
+**Plan 499 — the live relay-tag request and the outbound relay carriage.**
+Two gaps closed here: the runtime could never *ask* for a relay tag, and it
+could never *put* a produced relay block on a session.
+
+*The tag request.* The transport's block vocabulary already contained
+`RelayTagRequest` (block 15) and `RelayTag` (block 16); only the session's
+outbound control queue lacked them, and Plan 499 added exactly that
+(`crates/i2pr-transport-ssu2/src/session.rs:1051` and `:1067`). The runtime's
+session-event loop previously swallowed the pair in a `_ => {}` catch-all
+(`ssu2_runtime.rs:6148`); it now handles both
+(`ssu2_runtime.rs:6130-6147`). On `SessionEvent::RelayTagRequest` the runtime
+calls `answer_relay_tag_request` (`ssu2_runtime.rs:3039`), which:
+
+1. checks the **introducer gate** first — `introducer_enabled()`, so a router
+   with the role off answers nothing and counts
+   `tag_refused_disabled`;
+2. mints a **nonzero tag from the OS CSPRNG** —
+   `random_u32_nonzero` (`ssu2_runtime.rs:1371`), which retries up to eight
+   times and fails closed rather than returning zero;
+3. binds the tag to **the handshake-authenticated session peer's router
+   hash** — `*peer.hash().as_bytes()` (`ssu2_runtime.rs:3067`) — never to a
+   caller-supplied identity, and does so through the transport introducer, so
+   the transport's quota is the bound: `MAX_RELAY_TAGS_GLOBAL` 16,
+   `MAX_RELAY_TAGS_PER_PEER` 4, `RELAY_TAG_LIFETIME_SECS` 120;
+4. queues the `RelayTag` answer **on that same session** and wakes the
+   scheduler;
+5. counts **every** outcome — observed, issued, and each of the five refusal
+   reasons (`tag_refused_disabled`, `tag_refused_random`,
+   `tag_refused_quota`, `tag_refused_terminated`,
+   `tag_refused_control_queue_full`).
+
+On `SessionEvent::RelayTag(u32)` the runtime counts the observed tag and
+pushes it onto the **existing** bounded relay handoff as the new
+`Ssu2RelayEvent::Tag(u32)` variant (`ssu2_runtime.rs:822-835`). The observed
+tag creates no state of its own; it travels back because the peer that asked
+for a tag is the peer that has to learn it.
+
+*The carriage.* Four peer-facing methods on `Ssu2RuntimeService` —
+`queue_relay_request` (`:2107`), `queue_relay_tag_request` (`:2121`),
+`queue_relay_intro` (`:2128`) and `queue_relay_response` (`:2139`) — each
+resolves the destination peer to **exactly one** live session and queues the
+block on that session's bounded control queue. The resolution is a single
+helper, `queue_relay_block` (`:2159`), which walks the same chain
+`queue_controlled_peer_test` already uses (`state.peer_links` →
+`state.active` → `record.session.…`), holds the state mutex for the lookup
+and the queueing only (nothing awaits), and wakes the scheduler afterwards.
+Ambiguity is **refused, not guessed**: `resolve_single_peer_link`
+(`:3989`) returns `AmbiguousSession` when a peer holds more than one link.
+
+The refusal vocabulary is `Ssu2RelayQueueError` (`:839-848`) with four
+variants and stable reason labels from `reason()` (`:855-862`):
+`no_session`, `ambiguous_session`, `session_terminated`,
+`control_queue_full`. `relay_queue_reason` (`:4009`) maps the transport's
+`SessionError::Terminated` → `SessionTerminated` and
+`SessionError::LocalPolicyDenied` → `ControlQueueFull`, and treats every
+other session error as a terminated session, so the runtime fails closed
+rather than retrying a block it cannot carry.
+
+*What the counters are.* `Ssu2RelayCounters` (`:959-986`) is a counts-only
+accessor with a per-reason breakdown, and `Ssu2Snapshot` gains five
+aggregate counters (`relay_tag_requests`, `relay_tags_issued`,
+`relay_tags_observed`, `relay_blocks_queued`, `relay_blocks_refused`,
+`:925-936`). No field carries a peer hash, a key, a tag value, an endpoint
+or a payload.
+
+*Two refusals are guards, not live paths.* `SessionTerminated` is **not
+reachable end to end**: `remove_active_locked` (`ssu2_runtime.rs:4361-4378`)
+removes the session from `state.active` and calls `remove_peer_link_locked`
+(`:4019-4025`) in the same locked operation, so the *observable* refusal
+after a termination is `NoSession`. `AmbiguousSession` is **not reachable end
+to end either**: the transport manager's duplicate policy
+(`crates/i2pr-transport/src/manager.rs:55-73`) resolves a **same-peer**
+duplicate as `RejectNew`, `ReplaceExisting` or `RetainExistingDrainNew`
+(`crates/i2pr-transport/src/manager.rs:25-33`) — `AcceptNew` is reserved for a
+*different* peer, which
+is not a duplicate — so `peer_links[peer]` never holds two links. Both
+branches are asserted by focused in-crate unit rows —
+`relay_peer_resolution_refuses_ambiguous_and_empty_link_sets`
+(`ssu2_runtime.rs:7379`) and `relay_session_errors_map_onto_carriage_refusals`
+(`:7403`) — not by an end-to-end path.
+
+*What is still exposed.* The runtime still has the **Plan 490** public
+`issue_relay_tag(tag, target_hash, now_secs)` (`:2237-2246`), which binds a
+tag to a **caller-supplied** hash. Plan 499's live path does not use it and
+adds no such API — the live path binds the authenticated session peer — but
+the surface remains, and it is a legitimate way for a caller to mint a tag
+for a peer it names.
+
+### The outbound session keepalive (Plan 522)
+
+- `Ssu2RuntimeDeadlines::keepalive` — `None` by default, so a router without
+  the outbound peer-session pool sends **no** keepalive at all. When it is
+  `Some`, it is the transport's own interval: the daemon derives it from
+  `ssu2.peer_pool` and the transport's own constant, so there is no second
+  value to disagree with.
+- The runtime's configuration refuses a zero interval and refuses one whose
+  three-times deadline is not **strictly** below the session's idle timeout,
+  so the keepalive's unanswered deadline and the idle timeout can never
+  disagree about when a session dies.
+- `construct_session` takes the session's **direction** and passes the
+  keepalive interval to an **outbound** session and to nothing else. An
+  inbound session's lifetime is exactly what it was before this plan.
+- The deadline belongs to the keepalive, not to the session's idle timer:
+  the keepalive refreshes the session's *send* timestamp and the idle timeout
+  reads the **maximum** of the send and receive timestamps, so the idle
+  timeout could never detect a dead peer on its own.
+- The runtime re-exports `KEEPALIVE_INTERVAL_MS` and
+  `KEEPALIVE_TIMEOUT_INTERVALS`, so the daemon names the transport's own
+  constants and never a second copy of them.
 
 ### `Ssu2PeerRelayService` (`ssu2_peer_relay.rs`, Plan 160)
 
@@ -530,6 +732,28 @@ private signing keys** — outgoing blocks are signed by caller-supplied keys.
 `issue_relay_tag` and `on_relay_request` refuse unless it is explicitly enabled
 (controlled tests opt in; `introducer_stays_disabled_by_default` pins it). The
 3× response budget is enforced before crypto.
+
+**Plan 490 — the introducer role is reachable in production.**
+`Ssu2RuntimeConfig { pub introducer_service: bool }` (default `false`) is the
+single gate; the daemon's `ssu2.introducer_service` key (default off) is the
+only production switch. The runtime owns the socket and the bounded tables;
+the daemon's role owner owns the policy and the receipts.
+
+Two request shapes reach the same transport state machine:
+
+- `Ssu2PeerRelayService::on_relay_request` — the **requester**-shaped
+  entry point: the relay tag belongs to the requesting peer, and the
+  transport's tag binding and the requester's signature preimage name
+  different peers.
+- `Ssu2PeerRelayService::on_relay_request_for_target` — the
+  **specification's** shape (Plan 490): the relay tag identifies the
+  introduction *target*, so the tag binding and the requester's signature
+  preimage both name that target, and the requester's own signing key is
+  supplied by the caller (the daemon resolves it from a validated
+  RouterInfo). `on_introducer_relay_response` is the matching Bob-side
+  response path: it correlates by nonce, requires the sender to be the
+  target, verifies the target's signature, and consumes the tracked
+  request so a replay is refused.
 
 Per-source rate limits: `PEER_RELAY_RATE_SOURCES = 1024` tracked sources,
 `PEER_RELAY_DATAGRAMS_PER_SECOND = 8`, cheap-drop **before** parsing.
@@ -546,7 +770,7 @@ test) → typed outcome mirrored into reachability as family-only signals
 service and all tables is redacted. Sealed-session carriage of in-session blocks
 is proven in `i2pr-transport-ssu2/tests/peer_relay.rs`.
 
-### NTCP2 executor, driver, observer, and the non-activation guard
+### NTCP2 executor, driver, observer, and the activation guard
 
 `ntcp2_runtime` owns bounded NTCP2 socket/link lifecycle;
 `ntcp2_driver` fulfills handshake actions with exact reads/writes, bounded
@@ -554,23 +778,36 @@ deadlines, cancellation, replay admission, clock, padding, and RouterInfo
 handoff; `ntcp2_link` owns authenticated frame reader/writer children and queue
 leases.
 
-**The NTCP2 link service is composed but not activated in production.** Three
-independent guards agree:
+**NTCP2 is not activated by default.** Three independent guards agree:
 
-1. `crates/i2pr-daemon/src/config.rs:718` — `default_ntcp2_enabled()` returns
+1. `crates/i2pr-daemon/src/config.rs:1018` — `default_ntcp2_enabled()` returns
    `false`, so the normal daemon does not enable NTCP2.
-2. `grep` finds **no** reference to `Ntcp2RuntimeService` anywhere in
-   `crates/i2pr-daemon/src/`. The only non-test consumer is
-   `tools/i2pr-interop/src/main.rs`, a non-production test launcher.
+2. An enabled NTCP2 surface must name an explicit qualification profile.
+   Only `controlled_loopback` and `private_lan_qualification` are accepted,
+   and the daemon's own activation gate refuses every other shape with a
+   named reason. The daemon registers its own `ntcp2-router` service; the
+   transport crate's `ntcp2-transport` service is still never registered.
 3. `specs/support.toml` marks the NTCP2 surfaces `status = "experimental"`,
    `advertised = false`.
 
+The daemon does reach `Ntcp2RuntimeService` — `crates/i2pr-daemon/src/lib.rs`
+constructs one inside `register_ntcp2_service`, which runs only when
+`config.transport.ntcp2.enabled` is true and the activation gate admits the
+configuration. The guard is the **profile**, not the absence of a reference.
+
+The activation gate itself is not in this crate: it is
+`crates/i2pr-daemon/src/ntcp2_activation.rs`, and it is a pure function over
+an already-normalized configuration. Its result is the `Ntcp2DialScope` this
+crate's runtime admits, and the scope is never widened inside the runtime.
+The operator-facing procedure is
+[`docs/operations/ntcp2-private-lan-qualification.md`](../operations/ntcp2-private-lan-qualification.md).
+
 Plan 101
-(`plans/implementation/ntcp2-transport/101-daemon-ntcp2-activation-safety-and-router-handoff-correction.md`,
-status *planned*) is the plan of record for the daemon activation-safety
+(`plans/implementation/ntcp2-transport/101-daemon-ntcp2-activation-safety-and-router-handoff-correction.md`)
+is the plan of record for the daemon activation-safety
 corrective; the retained development result is `protocol-defect-localized` at
 `noise_authenticated` (Plan 099/100, `plans/closure/ntcp2-transport/099-status.md`).
-Nothing in this crate may be read as NTCP2 activation.
+Nothing in this crate may be read as a **public** NTCP2 activation.
 
 `ntcp2_data_oracle` and `ntcp2_handshake_observer` are **not compiled behind a
 Cargo feature** — both `mod` declarations are unconditional in `lib.rs`. What
@@ -608,9 +845,9 @@ emits events through `tracing`; it never installs a global subscriber.
 | `MAX_CHANNEL_NAME_BYTES` | 64 | `channel.rs:25` |
 | `MAX_QUEUE_ITEM_BYTES` | 1 << 20 | `channel.rs:27` |
 | `MAX_CHILD_TASKS` | 64 | `context.rs:20` |
-| `MAX_SERVICE_COUNT` | 128 | `graph.rs:14` |
-| `MAX_SERVICE_TIMEOUT` | 3 600 s | `graph.rs:16` |
-| `MAX_RESTART_ATTEMPTS` | 32 | `graph.rs:24` |
+| `MAX_SERVICE_COUNT` | 128 | `graph.rs:16` |
+| `MAX_SERVICE_TIMEOUT` | 3 600 s | `graph.rs:18` |
+| `MAX_RESTART_ATTEMPTS` | 32 | `graph.rs:26` |
 | `MAX_SHUTDOWN_DEADLINE` | = `MAX_SERVICE_TIMEOUT` (3 600 s) | `supervisor.rs:31` |
 | `MAX_SNAPSHOT_CHANNELS` | 256 | `observability.rs:64` |
 | `MAX_SNAPSHOT_RESOURCES` | 32 | `observability.rs:66` |
@@ -618,39 +855,493 @@ emits events through `tracing`; it never installs a global subscriber.
 | `PEER_RELAY_DATAGRAMS_PER_SECOND` | 8 | `ssu2_peer_relay.rs:63` |
 | `PEER_RELAY_MAX_SIGNERS` | 128 | `ssu2_peer_relay.rs:65` |
 | `PEER_RELAY_RESPONSE_BUDGET_NUMERATOR` | 3 | `ssu2_peer_relay.rs:67` |
-| `MAX_SSU2_RUNTIME_DURATION` | 3 600 s | `ssu2_runtime.rs:108` |
-| `MAX_SSU2_PENDING_CEILING` | 1 024 | `ssu2_runtime.rs:110` |
-| `MAX_SSU2_ACTIVE_CEILING` | 1 024 | `ssu2_runtime.rs:112` |
-| `MAX_SSU2_STAGED_DATAGRAMS_CEILING` | 4 096 | `ssu2_runtime.rs:114` |
-| `MAX_SSU2_STAGED_BYTES_CEILING` | 64 MiB | `ssu2_runtime.rs:116` |
-| `MAX_SSU2_INBOUND_QUEUE_CEILING` | 1 024 | `ssu2_runtime.rs:118` |
-| `SSU2_DEFAULT_MTU` | 1 280 | `ssu2_runtime.rs:120` |
-| `SSU2_CONFIRMED_MTU_PAYLOAD` | 1 000 | `ssu2_runtime.rs:122` |
-| `SSU2_CACHED_TOKEN_GRACE` | 1 500 ms | `ssu2_runtime.rs:139` |
-| `SSU2_TOKEN_CACHE_PER_PEER` | 2 | `ssu2_runtime.rs:141` |
-| `SSU2_TOKEN_CACHE_PEERS` | 128 | `ssu2_runtime.rs:143` |
-| `SSU2_TOKEN_REQUEST_SOURCES` | 1 024 | `ssu2_runtime.rs:145` |
-| `SSU2_TOKEN_REQUESTS_PER_SECOND` | 8 | `ssu2_runtime.rs:147` |
-| `SSU2_LINKS_PER_PEER` | 8 | `ssu2_runtime.rs:149` |
-| `SSU2_MANAGER_MESSAGES_PER_LINK` | 64 | `ssu2_runtime.rs:151` |
-| `SSU2_MANAGER_BYTES_PER_LINK` | 256 KiB | `ssu2_runtime.rs:153` |
-| `SSU2_BACKOFF_ENTRIES` | 256 | `ssu2_runtime.rs:155` |
-| `SSU2_MAX_DRAIN_PER_SESSION` | 4 | `ssu2_runtime.rs:157` |
-| `SSU2_MAX_PATH_CANDIDATES_GLOBAL` | 256 | `ssu2_runtime.rs:163` |
-| `SSU2_SEND_QUEUE_MESSAGES` | 64 | `ssu2_runtime.rs:3019` |
-| `SSU2_SEND_QUEUE_BYTES` | 256 KiB | `ssu2_runtime.rs:3021` |
-| `ORACLE_MAX_FRAMES` | 16 | `ntcp2_data_oracle.rs:42` |
-| `ORACLE_MAX_PLAINTEXT_BYTES` | 256 KiB | `ntcp2_data_oracle.rs:46` |
-| `ORACLE_MAX_BLOCKS` | 64 | `ntcp2_data_oracle.rs:50` |
-| `ORACLE_MAX_NON_TARGET_I2NP` | 16 | `ntcp2_data_oracle.rs:54` |
-| `BOUNDED_STEP_BUDGET` | 5 ms | `ntcp2_data_oracle.rs:302` |
-| `ORACLE_SCHEMA` | `"i2pr-ntcp2-data-oracle-v1"` | `ntcp2_data_oracle.rs:38` |
+| `MAX_SSU2_RUNTIME_DURATION` | 3 600 s | `ssu2_runtime.rs:111` |
+| `MAX_SSU2_PENDING_CEILING` | 1 024 | `ssu2_runtime.rs:113` |
+| `MAX_SSU2_ACTIVE_CEILING` | 1 024 | `ssu2_runtime.rs:115` |
+| `MAX_SSU2_STAGED_DATAGRAMS_CEILING` | 4 096 | `ssu2_runtime.rs:117` |
+| `MAX_SSU2_STAGED_BYTES_CEILING` | 64 MiB | `ssu2_runtime.rs:119` |
+| `MAX_SSU2_INBOUND_QUEUE_CEILING` | 1 024 | `ssu2_runtime.rs:121` |
+| `SSU2_DEFAULT_MTU` | 1 280 | `ssu2_runtime.rs:123` |
+| `SSU2_CONFIRMED_MTU_PAYLOAD` | 1 000 | `ssu2_runtime.rs:125` |
+| `SSU2_CACHED_TOKEN_GRACE` | 1 500 ms | `ssu2_runtime.rs:142` |
+| `SSU2_TOKEN_CACHE_PER_PEER` | 2 | `ssu2_runtime.rs:144` |
+| `SSU2_TOKEN_CACHE_PEERS` | 128 | `ssu2_runtime.rs:146` |
+| `SSU2_TOKEN_REQUEST_SOURCES` | 1 024 | `ssu2_runtime.rs:148` |
+| `SSU2_TOKEN_REQUESTS_PER_SECOND` | 8 | `ssu2_runtime.rs:150` |
+| `SSU2_LINKS_PER_PEER` | 8 | `ssu2_runtime.rs:152` |
+| `SSU2_MANAGER_MESSAGES_PER_LINK` | 64 | `ssu2_runtime.rs:154` |
+| `SSU2_MANAGER_BYTES_PER_LINK` | 256 KiB | `ssu2_runtime.rs:156` |
+| `SSU2_BACKOFF_ENTRIES` | 256 | `ssu2_runtime.rs:158` |
+| `SSU2_MAX_DRAIN_PER_SESSION` | 4 | `ssu2_runtime.rs:160` |
+| `SSU2_MAX_PATH_CANDIDATES_GLOBAL` | 256 | `ssu2_runtime.rs:166` |
+| `SSU2_SEND_QUEUE_MESSAGES` | 64 | `ssu2_runtime.rs:3951` |
+| `SSU2_SEND_QUEUE_BYTES` | 256 KiB | `ssu2_runtime.rs:3953` |
+| `ORACLE_MAX_FRAMES` | 16 | `ntcp2_data_oracle.rs:45` |
+| `ORACLE_MAX_PLAINTEXT_BYTES` | 256 KiB | `ntcp2_data_oracle.rs:49` |
+| `ORACLE_MAX_BLOCKS` | 64 | `ntcp2_data_oracle.rs:53` |
+| `ORACLE_MAX_NON_TARGET_I2NP` | 16 | `ntcp2_data_oracle.rs:57` |
+| `BOUNDED_STEP_BUDGET` | 5 ms | `ntcp2_data_oracle.rs:509` |
+| `ORACLE_SCHEMA` | `"i2pr-ntcp2-data-oracle-v1"` | `ntcp2_data_oracle.rs:41` |
 
 Non-exported (`pub const` in a private module, so not part of the public
 surface): `DEFAULT_STARTUP_TIMEOUT` 30 s, `DEFAULT_READINESS_TIMEOUT` 30 s,
 `DEFAULT_SHUTDOWN_GRACE` 5 s (`graph.rs:18-22`); `LOCAL_ROUTER_INFO_MAX_AGE_SECS`
 86 400, `LOCAL_ROUTER_INFO_MAX_FUTURE_SKEW_SECS` 3 600,
-`LOCAL_ROUTER_INFO_MAX_ENCODED_LEN` 16 KiB (`ssu2_runtime.rs:129-136`).
+`LOCAL_ROUTER_INFO_MAX_ENCODED_LEN` 16 KiB (`ssu2_runtime.rs:132-139`).
+
+### The governor's permit as an enforced share (Plan 492)
+
+`bandwidth.rs` is unchanged by Plan 492; the plan *consumed* the governor's
+existing permit semantics rather than adding a second accounting.
+
+`BandwidthGovernor::capacity_permit(share_percent)` issues a
+`BandwidthEnforcementPermit` that carries the configured rates and a weak
+reference to the governor instance that issued it. The permit answers three
+questions, and the transit participation posture asks them **at the point of
+use**:
+
+| Question | Method | Meaning when false |
+| --- | --- | --- |
+| Is the permit still the live one? | `is_current_for(&governor)` | the live governor is a different instance (the configuration was replaced): the share is *withdrawn* |
+| Is the issuing governor still alive? | `is_healthy()` | the governor's accounting state is gone or poisoned: the share is *unhealthy* |
+| What may this router spend? | `configured_limits()` | `(inbound, outbound, share_percent)`; the posture's budget is `outbound × share% × posture share limit %` |
+
+`i2pr-daemon::transit_participation::TransitParticipationOwner` holds the
+permit and revalidates it before it admits transit work and before it charges
+a relay. A permit that cannot be revalidated **revokes** the participation
+rather than letting the share grow, and a router with no permit at all
+refuses every request (`NoEnforcedPermit`) — the share limit is never
+advisory.
+
+The governor remains the socket-level enforcement; the posture is the
+router-level accounting of what the *transit role* may spend inside that
+enforced share. No new channel, no new queue, and no new task was added here.
+
+## The relay-tag request and the introducer recording (Plan 524)
+
+A router behind a firewall needs an **introducer**. Plan 524 gives the
+router the **acquisition** half of that composition, and the runtime owns
+the two halves of it that are below the daemon.
+
+**The outstanding-request set is bounded and refuses.** The runtime keeps
+the set of peers this router asked for a relay tag, so that a tag arriving
+for a peer nobody asked about is refused rather than recorded. The set is a
+**ceiling**: at `MAX_OUTSTANDING_TAG_REQUESTS` a further request is refused
+and counted, never queued and never evicting an older request. (This is a
+different bound from the introducer table's own ceiling, which **evicts**
+the oldest record — `crates/i2pr-transport-ssu2/src/introducer.rs`.)
+
+**The recording is gated on the router's own request.** A `SessionEvent::RelayTag`
+is recorded as an authenticated introducer only for a peer in the outstanding
+set; for any other peer it is refused and counted under its own reason. The
+session that carried the tag *is* the authentication, and the provenance is
+`AuthenticatedDirect`. The record's `peer_hash` and `relay_tag` are the
+facts the SSU2 introducer tuple publishes; the record's `endpoint` and
+`intro_key` are **this router's own**, because the SSU 1 shape published the
+*target's* contact material and the SSU2 form carries neither.
+
+**The sweep runs against the real clock.** The insertion path takes the
+**wall clock**, and the margin belongs to the *record*: a tag whose own
+expiry is within `INTRODUCER_EXPIRY_MARGIN_SECS` is not a usable
+introducer, so the record's effective expiry is pulled back by the margin
+while the table's sweep still runs against the real clock. (The earlier
+shape derived the sweep clock from the record's own expiry, which made the
+sweep run in the future and expire live records early; the path had no
+production caller until Plan 524.)
+
+**The event still reaches the handoff.** The relay handoff is the runtime's
+public authenticated-event channel, and Plan 499's live-mesh evidence reads
+the minted tag through it. The **daemon's drain** is what skips the event,
+so the answer to the router's own request is no longer counted as one of the
+introducer role owner's refusals.
+
+## The published form and its evidence (Plan 525)
+
+The router publishes **one** SSU2 address, and its shape depends on the
+router's own posture. The runtime owns that decision.
+
+**The composition is one answer with two shapes.** `self_publication_material`
+asks for the **direct** form first and falls back to the **introducer-only**
+form only when the router's reachability evidence refuses the direct one.
+A refusal that is not about reachability — a closed runtime, an unbound
+runtime, a poisoned state, an invalid endpoint — is propagated unchanged:
+such a router is **broken**, not firewalled, and publishing an
+introducer-only address would hide the fault behind a plausible record. The
+answer is a typed value (`Ssu2PublicationForm`), so a caller matches on the
+form and never infers one from a refusal.
+
+**The introducer-only form's evidence is the introducer set.** The
+snapshot's evidence expiry is the **earliest** expiry among the introducers
+the form publishes, so the form is withdrawn the moment its first listed
+introducer dies and the next publication cycle re-selects. (The builder
+passed the *build time* as the evidence expiry, and the transport's own
+tested gate therefore withdrew every snapshot, so the builder could never
+succeed; the path had no production caller until Plan 525.)
+
+**The family capability is derived, not assumed.** The form publishes the
+family letter of the router's **bound** socket — IPv4 when the IPv4 socket
+is bound, otherwise IPv6 — so the router never claims a family it has no
+socket for.
+
+**The install gate binds the router's own address by its form.** A direct
+address must name the router's own bound endpoint with the router's own
+static and intro keys. An **introducer-only** address has no endpoint: it
+is reached through the introducers it publishes, so the gate requires the
+router's own keys and at least one introducer. (The gate previously
+required every SSU2 address to carry an endpoint, so the introducer-only
+form could never be installed at all.)
+
+## The advertised introducer role (Plan 526)
+
+The runtime owns the **wire**, so it owns the capability the router publishes.
+
+**The capability is composed in one place.** `capabilities_for` derives the
+family letter from the router's **bound** socket and adds the **role** letter
+— the specification's `"C"` — **only** while the introducer role is live. The
+direct form builds its capability through it, and the material carries a typed
+field saying whether the role is advertised, so a caller never infers the role
+from the address's text. `advertised_capabilities` returns the same value the
+published address carries.
+
+**The introducer-only form never carries the role letter.** The form publishes
+no endpoint, so no peer could act on a role letter it carried: the reference's
+own peer-side check demands an endpoint for an introducer
+(`libi2pd/RouterInfo.cpp:1059`), and the netdb's introducer rule refuses any
+role letter on that form.
+
+**The install gate refuses a stale role letter.** A record whose SSU2 address
+advertises the role is refused outright while the role is not live, so the
+installed record cannot stand with a claim the router has stopped making.
+
+## The one tracker and the comparison (Plan 527)
+
+The runtime **owns** the router's reachability. It is the only tracker, and
+the product reads it.
+
+Before Plan 527 the peer-relay service kept a second one. Every
+contradicting signal was written into that second tracker and nothing read
+it, so the tracker the product read could only ever say `Reachable` — and
+the daemon's firewalled gate read `false` for ever. The service now keeps no
+tracker: it returns the typed facts it computes, and the runtime records
+them.
+
+**The comparison.** `note_observed_external_address` takes an observed
+endpoint and compares it with the router's **own bound socket**
+(`bound_endpoint`, which looks the socket up by the observation's family and
+yields `None` when the family has none):
+
+- an **agreement** corroborates — the peer sees this router at the address
+  the router is bound to;
+- a **disagreement** **contradicts** — the peer sees this router somewhere
+  else, so the router is behind a NAT and must not claim to be reachable;
+- a family with **no bound socket** refuses the comparison, so the router
+  neither claims a reachability it cannot compare nor invents a contradiction
+  it cannot support.
+
+A contradiction is recorded as `PeerTestResult{AddressMismatch}` and never
+also as a corroborating class: one observation is one fact.
+
+**Every typed outcome is recorded**, not only the confirming one.
+`record_peer_test_outcome_locked` maps the whole typed outcome, so a
+contradicting outcome reaches the product instead of being dropped.
+
+**The relay-success recorder is the runtime's.** `note_relay_firewalled` is
+the only place the relay-firewalled indication is recorded. The **requester**
+side of the SSU2 relay protocol produces it in the field, and that side is
+not wired yet — the recorder is here so its producer has exactly one place to
+write to.
+
+**The evidence is readable.** `reachability_evidence` returns the state, the
+number of **distinct** corroborating classes behind it, the family's expiry
+and the family itself, so a reader can see how much a claim rests on and not
+only what the claim is.
+
+## The observation path (Plan 529)
+
+The runtime's promotion seam is the one place where an authenticated peer
+becomes a session, so it is the one place where an authenticated peer's
+**observation** of this router's address can be recorded:
+
+```rust
+let observed_address = auth.observed_address();
+let mut session = i2pr_transport_ssu2::Ssu2Session::new(config, auth.into_keys()).ok()?;
+if let Some(observed) = observed_address {
+    self.note_observed_external_address_locked(state, observed);
+}
+```
+
+The value is captured before the authenticated session is consumed, and
+recorded **only once a session was really established**: a corroboration
+class is never counted for a session that does not exist. The comparison
+itself is Plan 527's, unchanged — it compares the observation with the
+router's **own bound socket**, refuses a family with no bound socket, and
+records a disagreement as Plan 528's firewalled verdict.
+
+**What this unlocks.** The class-1 corroboration —
+`AuthenticatedPeerObservedExternalAddress` — had **no field producer** outside
+the controlled profile before this plan, and the corroboration floor needs
+three distinct supporting classes before `Reachable`. A real handshake now
+produces one, on both sides: the initiator learns the address at which the
+responder sees it, and the responder learns the address at which the
+initiator sees it.
+
+**What the runtime does not do.** It adds no task, no timer and no listener,
+and no configuration key. The responder's configuration no longer carries a
+bound address: the value the responder publishes comes from the request's
+source, and the value it **compares** against is its own bound socket, so
+the two are never confused.
+
+## The verdict path (Plan 528)
+
+The runtime owns the router's reachability, so the runtime is where a
+peer-test **verdict** becomes a reachability fact.
+
+**`note_peer_test_verdict`** consults the specification's own table, which
+the transport carries as data, and answers with a typed
+`Ssu2PeerTestVerdict`:
+
+- the FIREWALLED row is this router's own **firewalled fact** and is
+  recorded as such;
+- an OK row is `Reachable` — but it corroborates **nothing** by itself. The
+  corroboration is the **address agreement**, and that arrives through the
+  comparison;
+- an unknown or ambiguous row is `Undetermined` and records nothing at all.
+
+**`note_peer_test_outcome`** records one typed outcome under its own kind.
+It is the single place a peer-test outcome becomes a reachability fact.
+
+**The comparison.** `note_observed_external_address` compares the observed
+endpoint with the router's **own bound socket**. An **agreement**
+corroborates. A **disagreement** is recorded as the **firewalled verdict**,
+not as a bare mismatch: a peer seeing the router at an address it does not
+own **is** the router behind a NAT, and it is the same fact the
+specification's FIREWALLED row reports — so both routes reach the same
+state. This **corrects** Plan 527's deep-dive, which described the
+disagreement as `PeerTestResult{AddressMismatch}`; Plan 527's closure record
+is not rewritten.
+
+**The controlled driver's verdict is a fact.** `ControlledPeerTestOutcome`
+grew the verdicts the tree used to throw away, and the driver's error arm
+keeps only the genuinely **failed** cases. A caller can therefore tell "the
+test failed" from "the test succeeded and the router is behind NAT". The
+daemon's controlled activation still refuses anything that is not a
+confirmation.
+
+## The explicit-bind recorder (Plan 530)
+
+The runtime's own tracker is the only place the router's reachability lives
+(Plan 527), and the transport's model says `Reachable` needs **three
+distinct supporting classes**. Two of them arrive from the network — an
+authenticated peer's observation of this router's address (Plan 529) and a
+confirmed peer test (Plan 521). The third is the router's **own** bound
+socket, and before this plan it had exactly one recorder, which only the
+controlled floodfill activation called:
+
+```rust
+fn note_bound_endpoints_as_explicit_bind(&self) {
+    if !self.shared.config.explicit_bind_corroboration {
+        return;
+    }
+    let mut families = Vec::new();
+    for family in [AddressFamily::Ipv4, AddressFamily::Ipv6] {
+        if self.bound_endpoint(family).is_some() {
+            families.push(family);
+        }
+    }
+    // ... and the class is recorded, under the state lock.
+}
+```
+
+**The recorder is private, and it is here.** The runtime owns both the
+tracker and the sockets, so the runtime is the one place that knows a bind
+succeeded. A daemon-side recorder would have put a reachability signal in the
+daemon, which Plan 520's guard rule 10 forbids.
+
+**The record is made at bind time**, because that is when the fact becomes
+true. `start()` calls the recorder after the sockets are installed and the
+loop tasks are running, next to the existing `SocketsBound` qualification
+event.
+
+**A family is recorded only when the runtime can name its own bound endpoint
+for it.** The predicate is `bound_endpoint`'s, the one the publication path
+already uses, so a wildcard or a port-zero bind names no address and records
+nothing. The router never claims an address it cannot name.
+
+**The gate is the existing opt-in.** `explicit_bind_corroboration` is the
+runtime's own configuration flag, and it is the same flag the runtime turns
+into the transport's `configured_direct_allowed`. A runtime that has not
+asked for explicit-bind corroboration records nothing, and the transport
+never sees a configured origin it did not earn.
+
+**The narrow controlled recorder stays.** `note_explicit_bind_for_controlled_qualification`
+is unchanged and is still called only by the controlled activation. It is
+*narrower* — it refuses a non-loopback bind — and it owns a fail-closed
+refusal the controlled path depends on. After this plan it is redundant for
+the class, and that is the price of leaving Plan 283's foundation and the
+controlled path's refusal untouched.
+
+**What this unlocks.** The bind, the peer's observed external address and a
+confirmed peer test are now three distinct classes that a router can earn in
+ordinary operation, so the corroboration floor is above them and the direct
+form becomes publishable.
+
+**What the runtime does not do.** It adds no task, no timer, no listener and
+no socket; the record is made synchronously inside `start()`. It adds no
+configuration key and moves no default. The transport's reachability model is
+untouched.
+
+## The requester's mechanics (Plan 531)
+
+The relay protocol's **requester** half is a router that cannot reach a peer
+directly and asks the peer's introducer to reach it. The policy lives in the
+daemon; the mechanics live here, because the runtime owns the sockets, the
+session, the bounded tables and the transport's verification.
+
+**The request seam.** The runtime already had
+`Ssu2RuntimeService::start_relay_request`, and it had no caller. It has one
+now. The transport's own requester table is driven through the peer-relay
+service — the daemon does not keep a second copy of it, and it must not.
+
+**A hole punch is out of session.** It is sealed under the *receiver's*
+introduction key and it names neither a session nor a peer hash, so it cannot
+ride the session-shaped relay handoff. It gets a route of its own:
+
+```rust
+if self.shared.config.relay_requester {
+    if !self.shared.peer_relay.check_admission(source.ip(), now_ms) {
+        self.shared.counters.cheap_drops.fetch_add(1, Ordering::Relaxed);
+        return batch;
+    }
+    let mut punch_probe = bytes.to_vec();
+    if let Ok(message) = parse_hole_punch(&mut punch_probe, &self.shared.local_intro) {
+        batch.requester.push(Ssu2InboundRequesterEvent::HolePunch(
+            Ssu2InboundHolePunch { source, message },
+        ));
+        return batch;
+    }
+}
+```
+
+The route sits between the session-request probe and the controlled peer-test
+route, it exists only while the operator's requester opt-in is on, and a
+datagram that does not parse falls through to the cheap-drop below.
+
+**A response is routed by correlation.** A Relay Response that correlates with
+one of *this router's own* live request nonces belongs to the requester role,
+not to the introducer role:
+
+```rust
+SessionEvent::RelayResponse(block) => {
+    if self.shared.peer_relay.is_requester_nonce(block.nonce(), now_ms) {
+        requester.push(Ssu2InboundRequesterEvent::Response(
+            Ssu2InboundRelay { link_id, peer, event: Ssu2RelayEvent::Response(block) },
+        ));
+    } else {
+        relay.push(Ssu2InboundRelay {
+            link_id,
+            peer,
+            event: Ssu2RelayEvent::Response(block),
+        });
+    }
+}
+```
+
+The correlation table is a **routing** table — a nonce and a deadline, nothing
+else — and it is written exactly where the transport's own table is written, so
+the two expire on the same deadline. The signature is verified later, when the
+requester owner hands the response to the transport.
+
+**The handoff is bounded.** The requester's own handoff is a separate channel
+with the same ceiling as the relay handoff
+(`max_inbound_relay_queue`, default 16). A separate channel is required
+because a hole punch names no link and no peer hash, and a correlated Relay
+Response belongs to the requester role rather than to the introducer's.
+
+**The signal is recorded here, not in the daemon.** The runtime owns the
+tracker, so the runtime records the relay-firewalled contradiction. The daemon
+calls this runtime's own `note_relay_firewalled`, and the transport's class-4
+signal stays class 4 and contradicting: a router that is reachable only
+through a relay is reachable *through the relay*, not directly.
+
+**What the runtime does not do.** It adds no task, no timer, no listener and no
+socket. It adds one configuration flag — `relay_requester`, default off — and
+the transport's relay state machines and reachability model are untouched.
+
+## The target's mechanics (Plan 532)
+
+The relay protocol's **target** half is the peer that is reached: it receives
+an introduction, verifies it, and answers it. The policy lives in the daemon;
+the mechanics live here, because the runtime owns the sockets, the session,
+the bounded tables and the transport's verification.
+
+**The target seam.** The runtime already had
+`Ssu2RuntimeService::on_target_relay_intro`, and it had no caller. It has one
+now. The transport's own target table is driven through the peer-relay service
+— the daemon does not keep a second copy of it, and it must not. The
+introduction is verified against the specification's preimage with the
+**expected introducer** and the **expected target**, so a forwarded request is
+only admitted for the peer it was actually forwarded to.
+
+**The introduction has its own bounded handoff.** A Relay Intro is addressed
+to *this* router — the introducer forwarded it to the peer its tag named — so
+it belongs to the target role and not to the introducer's:
+
+```rust
+SessionEvent::RelayIntro(block) => {
+    if self.shared.config.relay_target {
+        target.push(Ssu2InboundTarget { link_id, peer, block });
+    } else {
+        relay.push(Ssu2InboundRelay {
+            link_id,
+            peer,
+            event: Ssu2RelayEvent::Intro(block),
+        });
+    }
+}
+```
+
+The route exists only while the operator's target opt-in is on; with the opt-in
+off the introduction keeps travelling the introducer's handoff exactly as
+before, and the introducer owner refuses it as not its role. The target's
+handoff is a **fourth** channel with the same ceiling as the relay handoff
+(`max_inbound_relay_queue`, default 16), because an introduction belongs to the
+target role rather than to the introducer's.
+
+**The hole punch is staged, never sessioned.** It is sealed under the
+*requester's* introduction key and it travels out of session, so it cannot ride
+a session's outbound queue. The outbound seam builds it with the transport's
+own codec and stages it through the runtime's existing bounded queue:
+
+```rust
+pub fn stage_relay_hole_punch(
+    &self,
+    requester_intro: &IntroKey,
+    nonce: u32,
+    charlie_endpoint: Ssu2Endpoint,
+    requester_endpoint: Ssu2Endpoint,
+    response: i2pr_transport_ssu2::RelayResponseBlock,
+    now_secs: u64,
+) -> Result<(), Ssu2RelayTargetError> {
+```
+
+The destination is checked against the router's own dial profile **before** the
+datagram is built. The profile is the **union** of the two dial constructors
+the runtime offers — a loopback address of either family, or an RFC1918 IPv4
+literal for the private-LAN variant — so the target role can never widen the
+router's reach beyond what the router already dials. A destination outside it
+is refused with `DestinationRefused`, and the refusal is a count-only reason.
+
+**The transport's table is the authority.** The runtime's peer-relay service
+holds the transport's `RelayTarget` table, and the daemon keeps **no** second
+copy of it. After the answer is emitted, the runtime **consumes** the pending
+introduction, so a replayed introduction cannot produce a second accept and a
+second hole punch.
+
+**What the runtime does not do.** It adds no task, no timer, no listener and no
+socket. It adds one configuration flag — `relay_target`, default off — and the
+transport's relay state machines and reachability model are untouched. It
+records no reachability signal for the target role either: a router that
+answers an introduction is reachable **through the relay**, not directly.
 
 ## Dependencies
 
@@ -705,8 +1396,8 @@ applies to it without exception.
 
 ## Tests
 
-82 in-crate `#[test]` / `#[tokio::test]` functions across 11 modules, plus 20
-integration tests across the 4 files in `tests/` — 102 total.
+132 in-crate `#[test]` / `#[tokio::test]` functions across 14 modules, plus 30
+integration tests across the 4 files in `tests/` — 162 total.
 
 ### In-crate unit tests
 
@@ -716,14 +1407,14 @@ integration tests across the 4 files in `tests/` — 102 total.
 | `channel.rs` | 11 (8 `start_paused`) | ordering + resource charge until processing finishes, `send_until` deadline/cancel, synthetic overload graph drains with no usage or task leak, request/latest-state paths |
 | `context.rs` | 3 | child scope join, bounded task limit, shutdown report |
 | `graph.rs` | 6 sync | lexical topological determinism, invalid graphs rejected before startup, restartable services require a policy, optional-startup and essential classification is a contradiction, startup requirement defaults to `Required` |
-| `ntcp2_data_oracle.rs` | 5 | bounded step budget, every negative bound, exact target correlation |
-| `ntcp2_driver.rs` | 6 (4 `start_paused`) | initiator/responder action fulfillment, padding bounds |
+| `ntcp2_data_oracle.rs` | 7 | bounded step budget, every negative bound, exact target correlation |
+| `ntcp2_driver.rs` | 7 (4 `start_paused`) | initiator/responder action fulfillment, padding bounds |
 | `ntcp2_handshake_observer.rs` | 2 | observer records metadata only, never payload |
-| `ntcp2_link.rs` | 1 | `queue_release_returns_to_baseline` (RAII accounting) |
-| `ntcp2_runtime.rs` | 8 (2 `start_paused`) | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, `link_reader_and_writer_are_joined_after_close`, `queue_entry_drop_releases_exactly_once`, `active_link_admission_is_exact_and_raii`, `queue_and_active_link_teardown_repeat_without_underflow` |
+| `ntcp2_link.rs` | 6 (1 `start_paused`) | `queue_release_returns_to_baseline` (RAII accounting) |
+| `ntcp2_runtime.rs` | 16 (2 `start_paused`) | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, `link_reader_and_writer_are_joined_after_close`, `queue_entry_drop_releases_exactly_once`, `active_link_admission_is_exact_and_raii`, `queue_and_active_link_teardown_repeat_without_underflow`, `dial_scope_admits_only_its_profile_addresses`, `dial_scope_admission_set_is_exactly_the_profile_set`, `loopback_scope_refuses_a_private_lan_address`, `private_lan_scope_refuses_a_public_address` |
 | `ssu2_peer_relay.rs` | 7 sync | `introducer_stays_disabled_by_default`, rate-limiter cheap-drop before crypto, quotas + shutdown to baseline, relay-request replay does not re-amplify, snapshot/Debug expose no secrets, earliest-deadline tracking, unknown signer fails closed |
-| `ssu2_runtime.rs` | 19 | 5 sync validation (`limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info`, freshness/permit checks) + 3 real-UDP path-validation tests (`legitimate_path_migration_over_real_udp`, `spoof_burst_from_new_sources_never_migrates`, `challenge_response_control_round_trip_over_real_udp`) + 11 publication / controlled-test / network-condition tests |
-| `supervisor.rs` | 13 (8 `start_paused`) | `services_start_ready_and_shutdown_gracefully`, `panic_is_classified_without_payload`, `restartable_services_use_bounded_backoff`, `degradable_and_optional_failures_do_not_stop_essential_work`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, **`forced_child_cleanup_is_repeatably_joined`**, `service_child_scope_is_joined_before_manager_completion` |
+| `ssu2_runtime.rs` | 26 | 5 sync validation (`limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info`, freshness/permit checks) + 3 real-UDP path-validation tests (`legitimate_path_migration_over_real_udp`, `spoof_burst_from_new_sources_never_migrates`, `challenge_response_control_round_trip_over_real_udp`) + 11 publication / controlled-test / network-condition tests + 3 Plan 498 non-blocking relay-pull tests (`try_next_relay_event_on_an_empty_channel_yields_none_and_consumes_nothing`, `try_next_relay_event_returns_a_queued_event_and_then_the_channel_is_empty`, `try_next_relay_event_yields_none_after_the_channel_disconnects`) + 2 Plan 499 carriage unit rows (`relay_peer_resolution_refuses_ambiguous_and_empty_link_sets`, `relay_session_errors_map_onto_carriage_refusals`) |
+| `supervisor.rs` | 22 (20 `start_paused`) | `services_start_ready_and_shutdown_gracefully`, `panic_is_classified_without_payload`, `restartable_services_use_bounded_backoff`, `degradable_and_optional_failures_do_not_stop_essential_work`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, **`forced_child_cleanup_is_repeatably_joined`**, `service_child_scope_is_joined_before_manager_completion` |
 
 `observability.rs` and `ssu2_controlled_peer_test.rs` carry no in-crate
 `#[cfg(test)]` module; their behavior is covered by the integration suites.
@@ -732,7 +1423,7 @@ integration tests across the 4 files in `tests/` — 102 total.
 
 | File | Tests | Pattern | Coverage |
 | --- | --- | --- | --- |
-| `ssu2_local.rs` | 9 async | **real sockets, real time, `127.0.0.1:0`** | `tokenless_establishment_over_real_udp`, `active_peer_hashes_names_live_session_peers`, `cached_token_establishment_with_stale_recovery`, `bidirectional_i2np_exchange_with_fragmentation`, `data_loss_recovers_with_exact_once_delivery`, `ack_loss_reorder_and_duplicate_recover_exactly_once`, `malformed_and_random_traffic_creates_no_state`, `active_session_cap_denies_with_baseline_return`, `graceful_close_abrupt_peer_and_cancel_return_to_baseline` |
+| `ssu2_local.rs` | 19 | **real sockets, real time, `127.0.0.1:0`** | `tokenless_establishment_over_real_udp`, `active_peer_hashes_names_live_session_peers`, `cached_token_establishment_with_stale_recovery`, `bidirectional_i2np_exchange_with_fragmentation`, `data_loss_recovers_with_exact_once_delivery`, `ack_loss_reorder_and_duplicate_recover_exactly_once`, `malformed_and_random_traffic_creates_no_state`, `active_session_cap_denies_with_baseline_return`, `graceful_close_abrupt_peer_and_cancel_return_to_baseline`, plus 7 Plan 499 rows: `live_relay_tag_request_answers_with_a_tag_bound_to_the_requester`, `relay_tag_request_is_refused_when_the_introducer_is_disabled`, `queued_relay_intro_reaches_the_peer_intact`, `relay_carriage_without_a_live_session_is_refused`, `relay_carriage_after_the_session_terminates_is_refused`, `relay_carriage_is_refused_once_the_control_queue_is_full`, `relay_queue_error_reason_keys_are_stable` |
 | `ssu2_peer_relay.rs` | 7 async | **real sockets, `127.0.0.1:0`** | direct peer test with NAT rewrite, mismatch/inconclusive, 40-datagram flood cheap-drop, relay product path ending in a live `Ssu2RuntimeService` dial with bidirectional I2NP, introducer expiry/disabled/shutdown, concurrent isolation with crossing schedules, publication/privacy integration |
 | `ssu2_controlled_peer_test.rs` | 3 async | real sockets, `127.0.0.1:0` | `controlled_exchange_promotes_loopback_to_reachable_with_direct_material`, `controlled_exchange_is_refused_without_the_permit`, `controlled_apis_fail_closed` |
 | `ssu2_independent.rs` | 1, `#[ignore]` | env-gated | `ssu2_independent_ipv4_interop` — `#[ignore = "Plan 161: requires exact-pinned external i2pd environment"]`. Compiled with the workspace, skipped by ordinary libtest, selected only by `tests/integration/ssu2/run-independent.sh` with `--ignored --exact`; missing env still reaches a hard failure, never a skip |
@@ -740,10 +1431,10 @@ integration tests across the 4 files in `tests/` — 102 total.
 ### Posture
 
 - **Paused time is the default for state-machine and overload tests.**
-  `#[tokio::test(start_paused = true)]` appears in `channel.rs` (8),
-  `ntcp2_driver.rs` (4), `ntcp2_runtime.rs` (2), `supervisor.rs` (8), and
-  `cancel.rs`. No wall-clock sleeps participate in overload or state-machine
-  assertions.
+  `#[tokio::test(start_paused = true)]` appears in `bandwidth.rs` (6),
+  `channel.rs` (8), `ntcp2_driver.rs` (4), `ntcp2_link.rs` (1),
+  `ntcp2_runtime.rs` (2), and `supervisor.rs` (20). No wall-clock sleeps
+  participate in overload or state-machine assertions.
 - **Real-socket suites are loopback-only and use OS-assigned ports.**
   Every bind literal in `tests/` is `127.0.0.1:0`; `ssu2_independent.rs` is the
   only file with fixed port numbers, and only because it dials an
@@ -818,6 +1509,12 @@ integration tests across the 4 files in `tests/` — 102 total.
 13. **The crate is a bounded seam, not a protocol driver** — it executes
     transport actions and enforces runtime ownership, but claims no handshake,
     frame, manager-registration, or mixed-router completion.
+14. **The dial scope is the caller's, and the runtime never widens it** —
+    `Ntcp2DialScope` is passed in by the caller and applied as a filter, so a
+    scope cannot be widened from inside the runtime by a later configuration
+    change. `AddressOutOfScope` is a distinct outcome from `Failed`: "every
+    advertised address was out of scope" is a policy refusal the caller should
+    see, not a transport failure to retry.
 
 ## Cross-references
 
@@ -849,10 +1546,187 @@ integration tests across the 4 files in `tests/` — 102 total.
   `159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
   `160-m8-ssu2-peer-test-and-relay-reachability.md`;
   `plans/implementation/floodfill/282-m12-runtime-publication-and-reply-delivery-contract-corrective.md`,
-  `283-m12-third-class-evidence-and-controlled-activation.md`.
+  `283-m12-third-class-evidence-and-controlled-activation.md`;
+  `plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md`.
 - Closures: `plans/closure/workspace-foundation/021-closure.md`,
   `022-closure.md`; `plans/closure/ntcp2-transport/035-closure.md`,
   `037-m3-corrective-integration-closure.md`;
   `plans/closure/ssu2/158-status.md`, `159-status.md`, `160-status.md`,
   `161-status.md`, `162-status.md`; `plans/closure/floodfill/282-status.md`,
-  `283-status.md`.
+  `283-status.md`; `plans/closure/network-participation/499-status.md`.
+
+## The establishment's mechanics (Plan 533)
+
+The runtime owns the establishment's mechanics: the responder's token table,
+the initiator's token presentation, and the one dial path both share.
+
+**The responder's table issues the token.**
+`Ssu2RuntimeService::issue_relay_establishment_token` draws eight random
+bytes from the runtime's own entropy and issues them from the service state's
+`TokenStore`, bound to the requester's exact source address and with no bound
+responder connection id — the responder mints a fresh one at SessionCreated,
+exactly as it does for a data-phase `NewToken`. The table is the **only**
+authority on a presented token: `TokenStore::consume` refuses an unknown
+value, an expired one, a reused one, and one presented from any other address.
+A token the daemon drew for itself would be in no table, and the responder
+would refuse it as unknown — which is the defect Plan 533 closes.
+
+**The initiator presents it.** `Ssu2RuntimeService::dial_ssu2_with_token` is
+the one dial path with an explicit token, and `dial_ssu2` delegates to it with
+none. When an explicit token is presented the **cached-token path is
+skipped**: the cache is a FIFO over the tokens peers announced, so an older
+cached entry would be presented instead and the responder would refuse it as
+unknown — a failure that has nothing to do with the peer's health. The cached
+entry is left untouched for the dial it was issued for.
+
+**The mechanics stay the runtime's.** The establishment is the ordinary SSU2
+handshake: the same `Initiator`, the same responder, the same transcript and
+the same authentication. No relay-specific session is created and the
+responder's verification is never bypassed.
+
+## The re-assertion of the standing fact (Plan 535)
+
+The runtime's tracker holds the router's reachability (Plan 527), and the
+transport's model needs **three distinct supporting classes** before it will
+say `Reachable`. Two arrive from the network — an authenticated peer's
+observation of this router's address (Plan 529) and a confirmed peer test
+(Plan 521). The third is the router's **own** bound socket, and Plan 530 gave
+it a recorder.
+
+The recorder was the whole of Plan 530's fix, and it left a defect the plan
+itself recorded: the class **lapsed** with the observation TTL. The
+transport's model holds every signal as a timed observation, and the explicit
+bind is a standing fact — the socket is bound and stays bound. Two of
+the three classes are refreshed by their peers; this one was refreshed by
+nobody. A router that had earned the class at start-up lost it by sitting
+still.
+
+**The rule is public and pure.**
+
+```rust
+pub fn explicit_bind_refresh_due(
+    recorded_at: Option<Duration>,
+    now: Duration,
+    observation_ttl: Duration,
+) -> bool {
+    let Some(recorded_at) = recorded_at else {
+        return true;
+    };
+    let half = observation_ttl / 2;
+    now.saturating_sub(recorded_at) >= half
+}
+```
+
+Half the lifetime, not the whole of it. The re-assertion must happen while
+the previous record is still live, because the expiry poll runs on the
+**read** paths: a rule of "re-assert once expired" would let a read between
+the expiry and the next maintenance pass find the class already gone. The
+rule fails closed — a fact that was never asserted is due, and a zero
+lifetime is due on every pass, because a class that is re-asserted too often
+is harmless and a class that lapses is not.
+
+**The lifetime has one owner.** The runtime does not keep its own number for
+the observation lifetime. It reads the tracker's own policy back:
+
+```rust
+let ttl = state.reachability.policy().observation_ttl();
+```
+
+so the expiry rule has exactly one owner and the runtime cannot drift from
+the model that enforces it. `Ssu2RuntimeReachability` exists so the *policy*
+can be configured — and so the behaviour is *provable*: the lane
+configures a short lifetime and waits past it. Its production default is the
+transport's own `DEFAULT_OBSERVATION_TTL`, and the daemon's mapping names
+that default rather than restating it.
+
+**The re-assertion rides the existing maintenance.** It is one step of
+`drive_timeouts_locked`, the pass the socket loop already runs on every wake.
+No timer, no task, no listener and no socket is added.
+
+**The standing fact is captured at the bind.** The recorder stores the
+families the router's own sockets can be named for, and the time the fact was
+last asserted, in the shared state. The runtime binds once and does not
+rebind, so the families never change and the re-assertion needs neither the
+sockets lock nor a second clock — the runtime's lock order (sockets
+— state) is never inverted.
+
+**The re-assertion touches only this router.** It records the router's own
+`LocalConfiguredBind` class and nothing else: no peer profile is written, no
+peer is credited with a corroborating class, and no reachability signal is
+recorded about anything but this router's own socket.
+
+**The count is a count.** Every re-assertion increments
+`explicit_bind_refreshes`, published in the snapshot as a plain `u64`. The
+counter carries counts only.
+
+**What the runtime does not do.** It changes no transport file: the signal
+vocabulary, the corroboration classes, both floors, the observation lifetime
+and the tracker's public surface are untouched, and the tracker gains no
+method — the re-assertion *records* through the method the transport
+already offers. It adds no configuration key: the daemon's configuration
+surface is unchanged and its mapping names the runtime's own default policy.
+
+## Publication of the bound address (Plan 546)
+
+`may_publish_bound_address` is the runtime's single authority for "may this
+socket's address appear in a RouterInfo". An unbound (`port == 0`) or
+unspecified (`0.0.0.0`) endpoint is never publishable. Loopback always is: a
+loopback address is the one address a record can name without claiming
+anything about the outside world. Any other bound address is publishable only
+when `Ssu2RuntimeConfig::publish_bound_address` is set, which is the operator's
+statement that the host is directly reachable at that address.
+
+Both publication entry points consult it -- `publication_material` and
+`note_explicit_bind_for_controlled_qualification` -- so neither restates the
+loopback condition. That second one matters more than it looks: it is the only
+production source of a `LocalConfiguredBind` corroboration, which is the only
+production route to `ReachableState::Reachable`, which is what
+`publication_material` requires before it will produce anything at all.
+
+**What the predicate does not do.** It does not test reachability or its
+expiry; both callers still do, and Plan 546 relaxed neither. A configured bind
+corroborates that the socket is bound to the address, which is exactly the
+claim that is false behind NAT -- so the field's documentation says a NAT'd
+host must leave it off, and that is a precondition rather than a caveat.
+
+Before this plan the runtime published only loopback addresses, which made
+`ssu2.advertise` inert and the floodfill role unreachable in every posture. The
+interlock was a blacklist policy: a router that advertises a reachability it
+does not have gets blocked by the peers it wastes. Plan 546 keeps the policy and
+moves the judgement to an operator key that is off by default.
+
+## The path in use is re-proved while the session lives (Plan 549)
+
+`Reachable` needs three corroboration classes inside
+`DEFAULT_OBSERVATION_TTL`. Two of them keep firing on a **stable** session:
+`note_bound_endpoints_as_explicit_bind` is re-asserted from the maintenance
+pass (`drive_timeouts_locked`, Plan 535), and the router's peer test completes
+on its own cadence. `ValidatedPath` did not: `PathValidator::note_authenticated_packet`
+returns early for the endpoint already in use, and the challenge budget is
+per-session, so class 2 appeared only while a *candidate* path was being
+migrated to. A healthy session therefore produced no path evidence and its
+state sat at exactly the corroboration floor, which `publication_material`
+refuses.
+
+`PathValidator` now holds a `Revalidation` beside its candidates — a different
+type with a different outcome (`PathEvent::Revalidated`, not
+`PathEvent::Validated`) — and `request_revalidation` names the validated
+endpoint, refuses a weak challenge, refuses a second request in flight, and is
+bounded by `MAX_PATH_REVALIDATIONS_PER_SESSION`. `on_path_response` resolves a
+re-validation **first**, and only for an exact match from the validated
+endpoint, so a genuine candidate response still reaches the migration machine.
+
+`drive_path_revalidations_locked` probes at most one session per maintenance
+pass and `record_revalidated_path_locked` records `ValidatedPath` and nothing
+else. The cadence is also a **scheduler deadline** (`scheduler_sleep_for`
+includes `next_revalidation_ms`): without that an idle session would never wake
+to prove itself, which is precisely the dependency the change removes.
+
+The reference answers every PathChallenge unconditionally and acts on a
+PathResponse only when it issued the challenge, so a re-validation costs one
+small datagram and changes no peer state. The reachability model — the classes,
+the floor of two, the contradiction floor of one, the lifetime — is untouched.
+
+`Ssu2Snapshot::path_revalidations` counts the completed probes. Class 1's
+producer is still missing: the reference supplies it through the SSU2 in-band
+peer test (messages 4–7, Address block in 6/7), which this router does not run.

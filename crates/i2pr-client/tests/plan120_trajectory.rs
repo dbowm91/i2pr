@@ -252,17 +252,21 @@ fn plan_120_deterministic_local_trajectory() {
         LeaseSetDecision::Retain
     );
 
-    // After the original lease is past the rotation margin, refresh returns
-    // `Regenerate(ApproachingExpiry)`. The replacement tunnel must replace the
-    // now-expired one.
+    // Plan 487 WP4: the rotation margin is the rotation *deadline*, not a
+    // second regeneration trigger. With the pool's usable tunnel set
+    // unchanged, the record is retained — re-signing the same expiring
+    // lease set cannot extend it, and the live qualification measured the
+    // cost (publication churn, then a hard `LeaseAlreadyExpired`
+    // rejection once `published` reached the lease end). The rotation
+    // follows the pool delivering the replacement tunnel.
     let now_approaching = now + lifetime - publication - rotation + 5;
     let decision = runtime
         .refresh_lease_set(now_approaching)
         .expect("approaching refresh");
     assert_eq!(
         decision,
-        LeaseSetDecision::Regenerate(LeaseSetRotationCause::ApproachingExpiry),
-        "approaching expiry rotates the lease set"
+        LeaseSetDecision::Retain,
+        "an unchanged lease set is retained inside the rotation window"
     );
 
     // Advance past the original tunnel expiry so the slot is evicted and the
@@ -277,16 +281,23 @@ fn plan_120_deterministic_local_trajectory() {
         "both original tunnels expired"
     );
     // Admit the replacement and refresh; the lease set is rebuilt with the
-    // new lease.
+    // new lease. The original tunnel expired in between, so the retained
+    // record was withdrawn with it and the replacement starts a fresh
+    // generation.
     runtime
         .admit_inbound(replacement, now_expiry)
         .expect("replacement");
     runtime
         .admit_outbound(replacement_outbound, now_expiry)
         .expect("replacement outbound");
-    let _ = runtime
+    let replacement_decision = runtime
         .refresh_lease_set(now_expiry)
         .expect("replacement refresh");
+    assert_eq!(
+        replacement_decision,
+        LeaseSetDecision::Regenerate(LeaseSetRotationCause::InitialGeneration),
+        "the replacement tunnel set starts a fresh generation"
+    );
     let after = runtime
         .inbound_lease_sources(now_expiry)
         .into_iter()

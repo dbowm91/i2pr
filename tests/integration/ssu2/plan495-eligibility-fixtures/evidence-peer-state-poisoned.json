@@ -1,0 +1,29 @@
+{
+  "attempts": [
+    {
+      "cause": "peer-state",
+      "consumes_budget": false,
+      "cooldown_seconds": 2100,
+      "outcome": "peer-state-poisoned"
+    }
+  ],
+  "attempts_consumed": 0,
+  "cause": "peer-state",
+  "family": "i2pd",
+  "label": "peer-state-poisoned",
+  "outcome": "peer-state-poisoned",
+  "schema": "i2pr-plan495-lane-evidence-v1",
+  "target_tier": 2,
+  "tiers": [
+    {
+      "reason": "ri-persisted",
+      "state": "pass",
+      "tier": 0
+    },
+    {
+      "reason": "peer-banned",
+      "state": "not-attempted",
+      "tier": 1
+    }
+  ]
+}

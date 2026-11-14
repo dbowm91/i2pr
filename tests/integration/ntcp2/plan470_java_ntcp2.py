@@ -706,7 +706,24 @@ password = {json.dumps(JAVA_CONTROL_PASSWORD)}
             print("plan470_java_store_job_status=" + java_store_status)
             print("plan470_reference_pin=" + JAVA_VERSION + "@" + JAVA_PIN)
             if not all(stages.values()):
-                print("plan470: first-missing-stage=" + next(k for k, v in stages.items() if not v), file=sys.stderr)
+                missing = next(k for k, v in stages.items() if not v)
+                attribution = "plan470: first-missing-stage=" + missing
+                if missing == "daemon_outbound_link_promoted" and stages.get("daemon_lookup_submitted"):
+                    # Plan 479: a missing promotion with a submitted lookup
+                    # is ambiguous between a stock-side connect-timeout
+                    # storm and a daemon-side promotion failure. Attach
+                    # the stock NTCP failure deltas so the exit-1 line
+                    # classifies itself; -1 means unobservable, never zero.
+                    attribution += " stock_ntcp_connect_failures=" + json.dumps({
+                        key: java_phase2_counter_deltas.get(key, -1)
+                        for key in (
+                            "ntcp_connectFailedTimeout",
+                            "ntcp_connectFailedTimeoutIOE",
+                            "ntcp_connectFailedIOE",
+                            "ntcp_outboundEstablishFailed",
+                        )
+                    }, sort_keys=True, separators=(",", ":"))
+                print(attribution, file=sys.stderr)
                 failure_stages = re.findall(
                     r'failure_stage=["\']?([a-z_]+)', daemon_text
                 )

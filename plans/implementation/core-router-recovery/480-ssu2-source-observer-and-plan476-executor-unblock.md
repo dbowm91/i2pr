@@ -1,0 +1,71 @@
+# Plan 480 — Authenticate SSU2 runtime evidence for the existing Plan 476 per-host executor
+
+**Status:** passed-narrowly 2026-10-15 (infrastructure: observer, local collector, bootstrap + floodfill fixtures, receipt export, contract) — see `plans/closure/core-router-recovery/480-status.md`. 476 process consumer + Tier B stay 476-owned/environment-blocked. **Owner:** i2pr-runtime SSU2 authenticated session and I2NP event boundary, daemon/router_i2np verified product-effect observation, minimal inspect/control export. **Baseline:** PR #45 head 846c0e2b69f5379aaa0d8bb98ff0ffa7c15a3bfa. **Predecessor:** plans/closure/core-router-recovery/476-status.md and 476-status-amendment-pair-bound-receipts.md. **Consumer:** existing Plan 476 run --live --role local runner. Plan 476, not 480, continues to own process spawning, authorization checks, receipt reconciliation, operator manual workflow and the eventual live two-host run. Do not split that existing implementation across duplicate owners.
+
+## Exact missing source interface
+
+Plan 476's offline fake receipts bind two distinct RFC1918 peers, signed RouterInfo digests, run epochs and ordered phases, but no real local process/session owner has emitted the corresponding events. crates/i2pr-runtime/src/ssu2_runtime.rs::Ssu2Snapshot exposes aggregate counts but no authenticated exact peer/session-generation I2NP attribution. The authenticated peer/link is available on Ssu2InboundI2np, while product effects are downstream in crates/i2pr-daemon/src/router_i2np.rs and the single daemon-owned ingress path in lib.rs. CLI i2pr run does not expose an authenticated pair-bound qualification observer or status command. A runner reading generic stdout, aggregate session counts, manually supplied receipt labels or test-script-authored values cannot prove live authenticated I2NP, replies or withdrawal.
+
+**Capability (this plan only):** the real daemon can produce verifiable sanitized, peer-bound **local** session and router-product receipts suitable for a separately authorized operator-run pair test. **Infrastructure:** one bounded test-profile-only observer with immutable event taxonomy, generation/epoch binding, queue backpressure, cancellation and authenticated provenance; no new general-purpose network API. **Invariant:** observer never invents authentication or product acceptance, cannot permit public bind/advertisement, stores no raw identity, endpoint, RouterInfo, keys, packets or correlation tokens, and cannot be invoked unauthenticated by remote peers. **Polish:** clear local operator diagnostics and deterministic fake-interface tests.
+
+## Ordered scope and interface handoff
+
+1. Write the minimal typed observation schema with separate source-owner events: router process started/bound, signed RouterInfo/peer config attested, outbound initiated authenticated session, inbound authenticated session, I2NP request actually decoded/accepted into product owner, reply submitted/written and correlated to expected request when applicable, session lost/re-established, identity-bound restart, capability withdrawal and shutdown. Each event carries only a run-epoch/role-local opaque handle, authenticated peer and session generation verified internally, categorical event, monotonic sequence and bounded count. Define producer-origin proofs or local private capability permissions; avoid reusing public I2PControl notification or untrusted logging as an authority.
+2. Put the session owner hook at authenticated SSU2 promotion and removal, then the product hook at actual router_i2np/NetDB effect and send/response confirmation. No hook before authentication may emit peer_authenticated; no queued-but-not-written request counts as replied; tie replies to authenticated peer plus active link generation and expiring pending token within ephemeral private state. Record transport-specific SSU2, not inferred from any NTCP2 route. Enforce single-owner source semantics in the daemon.
+3. Implement a strictly local/private qualification readout that exists only under the pre-approved private_lan_qualification profile or a separate explicit controlled offline-test profile. Bound event count, memory, outstanding epochs and lifetime; fail closed on missing consent/observer permission, wrong manifest digest, changed local RouterInfo, peer identity mismatch, unexpected generation, backpressure, shutdown and restart. Do not allow the observer to change router config, start network traffic, set R/f capabilities, or reveal stable IDs.
+4. Connect *the interface*, not a second process executor, to tests/integration/ssu2/plan476_executor.py and tests/integration/ssu2/plan472_live.py contracts. Provide a fake producer that has no socket or subprocess access for normal CI. Pair reconciliation must require two independently generated source-receipt sequences; role/script-supplied phase names cannot pass. Preserve exact existing Plan 472 prepare/verify and Plan 449/453 private endpoint rules. The Plan 476 owner then implements the separately pending local-process launch and receipt collection with this observer rather than its simulator.
+5. Negative unit/integration matrix: mismatched peer and RouterInfo digest, stale or replayed generation, product event before authentication, request without actual product effect, reply from different family/peer, actor presenting invented stage labels, forged success counts, cancellation, overloaded queue, wrong network ID, restarted identity with changed keys and revoked consent. Validate no raw data leaks in any persistent evidence artifact. One local controlled real-process positive may prove the observer is wired, but cannot close independent-host Plan 476 Tier B.
+6. Publish a concise API/receipt contract in this plan's implementation notes and an explicit Plan 476 continuation pointer. Do not claim final external SSU2, Java/IPv6/NAT/introducer, public reachability, or any Plan 431/439 completion from this local infrastructure.
+
+## Verification and closure
+
+Run cargo test --locked -p i2pr-runtime --all-targets -- --test-threads=1; cargo test --locked -p i2pr-daemon --test ssu2_daemon_preflight -- --test-threads=1; cargo test --locked -p i2pr-daemon --test run_lifecycle_readiness -- --test-threads=1; python3 tests/integration/ssu2/test_plan476_executor.py; python3 tests/integration/ssu2/plan472_live.py --self-test; python3 scripts/plan449-ssu2-preflight.py --self-test; bash scripts/check-ssu2-acceptance-evidence.sh; bash scripts/check-runtime-boundaries.sh; and full AGENTS.md floor. Add controlled producer/consumer real-event tests and mutation tests of stage, generation and owner attribution. Routine CI is non-emitting, not host-dependent, and cannot accidentally execute run --live.
+
+**Pass** plans/closure/core-router-recovery/480-status.md when the actual daemon supplies authenticated origin-bound session/product events, deterministic fake/negative contracts reject fabricated phases, local observed event sequence is verifiably tied to the existing daemon and no default/public capability changes. Plan 476's guarded per-host process owner is STILL INCOMPLETE until its separate implementation pass; independent-host Tier B is environment blocked until owner authorization. Do not mark the existing Plan 476 complete by passing Plan 480.
+
+## Implementation notes (2026-10-13)
+
+The runtime contract is implemented in `crates/i2pr-runtime/src/ssu2_qualification_observer.rs` and re-exported by `i2pr-runtime`. `Ssu2RuntimeConfig::qualification_observer` is false by default; `Ssu2DaemonService` enables it only after validating that SSU2 is explicitly enabled under the controlled-loopback or private-LAN profile. `Ssu2DaemonHandle::qualification_observer` exposes the in-process bounded read handle. Events carry a monotonically increasing epoch-local sequence, a salted per-observer peer commitment, exact process-local link generation (zero only for process events), a fixed event kind, and an optional transient I2NP message ID. The event type deliberately has no serde support; raw IDs are not suitable for persistent receipts.
+
+The runtime producers are the local signed-identity validation, successful socket bind, authenticated session promotion/removal, authenticated I2NP handoff, bounded session queue, staged datagram disposition, successful/failed UDP write, and shutdown owner points. The daemon product hook records only successful bootstrap insertion or a successful floodfill owner action; `record_product_effect` rejects an event unless an exact authenticated peer/link/message tuple is pending. The in-process event queue is capped at 512 entries, sets a sticky overflow bit, and holds no endpoint or packet bytes. This is not yet the Plan 476 process collector or a live pair executor; see the status record for the remaining work.
+
+## 2026-10-13 interface boundary: private SSU2 host observer versus router-build writer completion
+
+Plan **481** is the new **separate producer/completion owner** for router-build delivery fanout and transport-neutral SSU2/NTCP2 write tickets. This Plan 480 retains the current bounded, opt-in SSU2 authentication/I2NP observer and its *existing* remaining tests: direct real daemon NetDB/floodfill product-effect fixture, negative provenance matrix, private strictly local receipt export, and the owned Plan 476 process collector handoff. Plan 481 may read source-owned in-memory write events through a narrow authenticated runtime interface, but may not export Plan 480's transient message IDs or peer commitments into general logs, public admin APIs or persisted stock evidence. Source-owned write confirmation is not a substitute for Plan 476's separately consented private physical two-host qualification.
+
+## 2026-10-15 receipt contract and Plan 476 continuation pointer
+
+**Production interface (this plan):**
+`crates/i2pr-daemon/src/ssu2_qualification_receipts.rs` —
+`LOCAL_PHASES` (6 phases, subset of the Python vocabulary),
+`LocalQualificationProfile::ControlledLoopback` (sole variant),
+`LocalQualificationPermit { profile, consent }`,
+`LocalObservedReceipt { phases, session_observed, product_observed, live_qualification }`,
+`LocalReceiptCollector::new/collect`. Pure projection (no I/O,
+sockets, clock, timers, tasks); consent re-checked at collect;
+overflow/empty/non-monotonic/product-without-ingress/no-session all
+fail closed; transient IDs never leave `collect`;
+`live_qualification` is always `"not-run"`. Covered by
+`crates/i2pr-daemon/tests/ssu2_qualification_receipts.rs` (9 tests:
+collector gates, id-independence, bootstrap-insert and
+floodfill-served fixtures over live sessions, fabricated/replay/
+cancelled/link-loss/overflow/consent/default-off negatives) plus the
+runtime observer contract tests (epoch-boundary restart rejection).
+
+**Layering findings (honestly recorded, no new scope):** no
+owner-level record-content network gate exists at any owner —
+bootstrap and floodfill serving alike store a correctly signed
+foreign-`netId` record. Network enforcement lives at the session
+codec (`SSU2_NETWORK_ID` byte-14 check,
+`long_header_rejects_bad_version_network_flags_and_ids`). A
+record-content gate would be a NetDB plan-of-record, not 480. The
+hook fires on owner dispatch for the exact ingress tuple; it does not
+re-judge owner acceptance — composition's served arms own that mapping.
+
+**Plan 476 continuation (476-owned, still open):** the guarded
+per-host process/session executor drains live epochs through
+`Ssu2DaemonHandle::qualification_observer` and this collector
+(spawning, per-host collection, receipt exchange, revocation).
+Tier B additionally needs the independently-addressed explicitly
+owner-authorized private host pair. Do not mark 476 complete by
+passing 480.

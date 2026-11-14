@@ -39,7 +39,7 @@ use i2pr_proto::{
 };
 
 use crate::identity::DestinationIdentity;
-use crate::streaming::transport::TransportSendRequest;
+use crate::streaming::transport::{OutboundPacketKind, TransportSendRequest};
 
 /// I2CP protocol number selected for signed repliable datagrams.
 pub const DATAGRAM1_PROTOCOL: u8 = PROTOCOL_TYPE_DATAGRAM;
@@ -339,6 +339,7 @@ impl DatagramManager {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: OutboundPacketKind::Datagram,
         };
         self.outbound.push_back(transport.clone());
         Ok(transport)

@@ -34,8 +34,9 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use i2pr_proto::TunnelDataMessage;
 use i2pr_runtime::CancellationToken;
@@ -43,6 +44,7 @@ use i2pr_transport::PeerId;
 use rand_core::{CryptoRng, RngCore, TryCryptoRng};
 use thiserror::Error;
 
+use crate::exploratory_build::CREATOR_CORRELATION_RETENTION_MS;
 use crate::router_i2np::{
     RouterDeliveryOutcome, RouterDeliveryService, RouterI2npKind, RouterI2npOutcome,
     dispatch_router_i2np_with_transit_bodies, extract_inner_short_build,
@@ -51,6 +53,8 @@ use crate::transit_compose::{
     SelfReplyOtbrmArgs, TransitBuildService, TransitDispatch, TransitDispatchRole,
     TransitIngressGate, TransitLiveStateSnapshot, TransitServiceError, TransitTunnelDataDispatch,
 };
+use crate::transit_participation::{TransitParticipationBinding, TransitRefusalReason};
+use crate::transit_volume::TransitVolumeCounters;
 
 /// Live transit owner errors.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -186,6 +190,9 @@ pub enum TransitDataDisposition {
     CreatorOwned,
     /// Transit was disabled; the caller keeps its existing path.
     Disabled,
+    /// Plan 492: the participation posture refused the relay. The cell was
+    /// dropped closed: the share limit is enforced, not advisory.
+    ParticipationRefused(TransitRefusalReason),
     /// Transit forwarded one cell; the value carries the bounded
     /// routing facts the forward used plus the terminal delivery
     /// outcome observed on the router seam.
@@ -292,6 +299,10 @@ pub enum LiveBuildOutcome {
     /// Creator correlation precedes transit; the existing
     /// coordinator behavior is preserved.
     CreatorBypass,
+    /// Plan 492: the participation posture refused the request. The
+    /// refusal is typed and counted by the participation owner; the
+    /// request never reached the transit data plane.
+    ParticipationRefused(TransitRefusalReason),
     /// Transit dispatch completed; the value is the terminal
     /// delivery outcome plus the non-secret typed build evidence
     /// observed on the router seam.
@@ -504,25 +515,118 @@ pub enum LiveInboundOutcome {
 pub type TransitLocalSink =
     Box<dyn FnMut(&i2pr_tunnel::RouterDeliveryAction) -> Result<(), TransitLiveError> + Send>;
 
+/// Plan 508: the number of creator-correlated facts the owner holds.
+///
+/// The counts are the observable evidence that the facts are bounded over
+/// the router's lifetime rather than growing with every build the router
+/// performs. They carry counts only: no peer, identifier or payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CreatorCorrelationCounts {
+    /// The number of live creator-correlated build facts.
+    pub builds: usize,
+    /// The number of live creator-correlated TunnelData facts.
+    pub data: usize,
+    /// The number of live creator-correlated TunnelGateway facts.
+    pub gateways: usize,
+}
+
+/// Plan 508: the creator-correlated facts the live owner must bypass,
+/// with their expiries.
+///
+/// The facts are bounded by their expiry, so membership is a question about
+/// **now** and not about the set. The wrapper owns that question once, so
+/// a use site cannot consult a fact without consulting its expiry.
+///
+/// The membership test is spelled `contains`, so Plan 492's dispatch-order
+/// guard -- whose rule is that the creator correlation check precedes the
+/// participation posture and the transit dispatch -- still names exactly
+/// the check it names today, and that guard is left byte-identical.
+#[derive(Debug)]
+struct CreatorFacts<K: Ord> {
+    /// The recorded facts and their expiry, in seconds.
+    facts: BTreeMap<K, u64>,
+}
+
+impl<K: Ord> CreatorFacts<K> {
+    /// Creates an empty set of facts.
+    fn new() -> Self {
+        Self {
+            facts: BTreeMap::new(),
+        }
+    }
+
+    /// Records a fact with its expiry, in seconds.
+    fn insert(&mut self, key: K, expiry_seconds: u64) {
+        self.facts.insert(key, expiry_seconds);
+    }
+
+    /// Returns whether the fact is recorded **and still live** at
+    /// `now_seconds`.
+    ///
+    /// Plan 508: the comparison floors the clock, so a fact is honoured for
+    /// at least as long as its expiry allows. That is the safe direction:
+    /// the bypass is a decline, and a fact kept one second too long only
+    /// makes the owner decline traffic it could have relayed.
+    fn contains(&self, key: &K, now_seconds: u64) -> bool {
+        self.facts
+            .get(key)
+            .is_some_and(|expiry| *expiry > now_seconds)
+    }
+
+    /// Returns whether the fact is recorded and still live at `now_ms`.
+    ///
+    /// Plan 508: the millisecond clock is floored to seconds here, so the
+    /// comparison the use sites make is always in the **safe** direction: a
+    /// fact is honoured for at least as long as its expiry allows. The
+    /// bypass is a decline, and a fact kept one second too long only makes
+    /// the owner decline traffic it could have relayed.
+    fn contains_ms(&self, key: &K, now_ms: u64) -> bool {
+        self.contains(key, now_ms / 1_000)
+    }
+
+    /// Drops the facts that have expired.
+    fn retain_live(&mut self, now_seconds: u64) {
+        self.facts.retain(|_, expiry| *expiry > now_seconds);
+    }
+
+    /// The number of recorded facts.
+    fn len(&self) -> usize {
+        self.facts.len()
+    }
+}
+
+impl<K: Ord> Default for CreatorFacts<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The actual live authenticated SSU2/router-I2NP inbound owner for
 /// controlled transit (Plan 254 work packages C–G).
 ///
-/// Default construction is transit-disabled; controlled
-/// tests/qualification enable transit through [`Self::enable`].
+/// Default construction is transit-disabled; the owner is enabled through
+/// [`Self::enable`], which the controlled tests/qualification do directly
+/// and Plan 502's production composition does behind the operator's
+/// default-off `[transit] participation` opt-in.
 /// No public RouterInfo advertisement, no second socket or event
 /// loop, no public config surface. Creator/service ownership probes
-/// are typed `BTreeSet`s installed by the controlled harness; the
-/// production daemon installs its real coordinator/registry facts
-/// through the same narrow setters.
+/// are installed by the controlled harness; the production daemon
+/// installs its real coordinator/registry facts through the same narrow
+/// setters. Plan 508: each probe carries an **expiry** derived from the
+/// coordinator's own bounds, so the probes are bounded over the router's
+/// lifetime rather than growing with every build the router performs.
 pub struct TransitLiveOwner<R> {
     owner: TransitOwner,
     rng: R,
     delivery: RouterDeliveryService,
     cancellation: CancellationToken,
-    creator_builds: BTreeSet<(i2pr_proto::Hash, u32)>,
-    creator_data: BTreeSet<u32>,
-    creator_gateways: BTreeSet<u32>,
+    creator_builds: CreatorFacts<(i2pr_proto::Hash, u32)>,
+    creator_data: CreatorFacts<u32>,
+    creator_gateways: CreatorFacts<u32>,
     local_sink: Option<TransitLocalSink>,
+    /// Plan 492: the operator-opted participation posture the transit path
+    /// is admitted against.
+    participation: TransitParticipationBinding,
 }
 
 impl<R: TryCryptoRng + Send> fmt::Debug for TransitLiveOwner<R> {
@@ -534,6 +638,7 @@ impl<R: TryCryptoRng + Send> fmt::Debug for TransitLiveOwner<R> {
             .field("creator_data", &self.creator_data.len())
             .field("creator_gateways", &self.creator_gateways.len())
             .field("has_local_sink", &self.local_sink.is_some())
+            .field("participation", &self.participation)
             .finish_non_exhaustive()
     }
 }
@@ -556,19 +661,42 @@ where
             rng,
             delivery,
             cancellation,
-            creator_builds: BTreeSet::new(),
-            creator_data: BTreeSet::new(),
-            creator_gateways: BTreeSet::new(),
+            creator_builds: CreatorFacts::new(),
+            creator_data: CreatorFacts::new(),
+            creator_gateways: CreatorFacts::new(),
             local_sink: None,
+            participation: TransitParticipationBinding::disabled(),
         }
     }
 
-    /// Installs the controlled transit service. Explicit opt-in for
-    /// tests/qualification only.
-    pub fn enable(&mut self, service: TransitBuildService) {
+    /// Installs the controlled transit service **and** the participation
+    /// posture it is admitted against.
+    ///
+    /// Plan 492: there is exactly one way for the transit path to admit
+    /// work, and it is through the participation posture. A disabled
+    /// posture refuses every request with a typed reason, so installing the
+    /// transit machinery without a posture cannot relay anything.
+    pub fn enable(
+        &mut self,
+        service: TransitBuildService,
+        participation: TransitParticipationBinding,
+    ) {
         let mut gate = TransitIngressGate::disabled();
         gate.enable(service);
         self.owner.gate = gate;
+        self.participation = participation;
+    }
+
+    /// Returns the participation posture the transit path is admitted
+    /// against.
+    pub const fn participation(&self) -> &TransitParticipationBinding {
+        &self.participation
+    }
+
+    /// Returns the participation posture for mutation, so an operator
+    /// posture change can be applied to an installed owner.
+    pub fn participation_mut(&mut self) -> &mut TransitParticipationBinding {
+        &mut self.participation
     }
 
     /// Returns whether controlled transit is enabled.
@@ -578,20 +706,80 @@ where
 
     /// Records a creator-correlated `(peer, message_id)` build the
     /// live owner must bypass.
-    pub fn install_creator_build(&mut self, peer: PeerId, message_id: u32) {
-        self.creator_builds.insert((peer.hash(), message_id));
+    ///
+    /// Plan 508: the fact carries an **expiry**, derived from the
+    /// coordinator's own bounds, so the set is bounded over the router's
+    /// lifetime instead of growing with every build the router performs.
+    /// Re-installing a fact refreshes its expiry.
+    pub fn install_creator_build(&mut self, peer: PeerId, message_id: u32, now_ms: u64) {
+        self.creator_builds.insert(
+            (peer.hash(), message_id),
+            Self::creator_expiry_seconds(now_ms),
+        );
+    }
+
+    /// The expiry, in seconds, of a creator-correlated fact installed at
+    /// `now_ms`.
+    ///
+    /// Plan 508: the window is the coordinator's own bound, and the ceiling
+    /// keeps the stored second no earlier than the true millisecond expiry, so
+    /// a fact is never declined before it has expired. The rounding is always
+    /// in the **safe** direction: the bypass is a decline, and a fact kept one
+    /// second too long only makes the owner decline traffic it could have
+    /// relayed.
+    fn creator_expiry_seconds(now_ms: u64) -> u64 {
+        now_ms
+            .saturating_add(CREATOR_CORRELATION_RETENTION_MS)
+            .saturating_add(999)
+            / 1_000
     }
 
     /// Records a creator/service-owned TunnelData receive id that
     /// must never reach transit.
-    pub fn install_creator_data(&mut self, tunnel_id: u32) {
-        self.creator_data.insert(tunnel_id);
+    ///
+    /// Plan 508: the fact carries an **expiry**.
+    pub fn install_creator_data(&mut self, tunnel_id: u32, now_ms: u64) {
+        self.creator_data
+            .insert(tunnel_id, Self::creator_expiry_seconds(now_ms));
     }
 
     /// Records a creator/service-owned TunnelGateway tunnel id that
     /// must bypass transit.
-    pub fn install_creator_gateway(&mut self, tunnel_id: u32) {
-        self.creator_gateways.insert(tunnel_id);
+    ///
+    /// Plan 508: the fact carries an **expiry**.
+    pub fn install_creator_gateway(&mut self, tunnel_id: u32, now_ms: u64) {
+        self.creator_gateways
+            .insert(tunnel_id, Self::creator_expiry_seconds(now_ms));
+    }
+
+    /// Drops the creator-correlated facts that have expired.
+    ///
+    /// Plan 508: the sweep reclaims the memory the facts occupy. It rides
+    /// the pump tick that already installs them, so the owner gains no
+    /// second timer and no second task.
+    ///
+    /// The comparison reads the clock with a **floor**, so a fact is kept
+    /// for at least as long as its expiry allows. That is the safe
+    /// direction: the bypass is a *decline*, and a fact that is kept one
+    /// second too long only makes the owner decline traffic it could have
+    /// relayed.
+    pub fn expire_creator_correlation(&mut self, now_ms: u64) {
+        let now_seconds = now_ms / 1_000;
+        self.creator_builds.retain_live(now_seconds);
+        self.creator_data.retain_live(now_seconds);
+        self.creator_gateways.retain_live(now_seconds);
+    }
+
+    /// Returns the number of creator-correlated facts the owner holds.
+    ///
+    /// Plan 508: the counts are the observability seam the retention
+    /// lane reads. They carry counts only.
+    pub fn creator_correlation_counts(&self) -> CreatorCorrelationCounts {
+        CreatorCorrelationCounts {
+            builds: self.creator_builds.len(),
+            data: self.creator_data.len(),
+            gateways: self.creator_gateways.len(),
+        }
     }
 
     /// Installs the bounded LOCAL consumer for OBEP semantic
@@ -747,7 +935,8 @@ where
         // Creator correlation uses the inner build message id the
         // service recovered; a match means our own coordinator
         // originated this build and transit must not claim it.
-        if self.creator_builds.contains(&(peer.hash(), inner_msgid)) {
+        let creator_key = (peer.hash(), inner_msgid);
+        if self.creator_builds.contains(&creator_key, now_seconds) {
             return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
         }
         self.deliver_dispatched(dispatch, peer, now_seconds.saturating_mul(1_000))
@@ -900,12 +1089,23 @@ where
         message_id: u32,
         now_seconds: u64,
     ) -> Result<LiveInboundOutcome, TransitLiveError> {
-        if self.creator_builds.contains(&(peer.hash(), message_id)) {
+        let creator_key = (peer.hash(), message_id);
+        if self.creator_builds.contains(&creator_key, now_seconds) {
             return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
         }
         if !self.is_enabled() {
             return Ok(LiveInboundOutcome::Build(
                 LiveBuildOutcome::DisabledReserved,
+            ));
+        }
+        // Plan 492: the participation posture is consulted **after** the
+        // creator correlation check and **before** the transit dispatch, so
+        // the documented order (creator/service first, transit second,
+        // unknown fail-closed) is unchanged and a refused request never
+        // allocates a registration.
+        if let Some(reason) = self.refuse_unless_participating(peer, now_seconds) {
+            return Ok(LiveInboundOutcome::Build(
+                LiveBuildOutcome::ParticipationRefused(reason),
             ));
         }
         let dispatch = {
@@ -920,6 +1120,45 @@ where
         self.deliver_dispatched(dispatch, peer, now_seconds.saturating_mul(1_000))
     }
 
+    /// Revalidates the participation posture and asks it to admit one
+    /// transit request.
+    ///
+    /// Returns the typed refusal reason when the request must not be
+    /// admitted. The counts handed to the posture are the transit
+    /// service's own registration counts, so the router-wide limit and the
+    /// per-peer cap are measured against the data plane rather than a
+    /// second ledger.
+    fn refuse_unless_participating(
+        &mut self,
+        peer: &PeerId,
+        now_seconds: u64,
+    ) -> Option<TransitRefusalReason> {
+        if !self.participation.revalidate() {
+            let reason = self
+                .participation
+                .owner()
+                .current_refusal()
+                .unwrap_or(TransitRefusalReason::Revoked);
+            // The revalidation itself refused; the refusal is still counted,
+            // so a revoked posture is never a silent skip.
+            self.participation.owner_mut().record_refusal(reason);
+            return Some(reason);
+        }
+        let (active_tunnels, active_for_peer) = {
+            let Some(service) = self.owner.gate.service_mut() else {
+                return Some(TransitRefusalReason::ParticipationDisabled);
+            };
+            (
+                service.active_count(),
+                usize::from(service.active_for_peer(peer)),
+            )
+        };
+        let owner = self.participation.owner_mut();
+        owner
+            .admit(&peer.hash(), active_tunnels, active_for_peer, now_seconds)
+            .err()
+    }
+
     fn handle_tunnel_data_inner(
         &mut self,
         tunnel_id: u32,
@@ -931,7 +1170,7 @@ where
         // Ownership order: creator/service first, transit second,
         // unknown fail closed. The probe is consulted before any
         // transit state mutation.
-        if self.creator_data.contains(&tunnel_id) {
+        if self.creator_data.contains_ms(&tunnel_id, now_ms) {
             return Ok(LiveInboundOutcome::Data(
                 TransitDataDisposition::CreatorOwned,
             ));
@@ -959,6 +1198,31 @@ where
             } => {
                 if self.cancellation.is_cancelled() {
                     return Ok(LiveInboundOutcome::Data(TransitDataDisposition::Dropped));
+                }
+                // Plan 492: the share is charged **before** the cell leaves
+                // this router. A cell the posture cannot pay for is dropped
+                // closed: the share limit is enforced, not advisory, and it
+                // never grows past the limit.
+                if !self.participation.revalidate() {
+                    let reason = self
+                        .participation
+                        .owner()
+                        .current_refusal()
+                        .unwrap_or(TransitRefusalReason::Revoked);
+                    self.participation.owner_mut().record_refusal(reason);
+                    return Ok(LiveInboundOutcome::Data(
+                        TransitDataDisposition::ParticipationRefused(reason),
+                    ));
+                }
+                let relayed_bytes = u64::try_from(next_cell.data.len()).unwrap_or(u64::MAX);
+                if let Err(reason) = self
+                    .participation
+                    .owner_mut()
+                    .charge_relay(relayed_bytes, now_ms / 1_000)
+                {
+                    return Ok(LiveInboundOutcome::Data(
+                        TransitDataDisposition::ParticipationRefused(reason),
+                    ));
                 }
                 let service = self
                     .owner
@@ -1044,7 +1308,7 @@ where
         peer: PeerId,
         now_ms: u64,
     ) -> Result<LiveInboundOutcome, TransitLiveError> {
-        if self.creator_gateways.contains(&parts.tunnel_id) {
+        if self.creator_gateways.contains_ms(&parts.tunnel_id, now_ms) {
             return Ok(LiveInboundOutcome::Gateway(
                 LiveGatewayOutcome::CreatorOwned,
             ));
@@ -1352,6 +1616,20 @@ where
             return false;
         };
         service.forget_peer_by_session(peer)
+    }
+
+    /// Returns the shared transit-volume counters of the installed
+    /// service.
+    ///
+    /// `None` while the owner holds no transit service, which is the
+    /// product posture: a router that constructed no service owns no
+    /// counters, and the publication surface must report that absence
+    /// rather than a substituted zero.
+    pub fn volume_counters(&mut self) -> Option<Arc<Mutex<TransitVolumeCounters>>> {
+        self.owner
+            .gate
+            .service_mut()
+            .map(|service| service.volume_handle())
     }
 
     /// Marks the owner cancelled and drains transit synchronously.

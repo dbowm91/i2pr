@@ -828,8 +828,11 @@ fn local_ls2_publication_traverses_tunnel_with_protocol_ack() {
         .expect("compose publication");
     assert!(proof.via_tunnel);
     // Protocol-derived DeliveryStatus acknowledgement completes the row.
-    let acked = coord.correlate_ls2_publication_status(0xE064).expect("ack");
-    assert_eq!(acked, request_id);
+    let acked = coord
+        .correlate_ls2_publication_status(0xE064, 0x5252)
+        .expect("ack");
+    assert_eq!(acked.request_id, request_id);
+    assert_eq!(acked.inbound_tunnel_id, 0x5252);
     assert_eq!(coord.counters().publications_acked, 1);
 }
 

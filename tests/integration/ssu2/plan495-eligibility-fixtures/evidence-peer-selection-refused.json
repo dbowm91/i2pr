@@ -1,0 +1,28 @@
+{
+  "attempts": [
+    {
+      "cause": "intentional-withholding",
+      "consumes_budget": true,
+      "outcome": "peer-selection-refused"
+    }
+  ],
+  "attempts_consumed": 1,
+  "cause": "intentional-withholding",
+  "family": "i2pd",
+  "label": "peer-selection-refused",
+  "outcome": "peer-selection-refused",
+  "schema": "i2pr-plan495-lane-evidence-v1",
+  "target_tier": 1,
+  "tiers": [
+    {
+      "reason": "ri-persisted",
+      "state": "pass",
+      "tier": 0
+    },
+    {
+      "reason": "peer-selection-declined",
+      "state": "fail",
+      "tier": 1
+    }
+  ]
+}

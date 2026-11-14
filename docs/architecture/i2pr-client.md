@@ -640,15 +640,37 @@ client crate owns the state machine that drives it. Verified from source:
   streaming packet (inbound SYN, data, CLOSE, RESET) lands on the receiver-side
   mirror. The recovered packet bytes are then passed unchanged to
   `StreamingDestinationAdapter::receive`.
-- **Plan 152 receive-window / ACK gating (no wire change)** — undrained
-  delivered bytes are capped per connection at
+- **Plan 487 receiver-ACK contract (transport state, never application drain)** —
+  the acknowledgement is a function of what was **received**, never of whether the
+  local application has read the bytes. This matches the reference
+  implementations read at the exact pins: i2pd 2.61.0 schedules the ACK when a
+  packet is received and still calls `SendQuickAck()` when it *drops* an overflow
+  packet (`libi2pd/Streaming.cpp:256-269`, `:289-300`); I2P Java 2.13.0 schedules
+  it when `messageReceived` reports a new in-sequence packet and calls
+  `ackImmediately()` on inbound-buffer overflow
+  (`.../impl/ConnectionPacketHandler.java:145-161`, `:180-236`). Plan 152 D1's
+  drain-coupled gate — a standalone ACK snoozed while over cap, and a piggybacked
+  DATA carrying `FLAG_NO_ACK` — is **removed**. A standalone ACK is emitted on
+  schedule, an immediate-ACK request is honoured, and a DATA packet always
+  piggybacks the real `ackThrough`/NACK view.
+- **Plan 487 inbound-buffer bound (a drop bound, not an ACK gate)** — undrained
+  delivered bytes stay capped per connection at
   `max_recv_window_packets × MAX_PACKET_PAYLOAD_BYTES`
-  (`delivered_cap_bytes()`). While over cap, a standalone ACK snoozes by one
-  delayed-ACK interval instead of emitting (emitting would slide the peer
-  window and grow the backlog without bound), and a piggybacked DATA carries
-  `FLAG_NO_ACK`. An observed duplicate re-arms the coalesced standalone-ACK
-  deadline to *now* (Plan 152 D2), so one lost ACK cannot strand the send
-  window. ACK-only packets still never schedule ACKs (one-way invariant).
+  (`delivered_cap_bytes()`). An in-order payload that would exceed the cap is
+  **not admitted** to the receive window — so the acknowledgement ceiling does
+  not advance and the peer will retransmit once the application drains — and the
+  peer is **choked** with the reference's own vocabulary: the
+  `DELAY_REQUESTED` flag plus `DELAY_CHOKE` (`61000`, the value both references
+  recognise as a choke) rides on the next outbound packet for that connection.
+  Out-of-order payloads are unaffected: they enter the bounded reorder buffer,
+  which carries its own bound. The delivered-byte accounting is retained as the
+  **application-visible backpressure signal**; the runtime pumps
+  (`drain_delivered_for`) drain eagerly and no caller relies on the
+  acknowledgement being withheld.
+- **Plan 152 D2 duplicate re-arm** — an observed duplicate re-arms the coalesced
+  standalone-ACK deadline to *now*, so one lost ACK cannot strand the send
+  window. ACK-only packets still never schedule ACKs (one-way invariant, and no
+  ACK-of-ACK loop).
 - **Plan 134 ceiling** — `TooFarAhead` packets cannot advance
   `highest_received` or contaminate later ACK/NACK and piggyback state.
 
@@ -889,6 +911,59 @@ refresh.**
   `PrivateKeyFile` codec, with an explicit instruction not to add consumers
   without an API review. The narrow-accessor rule for the identity is
   otherwise intact.
+
+## The destination pool's failure path (Plan 512)
+
+Plan 487's F3 recorded that the destination inbound pool has no transit-hop
+failure detection: a dead transit hop is invisible to the router until the
+tunnel expires, so a destination whose tunnels die with a hop is not
+replenished until the lease expires.
+
+The **consequences** of a failure were already implemented in this crate
+before Plan 512. The plan adds the **detection** and the **routing**.
+
+### The path a failed tunnel takes
+
+1. `DestinationRuntime::mark_tunnel_failed` removes the tunnel from the
+   pool's usable set (`DestinationTunnelPool::mark_failed`). The runtime's
+   own state becomes `Degraded`.
+2. `DestinationRuntime::inbound_lease_sources` no longer yields the failed
+   tunnel, so the **advertised** lease set changes.
+3. `LeaseSetLifecycle::refresh` classifies the change as
+   `LeaseSetRotationCause::TunnelSetChanged` — an ordinary tunnel set change,
+   a tunnel failed or withdrawn — and returns
+   `LeaseSetDecision::Regenerate`. The daemon's tick notices that the
+   installed lease set no longer matches the pool's usable set and marks the
+   destination for republication.
+4. `DestinationRuntime::inbound_replenishment_deficit` grows, and the
+   existing submit path builds the replacement.
+
+Step 2 is the hinge: a failed tunnel is *not* advertised, so a peer that
+learns the new lease set stops sending into the dead tunnel. That is the
+whole of the republication mechanism, and it was already here.
+
+### What Plan 512 adds on top
+
+- The **detection**: the daemon's tunnel liveness scheduler now tracks the
+  destination role's pairs, and a pair that has been **proven** and then
+  misses **two consecutive** responses fails the destination's inbound
+  tunnel through `mark_tunnel_failed`.
+- The **routing**: the failure reaches the right destination. The binding
+  that maps the coordinator's destination-role slot to the destination
+  runtime's pool slot lives in the daemon, because the pool slot is the
+  client's and the coordinator slot is the daemon's.
+- The **last-tunnel rule**: i2pd's *"don't fail last tunnel"* rule is adopted
+  verbatim. A destination that holds a single inbound tunnel is not failed,
+  because failing it would leave the destination with no path and no
+  advertisement. The refusal is **counted**, so the situation is observable
+  rather than silent.
+
+### What is deliberately not claimed
+
+The failure is a **pair-level** fact: the probe did not come back. This crate
+carries no peer profile for the failure and no per-hop attribution — the
+decision names a pool slot and nothing else. Neither reference attributes
+the fault to a hop either.
 
 ## Cross-references
 

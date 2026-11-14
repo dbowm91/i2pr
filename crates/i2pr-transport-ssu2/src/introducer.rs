@@ -246,11 +246,15 @@ impl IntroducerTable {
 
     /// Converts live records into validated [`Ssu2Introducer`] values
     /// for the Plan 159 publication builder.
+    ///
+    /// The SSU2 introducer tuple is the introducer's router hash, its
+    /// expiry and its relay tag. The record's endpoint and intro key
+    /// belong to the SSU 1 shape and are not published for SSU2.
     pub fn validated_introducers(&mut self, now_secs: u64) -> Vec<Ssu2Introducer> {
         self.select_live(now_secs)
             .into_iter()
             .filter_map(|record| {
-                Ssu2Introducer::new(record.endpoint, record.intro_key, record.relay_tag).ok()
+                Ssu2Introducer::new(record.peer_hash, record.expires_secs, record.relay_tag).ok()
             })
             .collect()
     }

@@ -16,7 +16,10 @@ use i2pr_proto::{Date, Mapping, RouterAddress, RouterInfo};
 use thiserror::Error;
 
 use crate::router_info::{RouterHash, RouterInfoValidationError, ValidatedRouterInfo, router_hash};
-use crate::{FloodfillAdvertisementPermit, LoopbackReachabilityProof, is_qualified_ssu2_address};
+use crate::{
+    FloodfillAdvertisementPermit, LoopbackReachabilityProof, is_qualified_ssu2_address,
+    is_qualified_ssu2_introducer_address, is_qualified_ssu2_relay_role_address,
+};
 
 /// Conservative Java-compatible bandwidth tier derived from configured
 /// directional byte rates and the operator's integer share percentage.
@@ -129,6 +132,15 @@ pub enum LocalRouterInfoError {
     /// address and one live NTCP2 address, both with fixed loopback endpoints.
     #[error("controlled dual-transport floodfill addresses are invalid")]
     InvalidControlledTransportAddresses,
+    /// The supplied SSU2 address is not one the netdb's own qualification
+    /// rule accepts.
+    ///
+    /// Plan 520: the router's own published record may carry one qualified
+    /// SSU2 address, and the qualification rule is the netdb's own
+    /// `is_qualified_ssu2_address`. An address that rule refuses is never
+    /// signed and never installed.
+    #[error("local router info requires one qualified SSU2 address")]
+    UnqualifiedAddress,
     /// The constructed record did not pass the standard validator.
     #[error("local router info failed validation: {0}")]
     Validation(#[from] RouterInfoValidationError),
@@ -234,6 +246,93 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         self.build(published, Mapping::empty())
     }
 
+    /// Builds the local signed RouterInfo carrying **one** qualified SSU2
+    /// address.
+    ///
+    /// Plan 520: the router publishes its own record to the network, and a
+    /// record that names no endpoint cannot be found. This builder is the
+    /// **non-floodfill** way to carry an address: it takes no permit, so the
+    /// `f` capability stays unreachable here, and it refuses every capability
+    /// letter the ordinary builder refuses.
+    ///
+    /// The address is accepted only when the netdb's **own** qualification
+    /// rule accepts it (`is_qualified_ssu2_address`): the transport style is
+    /// `SSU2`, the options are exactly `host`, `port`, `mtu`, `v`, `caps`,
+    /// `s` and `i`, the port is non-zero, the MTU is within `1280..=9000`,
+    /// `v` is `2`, and the capability string is exactly the address family.
+    /// An address the rule refuses is never signed and never installed.
+    ///
+    /// The record carries no peer list: the ordinary builder carries none
+    /// either, and the router's own introducer set is not this builder's
+    /// business.
+    pub fn build_with_ssu2_address(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        Self::validate_options(&options)?;
+        if !is_qualified_ssu2_address(&address) {
+            return Err(LocalRouterInfoError::UnqualifiedAddress);
+        }
+        self.sign_addressed_many(published, options, vec![address])
+    }
+
+    /// Builds a signed RouterInfo carrying one **introducer-only** SSU2
+    /// address.
+    ///
+    /// Plan 523. The specification's introducer-only form omits `host` and
+    /// `port` and publishes the introducer groups instead, so the direct
+    /// builder's rule cannot accept it. This builder's authority is the
+    /// netdb's own `is_qualified_ssu2_introducer_address`: an address that
+    /// rule refuses is never signed and never installed.
+    ///
+    /// The builder carries no floodfill permit, so it cannot produce
+    /// `caps=f`, and a record it builds is an ordinary router's record.
+    pub fn build_with_ssu2_introducer_address(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        Self::validate_options(&options)?;
+        if !is_qualified_ssu2_introducer_address(&address) {
+            return Err(LocalRouterInfoError::UnqualifiedAddress);
+        }
+        self.sign_addressed_many(published, options, vec![address])
+    }
+
+    /// Builds a signed RouterInfo carrying one **role-bearing** SSU2
+    /// address.
+    ///
+    /// Plan 526. The specification's Relay capability is advertised with a
+    /// `"C"` in the `caps` option, and the reference publishes it on the
+    /// **published** form only (`libi2pd/RouterInfo.cpp:1350`-`:1373`). The
+    /// netdb's **direct** rule demands the capability string be exactly the
+    /// address's own family, so a router that advertises the role needs a
+    /// builder of its own.
+    ///
+    /// This builder's authority is the netdb's own
+    /// `is_qualified_ssu2_relay_role_address`: an address that rule refuses
+    /// is never signed and never installed. The **direct** builder and the
+    /// **introducer** builder are unchanged and still refuse this form.
+    ///
+    /// The builder carries no floodfill permit, so it cannot produce
+    /// `caps=f`. That matches the reference, which clears the introducer
+    /// role for a floodfill router (`libi2pd/RouterContext.cpp:655`).
+    pub fn build_with_ssu2_relay_role_address(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        Self::validate_options(&options)?;
+        if !is_qualified_ssu2_relay_role_address(&address) {
+            return Err(LocalRouterInfoError::UnqualifiedAddress);
+        }
+        self.sign_addressed_many(published, options, vec![address])
+    }
+
     /// Builds a floodfill RouterInfo only from an opaque active-role permit and a qualified SSU2
     /// address. Ordinary `build` remains unable to produce `caps=f`.
     pub fn build_floodfill(
@@ -258,26 +357,91 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         addresses: Vec<RouterAddress>,
         permit: &FloodfillAdvertisementPermit,
     ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
-        if addresses.len() != 2
-            || addresses
-                .iter()
-                .filter(|address| address.transport_style() == "SSU2")
-                .count()
-                != 1
-            || addresses
-                .iter()
-                .filter(|address| address.transport_style() == "NTCP2")
-                .count()
-                != 1
-            || !addresses.iter().any(is_qualified_ssu2_address)
-            || !addresses
-                .iter()
-                .filter(|address| address.transport_style() == "NTCP2")
-                .all(is_controlled_loopback_ntcp2_address)
-        {
+        if !Self::dual_loopback_addresses_valid(&addresses) {
             return Err(LocalRouterInfoError::InvalidControlledTransportAddresses);
         }
         self.build_floodfill_with_addresses(published, options, addresses, permit, "f")
+    }
+
+    /// Dual-loopback counterpart to
+    /// [`Self::build_floodfill_with_bandwidth_class`]: the enforced
+    /// capacity tier is appended beside `f` (`fN`, `fO`, ...) only when
+    /// the daemon's eligibility gate derived it from a current healthy
+    /// shaper. Address gates are identical to the classless dual form.
+    pub fn build_controlled_floodfill_with_bandwidth_class_dual(
+        &self,
+        published: Date,
+        options: Mapping,
+        addresses: Vec<RouterAddress>,
+        permit: &FloodfillAdvertisementPermit,
+        class: BandwidthClass,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        if !class.supports_floodfill_role() {
+            return Err(LocalRouterInfoError::InvalidMapping {
+                context: "floodfill bandwidth class below pinned Java floor",
+            });
+        }
+        if !Self::dual_loopback_addresses_valid(&addresses) {
+            return Err(LocalRouterInfoError::InvalidControlledTransportAddresses);
+        }
+        let mut suffix = String::from("f");
+        suffix.push(class.as_capability());
+        self.build_floodfill_with_addresses(published, options, addresses, permit, &suffix)
+    }
+
+    /// Builds a controlled-loopback addressed RouterInfo carrying only
+    /// the enforced capacity tier (`L`, `M`, ...) and no floodfill
+    /// flag. This is the truthful-tier comparator form for candidates
+    /// whose derived class sits below the pinned Java floodfill floor:
+    /// the daemon publishes a reachable, biddable record without ever
+    /// claiming the `f` role the guard refuses. Address gates are
+    /// identical to the dual floodfill form, caller-supplied
+    /// capability letters stay forbidden, and no advertisement permit
+    /// is consumed because no floodfill role is advertised.
+    pub fn build_controlled_addressed_with_bandwidth_class(
+        &self,
+        published: Date,
+        options: Mapping,
+        addresses: Vec<RouterAddress>,
+        class: BandwidthClass,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        if !Self::dual_loopback_addresses_valid(&addresses) {
+            return Err(LocalRouterInfoError::InvalidControlledTransportAddresses);
+        }
+        Self::validate_options(&options)?;
+        let mut entries: Vec<_> = options
+            .entries()
+            .iter()
+            .map(|entry| (entry.key().to_owned(), entry.value().to_owned()))
+            .filter(|(key, _)| key != "caps")
+            .collect();
+        let mut tiered_caps = options.get("caps").unwrap_or("").to_owned();
+        tiered_caps.push(class.as_capability());
+        entries.push(("caps".to_owned(), tiered_caps));
+        let options = Mapping::from_entries(entries)
+            .map_err(|_| LocalRouterInfoError::InvalidMapping { context: "caps" })?;
+        self.sign_addressed_many(published, options, addresses)
+    }
+
+    /// Shared controlled-loopback transport gate: exactly one qualified
+    /// SSU2 address and one loopback NTCP2 address, no more, no less.
+    fn dual_loopback_addresses_valid(addresses: &[RouterAddress]) -> bool {
+        addresses.len() == 2
+            && addresses
+                .iter()
+                .filter(|address| address.transport_style() == "SSU2")
+                .count()
+                == 1
+            && addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .count()
+                == 1
+            && addresses.iter().any(is_qualified_ssu2_address)
+            && addresses
+                .iter()
+                .filter(|address| address.transport_style() == "NTCP2")
+                .all(is_controlled_loopback_ntcp2_address)
     }
 
     /// Builds a floodfill RouterInfo with a capacity tier supplied by the
@@ -597,7 +761,10 @@ pub fn options_to_sorted_entries(options: &Mapping) -> Option<Vec<(&str, &str)>>
 pub struct LocalRouterInfoSummary {
     /// Canonical local RouterHash.
     pub router_hash: RouterHash,
-    /// Number of `RouterAddress` entries (always zero under Plan 103).
+    /// Number of `RouterAddress` entries.
+    ///
+    /// Zero for the ordinary builder's record under Plan 103; one for the
+    /// Plan 520 addressed builder's record.
     pub address_count: usize,
     /// Publication timestamp carried by the local RouterInfo.
     pub published: Date,
@@ -858,6 +1025,102 @@ mod tests {
         i2pr_crypto::verify_router_info(local.router_info()).unwrap();
     }
 
+    /// Plan 479 — the dual class-bearing floodfill form appends the
+    /// enforced tier beside `f` and refuses a below-floor class with
+    /// the same context the single-address capacity path uses.
+    #[test]
+    fn controlled_dual_floodfill_builder_appends_enforced_tier_beside_f() {
+        let signer = bundle(0x417);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let permit = active_role_permit();
+        let local = builder
+            .build_controlled_floodfill_with_bandwidth_class_dual(
+                Date::from_millis(101),
+                controlled_router_options().unwrap(),
+                vec![
+                    qualified_ssu2_test_address(),
+                    qualified_ntcp2_test_address(),
+                ],
+                &permit,
+                BandwidthClass::N,
+            )
+            .unwrap();
+        assert_eq!(local.router_info().options().get("caps"), Some("fN"));
+        assert_eq!(local.router_info().addresses().len(), 2);
+        i2pr_crypto::verify_router_info(local.router_info()).unwrap();
+        assert_eq!(
+            builder
+                .build_controlled_floodfill_with_bandwidth_class_dual(
+                    Date::from_millis(102),
+                    controlled_router_options().unwrap(),
+                    vec![
+                        qualified_ssu2_test_address(),
+                        qualified_ntcp2_test_address(),
+                    ],
+                    &permit,
+                    BandwidthClass::L,
+                )
+                .unwrap_err(),
+            LocalRouterInfoError::InvalidMapping {
+                context: "floodfill bandwidth class below pinned Java floor"
+            }
+        );
+    }
+
+    /// Plan 479 — the truthful-tier comparator form carries the class
+    /// letter with no `f`, keeps both loopback addresses, verifies,
+    /// and still refuses caller-supplied capability letters.
+    #[test]
+    fn controlled_addressed_builder_carries_tier_without_floodfill_flag() {
+        let signer = bundle(0x418);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let local = builder
+            .build_controlled_addressed_with_bandwidth_class(
+                Date::from_millis(101),
+                controlled_router_options().unwrap(),
+                vec![
+                    qualified_ssu2_test_address(),
+                    qualified_ntcp2_test_address(),
+                ],
+                BandwidthClass::L,
+            )
+            .unwrap();
+        assert_eq!(local.router_info().options().get("caps"), Some("L"));
+        assert_eq!(local.router_info().addresses().len(), 2);
+        i2pr_crypto::verify_router_info(local.router_info()).unwrap();
+        let smuggled = Mapping::from_entries(vec![
+            ("router.version".into(), "0.9.69".into()),
+            ("netId".into(), "2".into()),
+            ("caps".into(), "L".into()),
+        ])
+        .unwrap();
+        assert_eq!(
+            builder
+                .build_controlled_addressed_with_bandwidth_class(
+                    Date::from_millis(102),
+                    smuggled,
+                    vec![
+                        qualified_ssu2_test_address(),
+                        qualified_ntcp2_test_address(),
+                    ],
+                    BandwidthClass::L,
+                )
+                .unwrap_err(),
+            LocalRouterInfoError::InvalidMapping { context: "caps" }
+        );
+        assert_eq!(
+            builder
+                .build_controlled_addressed_with_bandwidth_class(
+                    Date::from_millis(103),
+                    controlled_router_options().unwrap(),
+                    vec![qualified_ssu2_test_address()],
+                    BandwidthClass::L,
+                )
+                .unwrap_err(),
+            LocalRouterInfoError::InvalidControlledTransportAddresses
+        );
+    }
+
     #[test]
     fn controlled_dual_loopback_floodfill_builder_rejects_unbound_ntcp2_shapes() {
         let signer = bundle(0x416);
@@ -931,6 +1194,98 @@ mod tests {
         ])
         .unwrap();
         RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), address_options).unwrap()
+    }
+
+    /// Plan 520: the router's own published record must be able to name the
+    /// endpoint at which a peer reaches it. The builder that carries the
+    /// address is **not** the floodfill builder, so the `f` capability stays
+    /// unreachable through it.
+    #[test]
+    fn the_addressed_builder_carries_one_qualified_ssu2_address() {
+        let signer = bundle(0x520);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        let address = qualified_ssu2_test_address();
+        let local = builder
+            .build_with_ssu2_address(Date::from_millis(101), options, address.clone())
+            .expect("the qualified address is accepted");
+        assert_eq!(local.router_info().addresses().len(), 1);
+        assert_eq!(
+            local.router_info().addresses()[0].options().get("host"),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            local.router_info().addresses()[0].options().get("caps"),
+            Some("4")
+        );
+        // The builder signs the address list and no peer list: the router's
+        // own introducer set is not this builder's business.
+        assert_eq!(local.router_info().addresses().len(), 1);
+    }
+
+    /// The netdb's own qualification rule is the authority: an address it
+    /// refuses is never signed.
+    #[test]
+    fn an_unqualified_address_is_never_signed() {
+        let signer = bundle(0x521);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        // A capability string that is not exactly the family letter.
+        let wrong_caps = Mapping::from_entries(vec![
+            ("caps".into(), "4f".into()),
+            ("host".into(), "127.0.0.1".into()),
+            ("i".into(), crate::base64::encode(&[2; 32]).unwrap()),
+            ("mtu".into(), "1280".into()),
+            ("port".into(), "1234".into()),
+            ("s".into(), crate::base64::encode(&[1; 32]).unwrap()),
+            ("v".into(), "2".into()),
+        ])
+        .unwrap();
+        let refused = RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), wrong_caps)
+            .expect("the address itself is well formed");
+        assert!(matches!(
+            builder.build_with_ssu2_address(Date::from_millis(101), options.clone(), refused),
+            Err(LocalRouterInfoError::UnqualifiedAddress)
+        ));
+        // A transport style that is not SSU2.
+        let ntcp2 = qualified_ntcp2_test_address();
+        assert!(matches!(
+            builder.build_with_ssu2_address(Date::from_millis(101), options, ntcp2),
+            Err(LocalRouterInfoError::UnqualifiedAddress)
+        ));
+    }
+
+    /// The capability letters the ordinary builder refuses stay refused
+    /// here: the addressed builder is not a route to `caps=f`.
+    #[test]
+    fn the_addressed_builder_still_refuses_the_f_capability() {
+        let signer = bundle(0x522);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = Mapping::from_entries(vec![
+            ("caps".into(), "f".into()),
+            ("router.version".into(), CONTROLLED_ROUTER_VERSION.into()),
+        ])
+        .unwrap();
+        assert!(matches!(
+            builder.build_with_ssu2_address(
+                Date::from_millis(101),
+                options,
+                qualified_ssu2_test_address()
+            ),
+            Err(LocalRouterInfoError::InvalidMapping { context: "caps" })
+        ));
+    }
+
+    /// The ordinary builder is unchanged: it still carries no address.
+    #[test]
+    fn the_ordinary_builder_still_carries_no_address() {
+        let signer = bundle(0x523);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        let local = builder
+            .build(Date::from_millis(101), options)
+            .expect("the ordinary build succeeds");
+        assert!(local.router_info().addresses().is_empty());
     }
 
     /// Plan 306/ADR 0030: the proof-gated builder emits exactly `fR` —

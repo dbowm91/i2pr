@@ -9,7 +9,7 @@
 use i2pr_netdb::BandwidthClass;
 use i2pr_runtime::{BandwidthEnforcementPermit, BandwidthGovernor};
 
-pub(crate) struct CapacityEligibility {
+pub struct CapacityEligibility {
     permit: BandwidthEnforcementPermit,
     class: BandwidthClass,
 }
@@ -17,7 +17,6 @@ pub(crate) struct CapacityEligibility {
 impl CapacityEligibility {
     /// Derives an opaque eligibility value only from an enabled, healthy
     /// governor and a valid nonzero share. `None` models disabled enforcement.
-    #[allow(dead_code)]
     pub(crate) fn issue(governor: Option<&BandwidthGovernor>, share_percent: u8) -> Option<Self> {
         let governor = governor?;
         let permit = governor.capacity_permit(share_percent)?;

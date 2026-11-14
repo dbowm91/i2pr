@@ -146,6 +146,29 @@ pub fn encode_store_envelope(
         .map_err(|error| OutboundLookupError::Codec(error.to_string()))
 }
 
+/// Wrap a typed [`DatabaseStoreMessage`] in the short-transport I2NP
+/// envelope for DIRECT session delivery to a floodfill. Standard
+/// envelopes must never cross the SSU2 session boundary directly:
+/// the session layer parses every outbound message as short
+/// `[type(1)][id(4)][expiration-seconds(4)]`, so standard bytes
+/// expose the high half of millisecond time as seconds and the
+/// pinned reference drops the message as expired (observed live:
+/// every direct standard store expired with `SSU2: Message <id>
+/// expired`). Tunnel-carried inners stay standard (the tunnel
+/// endpoint checks the standard millisecond offset).
+pub fn encode_store_envelope_short(
+    store: &DatabaseStoreMessage,
+    message_id: u32,
+    expiration_seconds: u32,
+) -> Result<Vec<u8>, OutboundLookupError> {
+    let body = I2npBody::DatabaseStore(Box::new(store.clone()));
+    let envelope = I2npMessage::new_short_transport(message_id, expiration_seconds, body)
+        .map_err(|error| OutboundLookupError::Codec(error.to_string()))?;
+    envelope
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|error| OutboundLookupError::Codec(error.to_string()))
+}
+
 /// Compose one outbound `DatabaseLookup` dispatch through the
 /// supplied outbound role. The helper builds the standard I2NP
 /// envelope, drives `OutboundGatewayRole::forward_cells` to produce
@@ -500,6 +523,40 @@ mod tests {
             0,
         );
         (participant, obep)
+    }
+
+    #[test]
+    fn short_store_envelope_round_trips_for_direct_delivery() {
+        // Direct session delivery must be short-framed: the session
+        // layer parses `[type][id][expiration-seconds]`, so a
+        // standard envelope exposes millisecond time as seconds
+        // and the reference drops it as expired.
+        let store_message = DatabaseStoreMessage {
+            key: Hash::from_bytes([0xAAu8; 32]),
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data: i2pr_proto::DatabaseStoreData::RouterInfoCompressed(
+                i2pr_proto::DeferredPayload::new(vec![0xAA_u8; 64], MAX_I2NP_PAYLOAD_SIZE)
+                    .expect("payload"),
+            ),
+        };
+        let bytes = encode_store_envelope_short(&store_message, 0x1234_5678, 1_700_000_060)
+            .expect("envelope");
+        let decoded =
+            i2pr_proto::I2npMessage::decode_short_transport(&bytes, MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode");
+        let I2npBody::DatabaseStore(recovered) = decoded.body() else {
+            panic!("expected DatabaseStore body");
+        };
+        assert_eq!(recovered.key, store_message.key);
+        // The session layer reads bytes 5..9 as expiration seconds;
+        // the short envelope must carry seconds there, not the high
+        // half of millisecond time.
+        assert_eq!(
+            u32::from_be_bytes(bytes[5..9].try_into().expect("header")),
+            1_700_000_060
+        );
     }
 
     #[test]

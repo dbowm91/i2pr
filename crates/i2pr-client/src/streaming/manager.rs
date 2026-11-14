@@ -44,8 +44,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use i2pr_crypto::verify_signature;
 use i2pr_proto::streaming::{
-    CLOSE_FLAGS, ClientPayload, FLAG_NO_ACK, INITIAL_SYN_FLAGS, MAX_STREAMING_PACKET_BYTES,
-    RESET_FLAGS, SYN_RESPONSE_FLAGS, SignatureLocation, StreamingFlags,
+    CLOSE_FLAGS, ClientPayload, DELAY_CHOKE, FLAG_DELAY_REQUESTED, FLAG_NO_ACK, INITIAL_SYN_FLAGS,
+    MAX_STREAMING_PACKET_BYTES, RESET_FLAGS, SYN_RESPONSE_FLAGS, SignatureLocation, StreamingFlags,
     StreamingOptionDecodeContext, StreamingOptions, StreamingPacket, StreamingPacketBuilder,
     StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage,
     decode_client_payload, decode_streaming_packet, encode_client_payload, encode_streaming_packet,
@@ -60,9 +60,12 @@ use crate::streaming::connection::{
     ConnectionId, ConnectionState, ConnectionTransition, StreamDirection, StreamingConnection,
 };
 use crate::streaming::errors::StreamingError;
-use crate::streaming::events::WirePacketObservation;
+use crate::streaming::events::{
+    AckGenerationAccounting, DataPacketIngressAccounting, SynIngressAccounting,
+    SynIngressRejectCause, SynResponseIngressAccounting, WirePacketObservation,
+};
 use crate::streaming::send_window::SendWindowDecision;
-use crate::streaming::transport::TransportSendRequest;
+use crate::streaming::transport::{OutboundPacketKind, TransportSendRequest};
 
 /// Hard ceiling on the number of streams per local destination.
 pub const MAX_STREAMS_PER_DESTINATION: usize =
@@ -310,16 +313,48 @@ pub struct StreamingManager {
     /// packets, awaiting the runtime drain.
     pending_delivered: VecDeque<DeliveredApplicationBytes>,
     /// Undrained delivered bytes per connection. Plan 152 D1 owns
-    /// receive-side backpressure on this accounting: while a
-    /// connection holds more than
-    /// [`Self::delivered_cap_bytes`] undrained bytes, its
-    /// acknowledgements are gated (standalone ACKs snoozed,
-    /// piggybacked views sent with `NO_ACK`) so the peer's send
-    /// window fills and memory stays bounded at every layer.
+    /// receive-side backpressure on this accounting. Plan 487 WP1
+    /// replaces Plan 152 D1's *acknowledgement gate* with the
+    /// reference's own bound: a connection holding more than
+    /// [`Self::delivered_cap_bytes`] undrained bytes has its
+    /// in-order inbound data **dropped** (never delivered to the
+    /// application) and the peer is **choked** with the reference's
+    /// `DELAY_REQUESTED` / choke vocabulary, while acknowledgements
+    /// keep flowing on transport state. The accounting itself is
+    /// retained as the application-visible backpressure signal.
     pending_bytes_by_connection: BTreeMap<ConnectionId, usize>,
+    /// Connections whose peer is currently choked (Plan 487 WP1).
+    ///
+    /// A choke is asserted when the connection's inbound buffer is
+    /// full and an inbound payload had to be dropped, and is carried
+    /// by the next outbound packet for that connection, exactly as
+    /// i2pd carries `m_IsChoking3` on its next `SendQuickAck`
+    /// (`libi2pd/Streaming.cpp:256-269`, `:1265-1292`). Bounded by the
+    /// connection count; purged with the connection.
+    choking_connections: BTreeSet<ConnectionId>,
     /// Initial application bytes carried by inbound SYNs, retained until
     /// the application accepts the pending connection.
     pending_syn_payloads: BTreeMap<ConnectionId, Vec<u8>>,
+    /// Redacted SYN-response ingress accounting (counts only, no
+    /// stream ids, ports, hashes, or payload material).
+    syn_response_ingress: SynResponseIngressAccounting,
+    /// Redacted inbound-SYN ingress accounting (counts only).
+    /// Lets the runtime distinguish "no SYN ever arrived"
+    /// (`observed == 0`) from "SYNs arrived but never reached a
+    /// listener backlog" (`observed > accepted`).
+    syn_ingress: SynIngressAccounting,
+    /// Cumulative listener-backlog entries evicted for age (Plan
+    /// 486). Counts only; lets the runtime distinguish "backlog
+    /// drained by acceptors" from "backlog swept as stale".
+    backlog_evicted: u64,
+    /// Redacted established-traffic ingress accounting (counts
+    /// only). Lets the runtime distinguish "no data packet ever
+    /// arrived" (`observed == 0`) from "arrived but rejected"
+    /// (`rejected > 0`) and "only control arrived"
+    /// (`payload_bytes_admitted == 0`).
+    data_packet_ingress: DataPacketIngressAccounting,
+    /// Plan 487 WP2 **ACK-generated** stage counters.
+    ack_generation: AckGenerationAccounting,
 }
 
 impl StreamingManager {
@@ -340,7 +375,13 @@ impl StreamingManager {
             next_inbound_stream_id: 0x8000_0000,
             pending_delivered: VecDeque::new(),
             pending_bytes_by_connection: BTreeMap::new(),
+            choking_connections: BTreeSet::new(),
             pending_syn_payloads: BTreeMap::new(),
+            syn_response_ingress: SynResponseIngressAccounting::default(),
+            syn_ingress: SynIngressAccounting::default(),
+            backlog_evicted: 0,
+            data_packet_ingress: DataPacketIngressAccounting::default(),
+            ack_generation: AckGenerationAccounting::default(),
         }
     }
 
@@ -352,6 +393,114 @@ impl StreamingManager {
     /// Returns the number of active connections.
     pub fn connection_count(&self) -> usize {
         self.connections.len()
+    }
+
+    /// Returns the redacted SYN-response ingress accounting snapshot
+    /// (counts only). Lets the runtime distinguish "no SYN-ACK ever
+    /// arrived" (`observed == 0`) from "SYN-ACKs arrived but never
+    /// established" (`observed > accepted`).
+    pub fn syn_response_ingress(&self) -> SynResponseIngressAccounting {
+        self.syn_response_ingress
+    }
+
+    fn note_syn_response_observed(&mut self) {
+        self.syn_response_ingress.observed = self.syn_response_ingress.observed.saturating_add(1);
+    }
+
+    fn note_syn_response_accepted(&mut self) {
+        self.syn_response_ingress.accepted = self.syn_response_ingress.accepted.saturating_add(1);
+    }
+
+    fn note_syn_response_rejected(&mut self) {
+        self.syn_response_ingress.rejected = self.syn_response_ingress.rejected.saturating_add(1);
+    }
+
+    /// Returns the redacted inbound-SYN ingress accounting snapshot
+    /// (counts only). Lets the runtime distinguish "no SYN ever
+    /// arrived" (`observed == 0`) from "SYNs arrived but never
+    /// reached a listener backlog" (`observed > accepted`).
+    pub fn syn_ingress(&self) -> SynIngressAccounting {
+        self.syn_ingress
+    }
+
+    /// Returns the cumulative count of listener-backlog entries
+    /// evicted for age (Plan 486). Counts only.
+    pub fn backlog_evicted(&self) -> u64 {
+        self.backlog_evicted
+    }
+
+    fn note_syn_ingress_observed(&mut self) {
+        self.syn_ingress.observed = self.syn_ingress.observed.saturating_add(1);
+    }
+
+    fn note_syn_ingress_accepted(&mut self) {
+        self.syn_ingress.accepted = self.syn_ingress.accepted.saturating_add(1);
+    }
+
+    fn note_syn_ingress_rejected(&mut self, cause: SynIngressRejectCause) {
+        self.syn_ingress.note_rejected(cause);
+    }
+
+    /// Returns the redacted established-traffic ingress accounting
+    /// snapshot (counts only). `accepted + rejected == observed`
+    /// always holds; `payload_bytes_admitted` counts only receive-
+    /// window-admitted application payload bytes.
+    pub fn data_packet_ingress(&self) -> DataPacketIngressAccounting {
+        self.data_packet_ingress
+    }
+
+    /// Returns the Plan 487 WP2 ACK-generation accounting snapshot
+    /// (counts only).
+    pub fn ack_generation(&self) -> AckGenerationAccounting {
+        self.ack_generation
+    }
+
+    /// Plan 487 WP2: an acknowledgement was **produced** (armed) in
+    /// response to received DATA.
+    fn note_ack_generated(&mut self) {
+        self.ack_generation.generated = self.ack_generation.generated.saturating_add(1);
+    }
+
+    /// Plan 487 WP2: an acknowledgement was **transmitted** (turned
+    /// into a packet).
+    fn note_ack_transmitted(&mut self) {
+        self.ack_generation.transmitted = self.ack_generation.transmitted.saturating_add(1);
+    }
+
+    fn note_ack_generated_after_drop(&mut self) {
+        self.ack_generation.generated_after_drop =
+            self.ack_generation.generated_after_drop.saturating_add(1);
+    }
+
+    fn note_no_ack_emitted(&mut self) {
+        self.ack_generation.no_ack_emitted = self.ack_generation.no_ack_emitted.saturating_add(1);
+    }
+
+    fn note_data_observed(&mut self) {
+        self.data_packet_ingress.observed = self.data_packet_ingress.observed.saturating_add(1);
+    }
+
+    fn note_data_accepted(&mut self) {
+        self.data_packet_ingress.accepted = self.data_packet_ingress.accepted.saturating_add(1);
+    }
+
+    fn note_data_rejected(&mut self) {
+        self.data_packet_ingress.rejected = self.data_packet_ingress.rejected.saturating_add(1);
+    }
+
+    /// Plan 487 WP2: the **manager-arrival** stage. Incremented once
+    /// per inbound packet that reached the application receive window
+    /// as new data.
+    fn note_data_arrived(&mut self) {
+        self.data_packet_ingress.data_arrived =
+            self.data_packet_ingress.data_arrived.saturating_add(1);
+    }
+
+    fn note_data_payload_admitted(&mut self, bytes: u64) {
+        self.data_packet_ingress.payload_bytes_admitted = self
+            .data_packet_ingress
+            .payload_bytes_admitted
+            .saturating_add(bytes);
     }
 
     /// Binds a listener on the given port.
@@ -457,6 +606,27 @@ impl StreamingManager {
         // Plan 125 §6: the connection is created in `OutboundSynSent`
         // state. It does NOT transition to Established here; that
         // happens after the peer supplies a signed SYN response.
+        //
+        // Plan 478 §6: track the originator SYN for retransmission
+        // like any other signed packet. Without this the first SYN
+        // is single-shot: a single loss anywhere on the path fails
+        // the whole CONNECT with a timeout, and the sweep has
+        // nothing to retry. Sequence 0 is cleared by the SYN
+        // response acknowledgement through the standard path.
+        self.outbound_packets
+            .entry(connection_id)
+            .or_default()
+            .insert(
+                0,
+                OutboundPacket {
+                    sequence: 0,
+                    payload_len: initial_payload.len(),
+                    sent_at_ms: now_ms,
+                    retransmit_count: 0,
+                    request: request.clone(),
+                    signed: true,
+                },
+            );
         self.outbound_queue.push_back(request);
 
         Ok(ConnectOutcome::SynSent {
@@ -484,6 +654,7 @@ impl StreamingManager {
     /// already equals the canonical preimage) and the real signature
     /// is patched into place.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn build_signed_packet(
         &self,
         local_dest: &DestinationIdentity,
@@ -498,6 +669,7 @@ impl StreamingManager {
         local_port: u16,
         remote_port: u16,
         payload: &[u8],
+        kind: OutboundPacketKind,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
         let flags = StreamingFlags::new(flags_bits)?;
         let signature_length = local_dest
@@ -559,6 +731,7 @@ impl StreamingManager {
             sequence: sequence_num,
             send_stream_id,
             receive_stream_id,
+            kind,
         })
     }
 
@@ -600,6 +773,7 @@ impl StreamingManager {
             local_port,
             remote_port,
             initial_payload,
+            OutboundPacketKind::Syn,
         )
     }
 
@@ -641,6 +815,7 @@ impl StreamingManager {
             local_port,
             remote_port,
             &[],
+            OutboundPacketKind::SynAck,
         )
     }
 
@@ -664,10 +839,19 @@ impl StreamingManager {
     }
 
     /// Maximum undrained delivered bytes tolerated per connection
-    /// before acknowledgement gating engages (Plan 152 D1). Derived
-    /// from the configured receive window so the bound scales with
-    /// the negotiated profile; no new configuration surface and no
-    /// wire change.
+    /// before the inbound buffer is considered full (Plan 152 D1,
+    /// re-shaped by Plan 487 WP1). Derived from the configured
+    /// receive window so the bound scales with the negotiated profile;
+    /// no new configuration surface and no wire change.
+    ///
+    /// Plan 487 WP1: reaching this cap no longer gates the
+    /// acknowledgement. It is the bound on the *inbound buffer*: an
+    /// in-order payload that would exceed it is dropped, the peer is
+    /// choked, and the acknowledgement keeps flowing. This matches the
+    /// reference contract, where the acknowledgement is a function of
+    /// transport state and backpressure is expressed by dropping data
+    /// and choking the peer (i2pd `libi2pd/Streaming.cpp:256-269`; I2P
+    /// Java `.../impl/ConnectionPacketHandler.java:145-161`).
     pub fn delivered_cap_bytes(&self) -> usize {
         self.config.max_recv_window_packets as usize
             * crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES
@@ -682,11 +866,21 @@ impl StreamingManager {
             .unwrap_or(0)
     }
 
-    /// Returns whether acknowledgement gating engages for
-    /// `connection_id`: its undrained delivered bytes reached the
-    /// per-connection cap.
+    /// Returns whether the connection's inbound buffer is full: its
+    /// undrained delivered bytes reached the per-connection cap.
+    ///
+    /// Plan 487 WP1: this is the *drop* bound, not an acknowledgement
+    /// gate. The acknowledgement is emitted regardless; the bound
+    /// decides whether an in-order inbound payload is admitted to the
+    /// application and whether the peer is choked.
     pub fn delivered_over_cap(&self, connection_id: ConnectionId) -> bool {
         self.pending_bytes_for(connection_id) >= self.delivered_cap_bytes()
+    }
+
+    /// Returns whether the peer of `connection_id` is currently
+    /// choked (Plan 487 WP1). Read-only non-secret diagnostic.
+    pub fn is_choking(&self, connection_id: ConnectionId) -> bool {
+        self.choking_connections.contains(&connection_id)
     }
 
     fn note_delivered_bytes(&mut self, connection_id: ConnectionId, bytes: usize) {
@@ -780,14 +974,25 @@ impl StreamingManager {
             && peek.send_stream_id == 0
             && peek.receive_stream_id != 0
         {
+            // Accounting starts at the peek classification so every
+            // outcome below (decode failure, handler rejection, or
+            // acceptance into a listener backlog) is attributed
+            // against the same arrival count, mirroring the
+            // SYN-response arm below.
+            self.note_syn_ingress_observed();
             let limit = StreamingReceiveLimit::destination_path();
-            let (packet, signature_location) = decode_streaming_packet(
+            let (packet, signature_location) = match decode_streaming_packet(
                 wire_bytes,
                 limit,
                 StreamingOptionDecodeContext::anonymous(),
-            )
-            .map_err(StreamingManagerError::Codec)?;
-            return self.handle_inbound_syn(
+            ) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    self.note_syn_ingress_rejected(SynIngressRejectCause::Decode);
+                    return Err(StreamingManagerError::Codec(error));
+                }
+            };
+            let outcome = self.handle_inbound_syn(
                 &packet,
                 signature_location,
                 wire_bytes,
@@ -797,6 +1002,13 @@ impl StreamingManager {
                 destination_port,
                 now_ms,
             );
+            // Rejections are already counted with their cause
+            // inside `handle_inbound_syn`; only acceptance is
+            // recorded here so no outcome is double-counted.
+            if outcome.is_ok() {
+                self.note_syn_ingress_accepted();
+            }
+            return outcome;
         }
 
         // SYN response (recipient): packet.sendStreamId == our
@@ -806,6 +1018,11 @@ impl StreamingManager {
             && peek.send_stream_id != 0
             && peek.receive_stream_id != 0
         {
+            // Accounting starts at the peek classification so every
+            // outcome below (port-tuple mismatch, decode failure,
+            // handler rejection, or acceptance) is attributed against
+            // the same arrival count.
+            self.note_syn_response_observed();
             // Plan 131 §7 D2: validate the decoded ClientPayload
             // source/destination ports against the outbound
             // connection established by `connect()`. The wire
@@ -822,6 +1039,7 @@ impl StreamingManager {
                     .and_then(|cid| self.connections.get(&cid))
                     .map(|conn| (conn.remote_port(), conn.local_port()))
                     .unwrap_or((0, 0));
+                self.note_syn_response_rejected();
                 return Err(StreamingManagerError::PortTupleMismatch {
                     expected_destination,
                     expected_source,
@@ -830,19 +1048,29 @@ impl StreamingManager {
                 });
             }
             let limit = StreamingReceiveLimit::destination_path();
-            let (packet, signature_location) = decode_streaming_packet(
+            let (packet, signature_location) = match decode_streaming_packet(
                 wire_bytes,
                 limit,
                 StreamingOptionDecodeContext::anonymous(),
-            )
-            .map_err(StreamingManagerError::Codec)?;
-            return self.handle_inbound_syn_response(
+            ) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    self.note_syn_response_rejected();
+                    return Err(StreamingManagerError::Codec(error));
+                }
+            };
+            let outcome = self.handle_inbound_syn_response(
                 &packet,
                 signature_location,
                 wire_bytes,
                 from_destination_hash,
                 now_ms,
             );
+            match &outcome {
+                Ok(_) => self.note_syn_response_accepted(),
+                Err(_) => self.note_syn_response_rejected(),
+            }
+            return outcome;
         }
 
         // Data / CLOSE / RESET / plain ACK on an established
@@ -850,12 +1078,25 @@ impl StreamingManager {
         // against the retained peer signing key, so resolve the
         // connection before the full strict decode supplies its option
         // context.
-        let connection_id = self
+        //
+        // Plan 478 data-phase attribution: accounting starts at the
+        // peek classification so every outcome below (unknown
+        // connection, port-tuple mismatch, decode failure, handler
+        // rejection, or acceptance) is attributed against the same
+        // arrival count, mirroring the SYN-response arm above.
+        self.note_data_observed();
+        let connection_id = match self
             .inbound_by_stream
             .get(&peek.send_stream_id)
             .copied()
             .or_else(|| self.outbound_by_stream.get(&peek.send_stream_id).copied())
-            .ok_or(StreamingManagerError::UnknownConnection)?;
+        {
+            Some(connection_id) => connection_id,
+            None => {
+                self.note_data_rejected();
+                return Err(StreamingManagerError::UnknownConnection);
+            }
+        };
 
         // Plan 130 §8 E3: established traffic must carry the exact
         // port tuple fixed by the handshake. A mismatched delivery is
@@ -871,6 +1112,7 @@ impl StreamingManager {
                 .get(&connection_id)
                 .map(|conn| (conn.remote_port(), conn.local_port()))
                 .expect("connection exists");
+            self.note_data_rejected();
             return Err(StreamingManagerError::PortTupleMismatch {
                 expected_destination,
                 expected_source,
@@ -879,27 +1121,42 @@ impl StreamingManager {
             });
         }
 
-        let peer_signing_key = self
-            .connections
-            .get(&connection_id)
-            .ok_or(StreamingManagerError::UnknownConnection)?
-            .peer_signing_key()
-            .clone();
+        let peer_signing_key = match self.connections.get(&connection_id) {
+            Some(connection) => connection.peer_signing_key().clone(),
+            None => {
+                // Unreachable while the stream-id maps stay coherent
+                // with the connection table (see `remove_connection`),
+                // but counted so the observed/accepted/rejected
+                // invariant holds structurally on every path.
+                self.note_data_rejected();
+                return Err(StreamingManagerError::UnknownConnection);
+            }
+        };
         let limit = StreamingReceiveLimit::destination_path();
-        let (packet, signature_location) = decode_streaming_packet(
+        let (packet, signature_location) = match decode_streaming_packet(
             wire_bytes,
             limit,
             StreamingOptionDecodeContext::with_peer_key(&peer_signing_key),
-        )
-        .map_err(StreamingManagerError::Codec)?;
-        self.handle_data_packet(
+        ) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                self.note_data_rejected();
+                return Err(StreamingManagerError::Codec(error));
+            }
+        };
+        let outcome = self.handle_data_packet(
             &packet,
             signature_location,
             wire_bytes,
             from_destination_hash,
             connection_id,
             now_ms,
-        )
+        );
+        match &outcome {
+            Ok(_) => self.note_data_accepted(),
+            Err(_) => self.note_data_rejected(),
+        }
+        outcome
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -916,14 +1173,24 @@ impl StreamingManager {
     ) -> Result<WirePacketObservation, StreamingManagerError> {
         // The SYN replay binding NACK field carries the receiver
         // (local destination) hash.
-        let local_destination_hash: [u8; 32] = *to_destination
+        let local_destination_hash: [u8; 32] = match to_destination
             .destination()
             .hash()
-            .map_err(StreamingManagerError::I2npCodec)?
-            .as_bytes();
-        validate_initial_syn(packet, &local_destination_hash)?;
+            .map_err(StreamingManagerError::I2npCodec)
+        {
+            Ok(hash) => *hash.as_bytes(),
+            Err(error) => {
+                self.note_syn_ingress_rejected(SynIngressRejectCause::Validation);
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_initial_syn(packet, &local_destination_hash) {
+            self.note_syn_ingress_rejected(SynIngressRejectCause::Validation);
+            return Err(StreamingManagerError::Codec(error));
+        }
         let initial_maximum = usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD);
         if packet.payload.len() > initial_maximum {
+            self.note_syn_ingress_rejected(SynIngressRejectCause::Validation);
             return Err(StreamingManagerError::InitialSynPayloadTooLarge {
                 actual: packet.payload.len(),
                 maximum: initial_maximum,
@@ -933,31 +1200,50 @@ impl StreamingManager {
         // Verify the originator's signature over the canonical
         // preimage (the full packet with the raw signature zeroed)
         // against the FROM destination's signing key.
-        let destination =
-            packet
-                .options
-                .from_destination
-                .clone()
-                .ok_or(StreamingManagerError::Codec(
+        let destination = match packet.options.from_destination.clone() {
+            Some(destination) => destination,
+            None => {
+                self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+                return Err(StreamingManagerError::Codec(
                     StreamingPacketError::SynMissingFrom,
-                ))?;
-        let location = signature_location.ok_or(StreamingManagerError::Codec(
-            StreamingPacketError::SignatureMissing,
-        ))?;
+                ));
+            }
+        };
+        let location = match signature_location {
+            Some(location) => location,
+            None => {
+                self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+                return Err(StreamingManagerError::Codec(
+                    StreamingPacketError::SignatureMissing,
+                ));
+            }
+        };
         let preimage = build_signature_preimage(wire_bytes, Some(location));
-        let signature = packet
-            .options
-            .signature
-            .clone()
-            .ok_or(StreamingManagerError::Codec(
-                StreamingPacketError::SignatureMissing,
-            ))?;
-        let signature_value = SignatureValue::new(destination.signing_key().key_type(), signature)
-            .map_err(|_| {
-                StreamingManagerError::Codec(StreamingPacketError::SignatureContextUnavailable)
-            })?;
-        verify_signature(destination.signing_key(), &preimage, &signature_value)
-            .map_err(|_| StreamingManagerError::Codec(StreamingPacketError::SignatureInvalid))?;
+        let signature = match packet.options.signature.clone() {
+            Some(signature) => signature,
+            None => {
+                self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+                return Err(StreamingManagerError::Codec(
+                    StreamingPacketError::SignatureMissing,
+                ));
+            }
+        };
+        let signature_value =
+            match SignatureValue::new(destination.signing_key().key_type(), signature) {
+                Ok(value) => value,
+                Err(_) => {
+                    self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+                    return Err(StreamingManagerError::Codec(
+                        StreamingPacketError::SignatureContextUnavailable,
+                    ));
+                }
+            };
+        if verify_signature(destination.signing_key(), &preimage, &signature_value).is_err() {
+            self.note_syn_ingress_rejected(SynIngressRejectCause::Signature);
+            return Err(StreamingManagerError::Codec(
+                StreamingPacketError::SignatureInvalid,
+            ));
+        }
 
         // Allocate a new inbound connection. The originator's
         // `receiveStreamId` is the id they want us to use in our
@@ -1016,6 +1302,7 @@ impl StreamingManager {
             self.pending_syn_payloads.remove(&connection_id);
             self.inbound_by_stream.remove(&local_receive_stream_id);
             self.outbound_packets.remove(&connection_id);
+            self.note_syn_ingress_rejected(SynIngressRejectCause::NoListener);
             return Err(StreamingManagerError::NoMatchingListener { destination_port });
         };
         let backlog_full = self
@@ -1028,6 +1315,7 @@ impl StreamingManager {
             self.pending_syn_payloads.remove(&connection_id);
             self.inbound_by_stream.remove(&local_receive_stream_id);
             self.outbound_packets.remove(&connection_id);
+            self.note_syn_ingress_rejected(SynIngressRejectCause::BacklogFull);
             return Err(StreamingManagerError::ListenerBacklogFull);
         }
         if let Some(entry) = self.listeners.get_mut(&matched_listener) {
@@ -1197,6 +1485,12 @@ impl StreamingManager {
         conn.set_remote_stream_id(packet.receive_stream_id);
         conn.transition_established(u32::from(negotiated), now_ms)
             .map_err(StreamingManagerError::Streaming)?;
+        // The originator SYN (sequence 0) is acknowledged by this
+        // SYN response; drop its retransmit tracking so an
+        // established connection never re-emits SYNs.
+        if let Some(tracked) = self.outbound_packets.get_mut(&connection_id) {
+            tracked.remove(&0);
+        }
 
         Ok(WirePacketObservation {
             connection_id: Some(connection_id),
@@ -1282,6 +1576,13 @@ impl StreamingManager {
             })?;
         }
 
+        // Plan 487 WP1: the inbound-buffer bound is evaluated before
+        // the connection borrow so the acknowledgement contract stays
+        // independent of it. The bound is a *drop* bound, never an
+        // acknowledgement gate.
+        let delivered_cap = self.delivered_cap_bytes();
+        let undrained_bytes = self.pending_bytes_for(connection_id);
+
         let conn = self
             .connections
             .get_mut(&connection_id)
@@ -1350,12 +1651,32 @@ impl StreamingManager {
         // an ACK-of-ACK loop).
         let plain_ack_form = packet.sequence_num == 0 && !packet.flags.synchronize();
         let mut decision_opt = None;
+        // Plan 487 WP1: an in-order payload that would push the
+        // connection's inbound buffer past its cap is **dropped**
+        // rather than admitted, and the peer is choked. The packet is
+        // not admitted to the receive window, so the acknowledgement
+        // ceiling does not advance and the peer will retransmit once
+        // the application drains — exactly the reference behaviour
+        // (i2pd deletes the overflow packet and still calls
+        // `SendQuickAck()`, `libi2pd/Streaming.cpp:256-269`; I2P Java
+        // drops it and calls `ackImmediately()`,
+        // `.../impl/ConnectionPacketHandler.java:145-161`).
+        //
+        // Out-of-order packets are unaffected: they enter the bounded
+        // reorder buffer, which carries its own bound.
+        let mut dropped_over_cap = false;
         if !terminated && !plain_ack_form {
-            let payload = packet.payload.clone();
-            let decision = conn
-                .receive_packet(packet.sequence_num, payload, now_ms)
-                .map_err(StreamingManagerError::Streaming)?;
-            decision_opt = Some(decision);
+            let would_deliver_in_order = packet.sequence_num == conn.recv_window().next_expected();
+            let inbound_full = undrained_bytes.saturating_add(packet.payload.len()) > delivered_cap;
+            if would_deliver_in_order && inbound_full {
+                dropped_over_cap = true;
+            } else {
+                let payload = packet.payload.clone();
+                let decision = conn
+                    .receive_packet(packet.sequence_num, payload, now_ms)
+                    .map_err(StreamingManagerError::Streaming)?;
+                decision_opt = Some(decision);
+            }
         }
 
         let state = conn.state();
@@ -1395,27 +1716,74 @@ impl StreamingManager {
             received_new_data && connection_active && packet.options.delay_requested == Some(0);
         let _ = conn;
 
+        // Plan 478 data-phase attribution: the arriving packet's
+        // application payload was admitted by the receive window
+        // (in-order delivery or reorder-buffer admission; duplicates,
+        // plain ACKs, and terminated connections admit nothing).
+        // Counts wire payload bytes exactly once per admission, so
+        // the lane can split "payload arrived" from "only control
+        // arrived" without touching payload material.
+        if received_new_data {
+            // Plan 487 WP2: the **manager-arrival** stage. The packet
+            // reached the application receive window as new data.
+            self.note_data_arrived();
+            self.note_data_payload_admitted(packet.payload.len() as u64);
+        }
+
         if terminated {
             self.pending_acks.remove(&connection_id);
         }
 
         if received_duplicate && connection_active && !terminated {
+            // Plan 487 WP2: a duplicate re-arms the acknowledgement, so
+            // it counts as a produced acknowledgement too.
+            self.note_ack_generated();
             self.pending_acks
                 .entry(connection_id)
                 .and_modify(|deadline| *deadline = (*deadline).min(now_ms))
                 .or_insert(now_ms);
         }
 
+        // Plan 487 WP1: the dropped-payload path asserts the choke and
+        // still acknowledges. The reference implementations send an
+        // acknowledgement when they drop an overflow packet; neither
+        // withholds one because the local application has not drained.
+        // i2pd calls `SendQuickAck()` on the drop path
+        // (`libi2pd/Streaming.cpp:256-269`); I2P Java calls
+        // `ackImmediately()` (`.../impl/ConnectionPacketHandler.java:145-161`).
+        if dropped_over_cap && connection_active && !terminated {
+            self.choking_connections.insert(connection_id);
+            if !self.pending_acks.contains_key(&connection_id)
+                && let Some(request) = self.build_simple_ack_request(connection_id)
+            {
+                self.outbound_queue.push_back(request);
+                self.note_ack_generated_after_drop();
+            }
+        }
+
         if received_new_data && connection_active {
             // An explicit zero-delay request from the peer is honored
             // immediately (specification: delay value 0 requests an
             // immediate ack); otherwise the reference default delayed-
-            // ACK deadline applies. Plan 152 D1: while the connection
-            // holds more undrained bytes than its cap, even an
-            // immediate request only snoozes the coalesced deadline —
-            // emitting it would slide the peer window and grow the
-            // backlog without bound.
-            if delay_requested_now && !self.delivered_over_cap(connection_id) {
+            // ACK deadline applies.
+            //
+            // Plan 487 WP1: the acknowledgement is a function of
+            // transport state, never of local application drain. The
+            // Plan 152 D1 condition that suppressed an immediate
+            // request while the connection held more undrained bytes
+            // than its cap is removed: the reference implementations
+            // acknowledge on receipt even when their inbound buffer is
+            // full (i2pd still calls `SendQuickAck()` when it drops an
+            // overflow packet, `libi2pd/Streaming.cpp:256-269`; I2P
+            // Java calls `ackImmediately()`, `.../impl/
+            // ConnectionPacketHandler.java:145-161`). The bound itself
+            // is preserved by dropping the overflowing payload and
+            // choking the peer, never by withholding the
+            // acknowledgement.
+            if delay_requested_now {
+                // Plan 487 WP2: the acknowledgement was **produced**
+                // (armed) in response to the received DATA.
+                self.note_ack_generated();
                 let request = self.build_simple_ack_request(connection_id);
                 if let Some(request) = request {
                     self.outbound_queue.push_back(request);
@@ -1426,6 +1794,11 @@ impl StreamingManager {
                 } else {
                     now_ms.saturating_add(self.config.delayed_ack_ms)
                 };
+                // Plan 487 WP2: the acknowledgement was **produced**
+                // (armed) in response to the received DATA. The peer
+                // is now owed an acknowledgement; whether it becomes a
+                // packet is the next stage.
+                self.note_ack_generated();
                 self.pending_acks
                     .entry(connection_id)
                     .and_modify(|current| *current = (*current).min(deadline))
@@ -1559,19 +1932,28 @@ impl StreamingManager {
         // highest received sequence, plus any bounded
         // missing-sequence NACKs).
         //
-        // Plan 152 D1: while this connection holds more undrained
-        // bytes than its cap, the packet carries NO_ACK instead of a
-        // fresh view. A fresh piggyback would slide the peer window
-        // and grow the backlog without bound; NO_ACK is existing
-        // wire semantics the receiver already honors by skipping ACK
-        // processing. The piggybacked view also satisfies any pending
-        // standalone ACK, so a NO_ACK packet must not clear it.
-        let gated = self.delivered_over_cap(connection_id);
-        let flags = if gated {
-            StreamingFlags::new(FLAG_NO_ACK).expect("no-ack flags")
-        } else {
-            StreamingFlags::new(0).expect("empty flags")
-        };
+        // Plan 487 WP1: the piggyback is never suppressed. Plan 152 D1
+        // replaced it with `FLAG_NO_ACK` while the connection held
+        // more undrained bytes than its cap, which coupled the
+        // acknowledgement to local application drain and diverged
+        // from the reference contract. A conforming peer does not
+        // depend on the acknowledgement being withheld, and the
+        // reference implementations never withhold it. The bound is
+        // preserved by the drop-and-choke path on the receive side.
+        //
+        // Plan 487 WP1: a congested connection's peer is choked with
+        // the reference's `DELAY_REQUESTED` vocabulary on this packet
+        // instead of the piggybacked acknowledgement being withheld.
+        let (flags, option_bytes) = self.build_choke_option(connection_id);
+        // Plan 487 WP2: the **ACK-generated** stage, and its negative
+        // control. A data packet always piggybacks the real
+        // acknowledgement view; it must never carry `NO_ACK`.
+        if ack_through > 0 || !ack_nacks.is_empty() {
+            self.note_ack_transmitted();
+        }
+        if flags.bits() & FLAG_NO_ACK != 0 {
+            self.note_no_ack_emitted();
+        }
         let builder = StreamingPacketBuilder {
             send_stream_id: peer_receive_stream_id,
             receive_stream_id: local_receive_stream_id,
@@ -1580,7 +1962,7 @@ impl StreamingManager {
             nacks: ack_nacks,
             resend_delay: 0,
             flags,
-            option_bytes: Vec::new(),
+            option_bytes,
             payload: payload.to_vec(),
         };
         let wire_bytes = encode_streaming_packet(&builder, StreamingSendLimit::default())
@@ -1603,7 +1985,12 @@ impl StreamingManager {
             sequence: planned_sequence,
             send_stream_id: peer_receive_stream_id,
             receive_stream_id: local_receive_stream_id,
+            kind: OutboundPacketKind::Data,
         };
+        // The choke has now been carried on a successfully encoded
+        // packet; release it so the peer is not choked again until the
+        // next overflow.
+        self.release_choke(connection_id);
 
         // ---- Phase 3: protocol-state commit (single fallible mutation) --------
         // Every commit point below must be infallible or have an
@@ -1636,12 +2023,11 @@ impl StreamingManager {
             .or_default()
             .insert(sequence, outbound);
         self.outbound_queue.push_back(request.clone());
-        // The piggybacked acknowledgement state satisfies any
-        // pending standalone ACK — unless the packet carried NO_ACK
-        // under Plan 152 gating, in which case the deadline stays.
-        if !gated {
-            self.pending_acks.remove(&connection_id);
-        }
+        // The piggybacked acknowledgement state always satisfies any
+        // pending standalone ACK. Plan 487 WP1: the Plan 152 D1
+        // exception (a `NO_ACK` packet under drain gating left the
+        // deadline in place) is gone with the gate itself.
+        self.pending_acks.remove(&connection_id);
 
         let _ = local_dest;
         let _ = remote;
@@ -1746,6 +2132,7 @@ impl StreamingManager {
             wire_local_port,
             wire_remote_port,
             &[],
+            OutboundPacketKind::Close,
         )?;
 
         // ---- Phase 3: protocol-state commit (infallible after build) -----------
@@ -1849,6 +2236,7 @@ impl StreamingManager {
             local_port,
             remote_port,
             &[],
+            OutboundPacketKind::Reset,
         )?;
 
         // ---- Phase 3: protocol-state commit (infallible after build) -----------
@@ -1882,13 +2270,49 @@ impl StreamingManager {
     ///
     /// Returns `None` when the connection vanished between the
     /// deadline scan and this build.
+    /// Builds the outbound flag set and option region for a packet
+    /// that may carry a congestion choke (Plan 487 WP1).
+    ///
+    /// While a connection's inbound buffer is full the peer is choked
+    /// with the reference's own vocabulary — the `DELAY_REQUESTED`
+    /// flag plus the `DELAY_CHOKE` value — instead of the
+    /// acknowledgement being withheld. The choke rides on the next
+    /// outbound packet for that connection and is then released,
+    /// exactly as i2pd carries `m_IsChoking3` on its next
+    /// `SendQuickAck` (`libi2pd/Streaming.cpp:256-269`, `:1265-1292`)
+    /// and I2P Java carries `_isChoking` on its next outbound packet
+    /// (`.../impl/Connection.java:396-400`).
+    fn build_choke_option(&self, connection_id: ConnectionId) -> (StreamingFlags, Vec<u8>) {
+        if self.choking_connections.contains(&connection_id) {
+            (
+                StreamingFlags::new(FLAG_DELAY_REQUESTED).expect("delay-requested flags"),
+                DELAY_CHOKE.to_be_bytes().to_vec(),
+            )
+        } else {
+            (StreamingFlags::new(0).expect("empty flags"), Vec::new())
+        }
+    }
+
+    /// Releases a pending choke after the packet that carried it was
+    /// built (Plan 487 WP1).
+    fn release_choke(&mut self, connection_id: ConnectionId) {
+        self.choking_connections.remove(&connection_id);
+    }
+
     fn build_simple_ack_request(
         &mut self,
         connection_id: ConnectionId,
     ) -> Option<TransportSendRequest> {
+        let (flags, option_bytes) = self.build_choke_option(connection_id);
+        // Plan 487 WP2: the **ACK-transmitted** stage, and its
+        // negative control. A standalone ACK must never carry
+        // `NO_ACK`.
+        self.note_ack_transmitted();
+        if flags.bits() & FLAG_NO_ACK != 0 {
+            self.note_no_ack_emitted();
+        }
         let conn = self.connections.get(&connection_id)?;
         let (ack_through, nacks) = conn.recv_window().ack_view();
-        let flags = StreamingFlags::new(0).expect("empty flags");
         let builder = StreamingPacketBuilder {
             send_stream_id: conn.remote_stream_id(),
             receive_stream_id: conn.local_stream_id(),
@@ -1897,7 +2321,7 @@ impl StreamingManager {
             nacks,
             resend_delay: 0,
             flags,
-            option_bytes: Vec::new(),
+            option_bytes,
             payload: Vec::new(),
         };
         let wire_bytes = encode_streaming_packet(&builder, StreamingSendLimit::default()).ok()?;
@@ -1910,7 +2334,7 @@ impl StreamingManager {
         let application_bytes = encode_client_payload(&envelope)
             .map_err(StreamingManagerError::OutboundEnvelope)
             .ok()?;
-        Some(TransportSendRequest {
+        let request = TransportSendRequest {
             destination_hash: *conn.peer_destination_hash(),
             source_port: conn.local_port(),
             destination_port: conn.remote_port(),
@@ -1918,7 +2342,12 @@ impl StreamingManager {
             sequence: 0,
             send_stream_id: conn.remote_stream_id(),
             receive_stream_id: conn.local_stream_id(),
-        })
+            kind: OutboundPacketKind::Ack,
+        };
+        // The choke has now been carried; release it so the peer is not
+        // choked again until the next overflow.
+        self.release_choke(connection_id);
+        Some(request)
     }
 
     /// Emits every due standalone delayed ACK (Plan 130 §7 D3). The
@@ -1930,12 +2359,13 @@ impl StreamingManager {
     /// is bounded by the pending-ACK (connection) count. Terminated
     /// or vanished connections are pruned without emitting.
     ///
-    /// Plan 152 D1: a connection holding more undrained bytes than
-    /// its cap is skipped and its deadline snoozed by one delayed-
-    /// ACK interval instead. Emitting would slide the peer window
-    /// and grow the backlog without bound; snoozing is timer-driven
-    /// (no busy loop), and the catch-up ACK fires within one
-    /// interval after the pump drains below cap.
+    /// Plan 487 WP1: a connection holding more undrained bytes than
+    /// its cap is **not** skipped. Plan 152 D1 snoozed its deadline
+    /// instead of emitting, which coupled the acknowledgement to
+    /// local application drain; the reference contract acknowledges on
+    /// transport state regardless of the local buffer. The bound is
+    /// preserved on the receive side by dropping the overflowing
+    /// payload and choking the peer.
     pub fn poll_acks(&mut self, now_ms: u64) -> Vec<TransportSendRequest> {
         let mut out = Vec::new();
         while let Some((&connection_id, _)) = self
@@ -1954,11 +2384,6 @@ impl StreamingManager {
                 )
             });
             if !emit {
-                continue;
-            }
-            if self.delivered_over_cap(connection_id) {
-                let snooze = now_ms.saturating_add(self.config.delayed_ack_ms);
-                self.pending_acks.insert(connection_id, snooze);
                 continue;
             }
             if let Some(request) = self.build_simple_ack_request(connection_id) {
@@ -2141,6 +2566,9 @@ impl StreamingManager {
         // purged with it rather than lingering in the map.
         self.pending_acks.remove(&id);
         self.pending_bytes_by_connection.remove(&id);
+        // Plan 487 WP1: a removed connection can never carry the
+        // choke, so its choke state is purged with it.
+        self.choking_connections.remove(&id);
         self.pending_delivered
             .retain(|delivered| delivered.connection_id != id);
         removed
@@ -2151,8 +2579,77 @@ impl StreamingManager {
         self.listeners.get(&port).map(|q| q.len()).unwrap_or(0)
     }
 
+    /// Returns whether a backlogged connection is too old to hand
+    /// to an acceptor (Plan 486). A queue entry whose connection
+    /// is missing is also stale: `remove_connection` never leaves
+    /// live ids behind, so a dangling id can never become
+    /// acceptable later. Future-dated entries (clock skew between
+    /// caller domains) are never stale.
+    fn backlog_entry_stale(&self, id: ConnectionId, now_ms: u64) -> bool {
+        let Some(connection) = self.connections.get(&id) else {
+            return true;
+        };
+        now_ms.saturating_sub(connection.created_at_ms())
+            > self.config.max_listener_backlog_entry_age_ms
+    }
+
+    /// Removes one backlogged connection from every table it could
+    /// inhabit and counts the eviction (Plan 486). The queue entry
+    /// itself is removed by the caller.
+    fn evict_backlogged_connection(&mut self, id: ConnectionId) {
+        let _ = self.remove_connection(id);
+        self.backlog_evicted = self.backlog_evicted.saturating_add(1);
+    }
+
+    /// Sweeps every listener backlog, evicting entries older than
+    /// `max_listener_backlog_entry_age_ms` (Plan 486). Returns the
+    /// number of entries evicted. Bounded by the backlog ceilings;
+    /// waiters that drain promptly never observe it.
+    pub fn evict_stale_backlog_entries(&mut self, now_ms: u64) -> u64 {
+        let ports: Vec<u16> = self.listeners.keys().copied().collect();
+        let mut evicted = 0_u64;
+        for port in ports {
+            let stale: Vec<ConnectionId> = self
+                .listeners
+                .get(&port)
+                .map(|queue| {
+                    queue
+                        .iter()
+                        .copied()
+                        .filter(|id| self.backlog_entry_stale(*id, now_ms))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if stale.is_empty() {
+                continue;
+            }
+            if let Some(queue) = self.listeners.get_mut(&port) {
+                queue.retain(|id| !stale.contains(id));
+            }
+            for id in stale {
+                self.evict_backlogged_connection(id);
+                evicted = evicted.saturating_add(1);
+            }
+        }
+        evicted
+    }
+
     /// Pops the next pending inbound SYN from the listener backlog.
-    pub fn accept(&mut self, port: u16) -> Option<ConnectionId> {
+    /// Entries older than `max_listener_backlog_entry_age_ms` are
+    /// evicted (and counted) instead of being handed out, so a
+    /// waiter that parks after a previous waiter timed out never
+    /// inherits a stale handshake (Plan 486).
+    pub fn accept(&mut self, port: u16, now_ms: u64) -> Option<ConnectionId> {
+        loop {
+            let front = self.listeners.get(&port).and_then(|q| q.front().copied())?;
+            if !self.backlog_entry_stale(front, now_ms) {
+                break;
+            }
+            if let Some(queue) = self.listeners.get_mut(&port) {
+                queue.pop_front();
+            }
+            self.evict_backlogged_connection(front);
+        }
         self.listeners.get_mut(&port).and_then(|q| q.pop_front())
     }
 }
@@ -2179,6 +2676,10 @@ mod tests {
     };
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
+
+    use crate::streaming::events::{
+        DataPacketIngressAccounting, SynIngressAccounting, SynResponseIngressAccounting,
+    };
 
     const LOCAL_PORT: u16 = 10_134;
     const REMOTE_PORT: u16 = 20_134;
@@ -2398,7 +2899,9 @@ mod tests {
             sink.drain_delivered().is_empty(),
             "pending SYN data is not exposed before accept"
         );
-        let connection_id = sink.accept(REMOTE_PORT).expect("pending connection");
+        let connection_id = sink
+            .accept(REMOTE_PORT, NOW_MS)
+            .expect("pending connection");
         sink.accept_inbound_syn(
             &receiver,
             &initiator_remote,
@@ -2430,6 +2933,1062 @@ mod tests {
                 maximum: 4
             })
         ));
+    }
+
+    #[test]
+    fn syn_response_ingress_accounting_accepts_a_full_handshake() {
+        use crate::streaming::connection::ConnectionState;
+
+        let originator = destination(0x1350_0001);
+        let recipient = destination(0x1350_0002);
+        let recipient_remote = RemoteDestination {
+            destination_hash: *recipient.id().as_hash().as_bytes(),
+            signing_public_key: recipient.destination().signing_key().clone(),
+            static_public_key: recipient.static_public_bytes(),
+        };
+        let originator_remote = RemoteDestination {
+            destination_hash: *originator.id().as_hash().as_bytes(),
+            signing_public_key: originator.destination().signing_key().clone(),
+            static_public_key: originator.static_public_bytes(),
+        };
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent { connection_id, .. } = sender
+            .connect(
+                &originator,
+                &recipient_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x1350_0003),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let syn_request = sender.drain_outbound().pop().expect("SYN request");
+        let syn_envelope = decode_client_payload(
+            &syn_request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN client-payload envelope");
+
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        sink.listen(REMOTE_PORT).expect("listener");
+        sink.process_inbound_packet(
+            &syn_envelope.payload,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("authenticated inbound SYN");
+        // The sink received an initial SYN, not a SYN response: its
+        // own SYN-response accounting stays at zero.
+        assert_eq!(
+            sink.syn_response_ingress(),
+            SynResponseIngressAccounting::default()
+        );
+        let inbound = sink
+            .accept(REMOTE_PORT, NOW_MS)
+            .expect("pending inbound SYN");
+        let response = sink
+            .accept_inbound_syn(
+                &recipient,
+                &originator_remote,
+                inbound,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x1350_0004),
+            )
+            .expect("signed SYN response");
+        let response_envelope = decode_client_payload(
+            &response.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN-response client-payload envelope");
+
+        assert_eq!(
+            sender.syn_response_ingress(),
+            SynResponseIngressAccounting::default()
+        );
+        sender
+            .process_inbound_packet(
+                &response_envelope.payload,
+                recipient.id().as_hash().as_bytes(),
+                &originator,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("SYN response accepted");
+        let accounting = sender.syn_response_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 0);
+        assert_eq!(
+            accounting.accepted.saturating_add(accounting.rejected),
+            accounting.observed
+        );
+        let connection = sender.get_connection(connection_id).expect("connection");
+        assert_eq!(connection.state(), ConnectionState::Established);
+    }
+
+    #[test]
+    fn syn_ingress_accounting_accepts_an_inbound_syn() {
+        let originator = destination(0x1360_0001);
+        let recipient = destination(0x1360_0002);
+        let recipient_remote = RemoteDestination {
+            destination_hash: *recipient.id().as_hash().as_bytes(),
+            signing_public_key: recipient.destination().signing_key().clone(),
+            static_public_key: recipient.static_public_bytes(),
+        };
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent { .. } = sender
+            .connect(
+                &originator,
+                &recipient_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x1360_0003),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let syn_request = sender.drain_outbound().pop().expect("SYN request");
+        let syn_envelope = decode_client_payload(
+            &syn_request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN client-payload envelope");
+
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        assert_eq!(sink.syn_ingress(), SynIngressAccounting::default());
+        sink.listen(REMOTE_PORT).expect("listener");
+        sink.process_inbound_packet(
+            &syn_envelope.payload,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("authenticated inbound SYN");
+        // The sink received an initial SYN as acceptor: its
+        // SYN-ingress accounting moves, its SYN-response accounting
+        // stays at zero.
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 0);
+        assert_eq!(
+            accounting.accepted.saturating_add(accounting.rejected),
+            accounting.observed
+        );
+        assert_eq!(accounting.split_rejected_sum(), 0);
+        assert_eq!(
+            sink.syn_response_ingress(),
+            SynResponseIngressAccounting::default()
+        );
+    }
+
+    #[test]
+    fn syn_ingress_without_listener_counts_observed_and_rejected() {
+        let originator = destination(0x1361_0001);
+        let recipient = destination(0x1361_0002);
+        let recipient_remote = RemoteDestination {
+            destination_hash: *recipient.id().as_hash().as_bytes(),
+            signing_public_key: recipient.destination().signing_key().clone(),
+            static_public_key: recipient.static_public_bytes(),
+        };
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent { .. } = sender
+            .connect(
+                &originator,
+                &recipient_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x1361_0003),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let syn_request = sender.drain_outbound().pop().expect("SYN request");
+        let syn_envelope = decode_client_payload(
+            &syn_request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN client-payload envelope");
+
+        // No listener installed: the well-formed SYN decodes and
+        // verifies, then fails closed at listener selection.
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        let outcome = sink.process_inbound_packet(
+            &syn_envelope.payload,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "unclaimed port must fail closed");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_no_listener, 1);
+        assert_eq!(accounting.rejected_decode, 0);
+        assert_eq!(accounting.rejected_validation, 0);
+        assert_eq!(accounting.rejected_signature, 0);
+        assert_eq!(accounting.rejected_backlog_full, 0);
+        assert_eq!(
+            accounting.accepted.saturating_add(accounting.rejected),
+            accounting.observed
+        );
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    /// Builds one real originator SYN and returns its wire bytes as
+    /// observed by the recipient (client-payload envelope stripped).
+    fn inbound_syn_bytes(
+        sender: &mut StreamingManager,
+        originator: &DestinationIdentity,
+        recipient_remote: &RemoteDestination,
+        seed: u64,
+    ) -> Vec<u8> {
+        let ConnectOutcome::SynSent { .. } = sender
+            .connect(
+                originator,
+                recipient_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(seed),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let syn_request = sender.drain_outbound().pop().expect("SYN request");
+        decode_client_payload(
+            &syn_request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN client-payload envelope")
+        .payload
+    }
+
+    fn syn_originator_pair(
+        originator_seed: u64,
+        recipient_seed: u64,
+    ) -> (DestinationIdentity, DestinationIdentity, RemoteDestination) {
+        let originator = destination(originator_seed);
+        let recipient = destination(recipient_seed);
+        let recipient_remote = RemoteDestination {
+            destination_hash: *recipient.id().as_hash().as_bytes(),
+            signing_public_key: recipient.destination().signing_key().clone(),
+            static_public_key: recipient.static_public_bytes(),
+        };
+        (originator, recipient, recipient_remote)
+    }
+
+    #[test]
+    fn syn_ingress_reject_causes_move_exactly_one_split_field() {
+        use crate::streaming::events::SynIngressRejectCause;
+
+        let causes = [
+            (
+                SynIngressRejectCause::Decode,
+                SynIngressAccounting {
+                    rejected_decode: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+            (
+                SynIngressRejectCause::Validation,
+                SynIngressAccounting {
+                    rejected_validation: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+            (
+                SynIngressRejectCause::Signature,
+                SynIngressAccounting {
+                    rejected_signature: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+            (
+                SynIngressRejectCause::NoListener,
+                SynIngressAccounting {
+                    rejected_no_listener: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+            (
+                SynIngressRejectCause::BacklogFull,
+                SynIngressAccounting {
+                    rejected_backlog_full: 1,
+                    ..SynIngressAccounting::default()
+                },
+            ),
+        ];
+        for (cause, expected) in causes {
+            let mut accounting = SynIngressAccounting::default();
+            accounting.note_rejected(cause);
+            assert_eq!(accounting.rejected, 1, "aggregate must move");
+            let mut expected_full = expected;
+            expected_full.rejected = 1;
+            assert_eq!(accounting, expected_full, "exactly one split field moves");
+            assert_eq!(
+                accounting.split_rejected_sum(),
+                accounting.rejected,
+                "split sum must equal the aggregate"
+            );
+        }
+        assert_eq!(SynIngressAccounting::default().split_rejected_sum(), 0);
+    }
+
+    #[test]
+    fn syn_ingress_corrupt_signature_counts_signature_cause() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1362_0001, 0x1362_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1362_0003);
+        // Flip the trailing byte (inside the signature option, past
+        // every length prefix): decode still parses, verification
+        // must fail.
+        let mut bad = syn.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0x01;
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        sink.listen(REMOTE_PORT).expect("listener");
+        let outcome = sink.process_inbound_packet(
+            &bad,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "corrupt signature must fail closed");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_signature, 1);
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    #[test]
+    fn syn_ingress_flag_only_syn_counts_validation_cause() {
+        // SYNCHRONIZE-only shape (no FROM/SIGNATURE/MAX_PACKET_SIZE):
+        // decodes, then fails initial-SYN policy validation.
+        let shaped = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: 0,
+                receive_stream_id: 0x1363_00b5,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(i2pr_proto::streaming::FLAG_SYNCHRONIZE)
+                    .expect("SYN flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("SYN-shaped packet encoding");
+        let recipient = destination(0x1363_0002);
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        sink.listen(REMOTE_PORT).expect("listener");
+        let outcome = sink.process_inbound_packet(
+            &shaped,
+            &[0_u8; 32],
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "flag-only SYN must fail validation");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_validation, 1);
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    #[test]
+    fn syn_ingress_truncated_packet_counts_decode_cause() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1364_0001, 0x1364_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1364_0003);
+        // Header present (peek classifies), body truncated (decode fails).
+        let cut = &syn[..64];
+        assert!(cut.len() >= i2pr_proto::streaming::MIN_STREAMING_HEADER_BYTES);
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        sink.listen(REMOTE_PORT).expect("listener");
+        let outcome = sink.process_inbound_packet(
+            cut,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "truncated SYN must fail decode");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_decode, 1);
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    #[test]
+    fn syn_ingress_full_backlog_counts_backlog_cause() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1365_0001, 0x1365_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let small_backlog = StreamingConfig {
+            max_listener_backlog: 1,
+            ..StreamingConfig::balanced()
+        };
+        let mut sink = StreamingManager::new(small_backlog);
+        sink.listen(REMOTE_PORT).expect("listener");
+        // First SYN fills the one-slot backlog.
+        let first = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1365_0003);
+        sink.process_inbound_packet(
+            &first,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("first SYN accepted");
+        // Second SYN meets a full backlog.
+        let second = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1365_0004);
+        let outcome = sink.process_inbound_packet(
+            &second,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "over-backlog SYN must fail closed");
+        let accounting = sink.syn_ingress();
+        assert_eq!(accounting.observed, 2);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.rejected_backlog_full, 1);
+        assert_eq!(accounting.split_rejected_sum(), accounting.rejected);
+    }
+
+    /// Builds a config identical to balanced except for a short
+    /// listener-backlog entry age (Plan 486 eviction tests).
+    fn short_backlog_age_config(entry_age_ms: u64) -> StreamingConfig {
+        StreamingConfig {
+            max_listener_backlog_entry_age_ms: entry_age_ms,
+            ..StreamingConfig::balanced()
+        }
+    }
+
+    #[test]
+    fn stale_backlog_entries_are_evicted_not_handed_out() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1366_0001, 0x1366_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let mut sink = StreamingManager::new(short_backlog_age_config(1_000));
+        sink.listen(REMOTE_PORT).expect("listener");
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1366_0003);
+        sink.process_inbound_packet(
+            &syn,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("SYN accepted");
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 1);
+        // Past the entry age the acceptor observes an empty backlog:
+        // the stale entry is evicted and counted, never handed out.
+        assert!(sink.accept(REMOTE_PORT, NOW_MS + 1_001).is_none());
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 0);
+        assert_eq!(sink.backlog_evicted(), 1);
+        assert_eq!(sink.connection_count(), 0);
+        assert!(sink.drain_outbound().is_empty());
+    }
+
+    #[test]
+    fn live_backlog_entries_survive_accept_before_ttl() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1367_0001, 0x1367_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let mut sink = StreamingManager::new(short_backlog_age_config(1_000));
+        sink.listen(REMOTE_PORT).expect("listener");
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1367_0003);
+        let observation = sink
+            .process_inbound_packet(
+                &syn,
+                originator.id().as_hash().as_bytes(),
+                &recipient,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                NOW_MS,
+            )
+            .expect("SYN accepted");
+        let expected = observation.connection_id.expect("backlogged id");
+        // At exactly the entry age the entry is still live (eviction
+        // fires only when strictly older).
+        let handed = sink
+            .accept(REMOTE_PORT, NOW_MS + 1_000)
+            .expect("live entry");
+        assert_eq!(handed, expected);
+        assert_eq!(sink.backlog_evicted(), 0);
+    }
+
+    #[test]
+    fn accept_skips_stale_front_and_hands_live_back() {
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1368_0001, 0x1368_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let mut sink = StreamingManager::new(StreamingConfig {
+            max_listener_backlog: 2,
+            max_listener_backlog_entry_age_ms: 1_000,
+            ..StreamingConfig::balanced()
+        });
+        sink.listen(REMOTE_PORT).expect("listener");
+        let first = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1368_0003);
+        sink.process_inbound_packet(
+            &first,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("first SYN accepted");
+        let second = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1368_0004);
+        let second_observation = sink
+            .process_inbound_packet(
+                &second,
+                originator.id().as_hash().as_bytes(),
+                &recipient,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                NOW_MS + 500,
+            )
+            .expect("second SYN accepted");
+        let second_id = second_observation.connection_id.expect("backlogged id");
+        // The stale front entry is evicted; the live back entry is
+        // handed out (a dangling-id pop can never strand the queue).
+        let handed = sink.accept(REMOTE_PORT, NOW_MS + 1_001).expect("live back");
+        assert_eq!(handed, second_id);
+        assert_eq!(sink.backlog_evicted(), 1);
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 0);
+    }
+
+    #[test]
+    fn backlog_sweep_evicts_across_ports_and_frees_capacity() {
+        const OTHER_PORT: u16 = REMOTE_PORT + 1;
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1369_0001, 0x1369_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let mut sink = StreamingManager::new(StreamingConfig {
+            max_listener_backlog: 1,
+            max_listener_backlog_entry_age_ms: 1_000,
+            ..StreamingConfig::balanced()
+        });
+        sink.listen(REMOTE_PORT).expect("listener");
+        sink.listen(OTHER_PORT).expect("listener");
+        for (seed, port) in [(0x1369_0003, REMOTE_PORT), (0x1369_0004, OTHER_PORT)] {
+            let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, seed);
+            sink.process_inbound_packet(
+                &syn,
+                originator.id().as_hash().as_bytes(),
+                &recipient,
+                LOCAL_PORT,
+                port,
+                NOW_MS,
+            )
+            .expect("SYN accepted");
+        }
+        // Both ports hold one stale entry; the sweep removes both
+        // and counts both.
+        assert_eq!(sink.evict_stale_backlog_entries(NOW_MS + 1_001), 2);
+        assert_eq!(sink.backlog_evicted(), 2);
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 0);
+        assert_eq!(sink.listener_backlog(OTHER_PORT), 0);
+        assert_eq!(sink.connection_count(), 0);
+        // The freed capacity admits a fresh SYN.
+        let fresh = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1369_0005);
+        sink.process_inbound_packet(
+            &fresh,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS + 1_001,
+        )
+        .expect("fresh SYN accepted after sweep");
+        assert_eq!(sink.listener_backlog(REMOTE_PORT), 1);
+    }
+
+    #[test]
+    fn backlog_entry_age_config_is_bounded() {
+        // Zero age would evict every entry on arrival: refused.
+        assert!(matches!(
+            StreamingConfig::try_new(
+                64, 32, 32, 16, 64, 64, 128, 8, 30_000, 300_000, 10_000, 750, 4, 0,
+            ),
+            Err(crate::streaming::config::StreamingConfigError::ZeroListenerBacklogEntryAge)
+        ));
+        // Above the ceiling: refused.
+        assert!(matches!(
+            StreamingConfig::try_new(
+                64, 32, 32, 16, 64, 64, 128, 8, 30_000, 300_000, 10_000, 750, 4,
+                crate::streaming::config::MAX_LISTENER_BACKLOG_ENTRY_AGE_MS + 1,
+            ),
+            Err(
+                crate::streaming::config::StreamingConfigError::ListenerBacklogEntryAgeExceedsLimit
+                    { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn rejected_syns_queue_no_outbound_packets() {
+        // Plan 486 silent-drop invariant: every SYN reject path is
+        // observable only through counts — no response packet is
+        // ever queued toward the peer.
+        let (originator, recipient, recipient_remote) =
+            syn_originator_pair(0x1370_0001, 0x1370_0002);
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let syn = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1370_0003);
+        // Decode: header present so the peek classifies, body
+        // truncated so the strict decode fails.
+        let truncated = syn[..64].to_vec();
+        // Validation: SYNCHRONIZE-only shape with no FROM/SIGNATURE.
+        let flag_only = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: 0,
+                receive_stream_id: 0x1370_00b5,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(i2pr_proto::streaming::FLAG_SYNCHRONIZE)
+                    .expect("SYN flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("SYN-shaped packet encoding");
+        // Signature: valid decode, corrupted signature bytes.
+        let mut corrupt = syn.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0x01;
+        let cases: Vec<(Vec<u8>, bool)> = vec![
+            (truncated, true),
+            (flag_only, true),
+            (corrupt, true),
+            // NoListener: well-formed SYN with no listener bound.
+            (syn.clone(), false),
+        ];
+        for (bytes, bind_listener) in cases {
+            let mut sink = StreamingManager::new(StreamingConfig::balanced());
+            if bind_listener {
+                sink.listen(REMOTE_PORT).expect("listener");
+            }
+            let outcome = sink.process_inbound_packet(
+                &bytes,
+                originator.id().as_hash().as_bytes(),
+                &recipient,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                NOW_MS,
+            );
+            assert!(outcome.is_err(), "reject path must fail closed");
+            assert!(
+                sink.drain_outbound().is_empty(),
+                "rejected SYN must queue no outbound packet"
+            );
+        }
+        // BacklogFull: fill the one-slot backlog, then overflow it.
+        let mut sink = StreamingManager::new(StreamingConfig {
+            max_listener_backlog: 1,
+            ..StreamingConfig::balanced()
+        });
+        sink.listen(REMOTE_PORT).expect("listener");
+        sink.process_inbound_packet(
+            &syn,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("first SYN accepted");
+        let overflow = inbound_syn_bytes(&mut sender, &originator, &recipient_remote, 0x1370_0004);
+        let outcome = sink.process_inbound_packet(
+            &overflow,
+            originator.id().as_hash().as_bytes(),
+            &recipient,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        );
+        assert!(outcome.is_err(), "over-backlog SYN must fail closed");
+        assert_eq!(sink.syn_ingress().rejected_backlog_full, 1);
+        assert!(
+            sink.drain_outbound().is_empty(),
+            "backlog-full SYN must queue no outbound packet"
+        );
+    }
+
+    #[test]
+    fn syn_response_without_outbound_state_counts_observed_and_rejected() {
+        use i2pr_proto::streaming::SYN_RESPONSE_FLAGS;
+
+        let local = destination(0x1351_0001);
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        assert_eq!(
+            manager.syn_response_ingress(),
+            SynResponseIngressAccounting::default()
+        );
+        // SYN flag with both stream ids nonzero peeks as a SYN
+        // response; with no outbound connection the port-tuple check
+        // rejects it before decode.
+        let shaped = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: 0x1111_1111,
+                receive_stream_id: 0x2222_2222,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(SYN_RESPONSE_FLAGS).expect("response flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("syn-response-shaped packet encoding");
+        assert!(
+            manager
+                .process_inbound_packet(
+                    &shaped,
+                    &[0_u8; 32],
+                    &local,
+                    REMOTE_PORT,
+                    LOCAL_PORT,
+                    NOW_MS
+                )
+                .is_err()
+        );
+        assert_eq!(
+            manager.syn_response_ingress(),
+            SynResponseIngressAccounting {
+                observed: 1,
+                accepted: 0,
+                rejected: 1,
+            }
+        );
+        // Non-SYN traffic never touches the handshake accounting.
+        let data = raw_data_packet(0x3333_3333, 0x4444_4444, 7);
+        let _ = manager.process_inbound_packet(
+            &data,
+            &[0_u8; 32],
+            &local,
+            REMOTE_PORT,
+            LOCAL_PORT,
+            NOW_MS,
+        );
+        assert_eq!(manager.syn_response_ingress().observed, 1);
+        assert_eq!(manager.syn_response_ingress().rejected, 1);
+    }
+
+    /// Establishes one outbound connection addressed by the returned
+    /// local receive stream id, following the same forced-
+    /// establishment shape as the production-path tests above.
+    fn established_outbound(
+        seed: u64,
+    ) -> (
+        StreamingManager,
+        crate::DestinationIdentity,
+        crate::streaming::connection::ConnectionId,
+        u32,
+    ) {
+        let local = destination(seed);
+        let remote_identity = destination(seed ^ 0x00FF_00FF);
+        let remote = RemoteDestination {
+            destination_hash: *remote_identity.id().as_hash().as_bytes(),
+            signing_public_key: remote_identity.destination().signing_key().clone(),
+            static_public_key: remote_identity.static_public_bytes(),
+        };
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent {
+            connection_id,
+            receive_stream_id,
+            ..
+        } = manager
+            .connect(
+                &local,
+                &remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(seed ^ 0x0F0F_0F0F),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        manager.drain_outbound();
+        let connection = manager
+            .get_connection_mut(connection_id)
+            .expect("connection");
+        connection.set_remote_stream_id(REMOTE_STREAM_ID);
+        connection
+            .transition_established(super::DEFAULT_ADVERTISED_MAX_PAYLOAD.into(), NOW_MS)
+            .expect("established connection");
+        (manager, local, connection_id, receive_stream_id)
+    }
+
+    #[test]
+    fn data_packet_ingress_counts_accepted_payload_on_established_connection() {
+        let (mut manager, local, _, receive_stream_id) = established_outbound(0x1352_0001);
+        assert_eq!(
+            manager.data_packet_ingress(),
+            DataPacketIngressAccounting::default()
+        );
+        let packet = raw_data_packet_with_payload(receive_stream_id, REMOTE_STREAM_ID, 1, 64);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("data accepted");
+        let accounting = manager.data_packet_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 0);
+        assert_eq!(accounting.payload_bytes_admitted, 64);
+        assert_eq!(
+            accounting.accepted.saturating_add(accounting.rejected),
+            accounting.observed
+        );
+        // Data traffic never touches the handshake accounting.
+        assert_eq!(
+            manager.syn_response_ingress(),
+            SynResponseIngressAccounting::default()
+        );
+    }
+
+    #[test]
+    fn data_packet_without_connection_counts_observed_and_rejected() {
+        let local = destination(0x1352_0002);
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let packet = raw_data_packet(0x3333_3333, 0x4444_4444, 7);
+        assert!(
+            manager
+                .process_inbound_packet(
+                    &packet,
+                    &[0_u8; 32],
+                    &local,
+                    REMOTE_PORT,
+                    LOCAL_PORT,
+                    NOW_MS
+                )
+                .is_err()
+        );
+        assert_eq!(
+            manager.data_packet_ingress(),
+            DataPacketIngressAccounting {
+                observed: 1,
+                accepted: 0,
+                rejected: 1,
+                payload_bytes_admitted: 0,
+                data_arrived: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn data_packet_port_tuple_mismatch_counts_rejected() {
+        let (mut manager, local, _, receive_stream_id) = established_outbound(0x1352_0003);
+        let packet = raw_data_packet(receive_stream_id, REMOTE_STREAM_ID, 1);
+        assert!(
+            manager
+                .process_inbound_packet(
+                    &packet,
+                    &[0_u8; 32],
+                    &local,
+                    LOCAL_PORT,
+                    REMOTE_PORT,
+                    NOW_MS
+                )
+                .is_err()
+        );
+        let accounting = manager.data_packet_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.payload_bytes_admitted, 0);
+    }
+
+    #[test]
+    fn data_packet_buffered_out_of_order_admits_payload() {
+        let (mut manager, local, _, receive_stream_id) = established_outbound(0x1352_0004);
+        // Sequence 2 arrives with sequence 1 still missing: held in
+        // the reorder buffer, not delivered, but its payload arrived.
+        let packet = raw_data_packet_with_payload(receive_stream_id, REMOTE_STREAM_ID, 2, 32);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("out-of-order data buffered");
+        assert_eq!(manager.pending_delivered_len(), 0);
+        let accounting = manager.data_packet_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 1);
+        assert_eq!(accounting.rejected, 0);
+        assert_eq!(accounting.payload_bytes_admitted, 32);
+    }
+
+    #[test]
+    fn close_without_signature_counts_rejected() {
+        let (mut manager, local, _, receive_stream_id) = established_outbound(0x1352_0005);
+        // CLOSE requires SIGNATURE_INCLUDED with a real signature;
+        // the signature-free control shape is a typed decode
+        // rejection, not a state transition.
+        let packet = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: receive_stream_id,
+                receive_stream_id: REMOTE_STREAM_ID,
+                sequence_num: 1,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(i2pr_proto::streaming::CLOSE_FLAGS)
+                    .expect("close flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("close-shaped packet encoding");
+        assert!(
+            manager
+                .process_inbound_packet(
+                    &packet,
+                    &[0_u8; 32],
+                    &local,
+                    REMOTE_PORT,
+                    LOCAL_PORT,
+                    NOW_MS
+                )
+                .is_err()
+        );
+        let accounting = manager.data_packet_ingress();
+        assert_eq!(accounting.observed, 1);
+        assert_eq!(accounting.accepted, 0);
+        assert_eq!(accounting.rejected, 1);
+        assert_eq!(accounting.payload_bytes_admitted, 0);
+    }
+
+    #[test]
+    fn syn_response_traffic_never_touches_data_accounting() {
+        use i2pr_proto::streaming::SYN_RESPONSE_FLAGS;
+
+        let local = destination(0x1352_0006);
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let shaped = encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id: 0x1111_1111,
+                receive_stream_id: 0x2222_2222,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(SYN_RESPONSE_FLAGS).expect("response flags"),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("syn-response-shaped packet encoding");
+        let _ = manager.process_inbound_packet(
+            &shaped,
+            &[0_u8; 32],
+            &local,
+            REMOTE_PORT,
+            LOCAL_PORT,
+            NOW_MS,
+        );
+        assert_eq!(
+            manager.data_packet_ingress(),
+            DataPacketIngressAccounting::default()
+        );
+    }
+
+    #[test]
+    fn data_packet_ingress_delta_since_subtracts_fieldwise() {
+        let later = DataPacketIngressAccounting {
+            observed: 10,
+            accepted: 7,
+            rejected: 3,
+            payload_bytes_admitted: 2328,
+            data_arrived: 7,
+        };
+        let earlier = DataPacketIngressAccounting {
+            observed: 4,
+            accepted: 4,
+            rejected: 0,
+            payload_bytes_admitted: 1000,
+            data_arrived: 4,
+        };
+        assert_eq!(
+            later.delta_since(earlier),
+            DataPacketIngressAccounting {
+                observed: 6,
+                accepted: 3,
+                rejected: 3,
+                payload_bytes_admitted: 1328,
+                data_arrived: 3,
+            }
+        );
+        assert_eq!(
+            earlier.delta_since(later),
+            DataPacketIngressAccounting::default()
+        );
     }
 
     #[test]
@@ -2542,18 +4101,57 @@ mod tests {
         assert_eq!(manager.pending_ack_count(), 0);
     }
 
-    #[test]
-    fn over_cap_connection_snoozes_standalone_ack_and_recovers_on_drain() {
-        // Plan 152 D1: while undrained bytes reach the cap, no
-        // standalone ACK is emitted; after the drain the snoozed
-        // deadline fires and the ACK goes out. A full receive window
-        // of maximum-size packets reaches the cap with real traffic.
-        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
-        let cap = manager.delivered_cap_bytes();
-        assert!(cap > 0);
-        let per_packet = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES;
+    fn raw_ack_only_packet(send_stream_id: u32, receive_stream_id: u32) -> Vec<u8> {
+        encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id,
+                receive_stream_id,
+                sequence_num: 0,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::empty(),
+                option_bytes: Vec::new(),
+                payload: Vec::new(),
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("ack-only packet encoding")
+    }
+
+    fn raw_data_packet_with_immediate_ack_request(
+        send_stream_id: u32,
+        receive_stream_id: u32,
+        sequence: u32,
+    ) -> Vec<u8> {
+        encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id,
+                receive_stream_id,
+                sequence_num: sequence,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::new(i2pr_proto::streaming::FLAG_DELAY_REQUESTED)
+                    .expect("delay-requested flags"),
+                option_bytes: 0_u16.to_be_bytes().to_vec(),
+                payload: vec![sequence as u8],
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("data packet encoding")
+    }
+
+    /// Fills a connection's inbound buffer up to its cap with
+    /// maximum-size in-order payloads and returns the number of
+    /// packets it took.
+    fn fill_inbound_buffer_to_cap(
+        manager: &mut StreamingManager,
+        local: &DestinationIdentity,
+        receive_stream_id: u32,
+    ) -> (usize, usize) {
         let window = manager.config().max_recv_window_packets as usize;
-        assert_eq!(cap, window * per_packet);
+        let per_packet = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES;
         for sequence in 1..=(window as u32) {
             let packet = raw_data_packet_with_payload(
                 receive_stream_id,
@@ -2565,55 +4163,92 @@ mod tests {
                 .process_inbound_packet(
                     &packet,
                     &[0_u8; 32],
-                    &local,
+                    local,
                     REMOTE_PORT,
                     LOCAL_PORT,
                     NOW_MS,
                 )
                 .expect("in-order delivery");
         }
+        (window, per_packet)
+    }
+
+    #[test]
+    fn ack_is_emitted_while_the_application_has_not_drained() {
+        // Plan 487 WP1 (fail-before test): the receiver-ACK contract is
+        // transport-state based, never application-drain based. A
+        // connection whose inbound buffer is at its cap must still
+        // acknowledge the data it received.
+        //
+        // Reference contract, read at the exact pins: i2pd 2.61.0
+        // schedules the acknowledgement when a packet is received and
+        // still calls `SendQuickAck()` when it *drops* an overflow
+        // packet (`libi2pd/Streaming.cpp:256-269`, `:289-300`); I2P
+        // Java 2.13.0 schedules the acknowledgement when
+        // `messageReceived` reports a new in-sequence packet and calls
+        // `ackImmediately()` on inbound-buffer overflow
+        // (`.../impl/ConnectionPacketHandler.java:145-161`, `:180-236`).
+        // Neither withholds an acknowledgement because the local
+        // application has not read the bytes.
+        //
+        // Before Plan 487 this test fails: `poll_acks` snoozed the
+        // deadline while the connection was over cap.
+        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
+        let cap = manager.delivered_cap_bytes();
+        assert!(cap > 0);
+        let (window, per_packet) =
+            fill_inbound_buffer_to_cap(&mut manager, &local, receive_stream_id);
+        assert_eq!(cap, window * per_packet);
         assert_eq!(manager.pending_bytes_for(connection_id), cap);
         assert!(manager.delivered_over_cap(connection_id));
-        // A fresh deadline is snoozed, never emitted while capped.
-        assert!(manager.poll_acks(NOW_MS + 60_000).is_empty());
-        assert_eq!(manager.pending_ack_count(), 1);
-        // Draining below cap lets the snoozed deadline fire.
+        // The application has not drained a single byte.
+        assert_eq!(manager.pending_delivered_len(), window);
+        assert_eq!(manager.pending_bytes_for(connection_id), cap);
+
+        // The acknowledgement is emitted anyway.
+        let acks = manager.poll_acks(NOW_MS + 60_000);
+        assert_eq!(
+            acks.len(),
+            1,
+            "an ACK must be emitted while the application has not drained"
+        );
+        assert_eq!(manager.pending_ack_count(), 0);
+    }
+
+    #[test]
+    fn over_cap_connection_still_emits_the_standalone_ack() {
+        // Plan 487 WP1: the Plan 152 D1 snooze is gone. The standalone
+        // ACK deadline fires on schedule regardless of the local
+        // inbound buffer, and the drain is not what releases it.
+        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
+        let cap = manager.delivered_cap_bytes();
+        let (window, _) = fill_inbound_buffer_to_cap(&mut manager, &local, receive_stream_id);
+        assert_eq!(manager.pending_bytes_for(connection_id), cap);
+        assert!(manager.delivered_over_cap(connection_id));
+
+        let acks = manager.poll_acks(NOW_MS + 60_000);
+        assert_eq!(acks.len(), 1, "the standalone ACK must not be snoozed");
+        assert_eq!(manager.pending_ack_count(), 0);
+
+        // Draining is still the application-visible backpressure
+        // signal, and it is what re-opens the inbound buffer.
         let drained = manager.drain_delivered();
         assert_eq!(drained.len(), window);
         assert_eq!(manager.pending_bytes_for(connection_id), 0);
         assert!(!manager.delivered_over_cap(connection_id));
-        let acks = manager.poll_acks(NOW_MS + 60_000 + 60_000);
-        assert_eq!(acks.len(), 1, "catch-up ACK must fire after drain");
     }
 
     #[test]
-    fn gated_send_data_carries_no_ack_and_keeps_deadline() {
-        // Plan 152 D1: piggybacked views from an over-cap connection
-        // use NO_ACK so the peer window cannot slide; the pending
-        // standalone deadline is preserved rather than cleared.
+    fn send_data_piggybacks_the_real_ack_while_over_cap() {
+        // Plan 487 WP1: the piggybacked acknowledgement is never
+        // replaced by `NO_ACK`. Plan 152 D1 suppressed it while the
+        // connection held more undrained bytes than its cap, coupling
+        // the acknowledgement to local application drain.
         use i2pr_proto::streaming::FLAG_NO_ACK;
 
         let (mut manager, local, remote, connection_id, receive_stream_id) = established_pair();
         let window = manager.config().max_recv_window_packets as usize;
-        let per_packet = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES;
-        for sequence in 1..=(window as u32) {
-            let packet = raw_data_packet_with_payload(
-                receive_stream_id,
-                REMOTE_STREAM_ID,
-                sequence,
-                per_packet,
-            );
-            manager
-                .process_inbound_packet(
-                    &packet,
-                    &[0_u8; 32],
-                    &local,
-                    REMOTE_PORT,
-                    LOCAL_PORT,
-                    NOW_MS,
-                )
-                .expect("in-order delivery");
-        }
+        let (_, _) = fill_inbound_buffer_to_cap(&mut manager, &local, receive_stream_id);
         assert!(manager.delivered_over_cap(connection_id));
         let request = manager
             .send_data(
@@ -2625,7 +4260,7 @@ mod tests {
                 b"reply",
                 NOW_MS + 5,
             )
-            .expect("send while gated");
+            .expect("send while the inbound buffer is full");
         let envelope = decode_client_payload(
             &request.application_payload,
             i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
@@ -2637,15 +4272,239 @@ mod tests {
             i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
         )
         .expect("streaming packet");
-        assert_ne!(
+        assert_eq!(
             packet.flags.bits() & FLAG_NO_ACK,
             0,
-            "gated DATA must carry NO_ACK"
+            "the piggybacked acknowledgement must never be suppressed"
+        );
+        assert_eq!(
+            packet.ack_through, window as u32,
+            "the piggyback must carry the real acknowledgement ceiling"
         );
         assert_eq!(
             manager.pending_ack_count(),
+            0,
+            "the piggyback satisfies any pending standalone ACK"
+        );
+    }
+
+    #[test]
+    fn over_cap_inbound_payload_is_dropped_and_the_peer_is_choked() {
+        // Plan 487 WP1: the inbound-buffer bound is a *drop* bound. The
+        // payload that would exceed it is not admitted to the receive
+        // window (so the acknowledgement ceiling does not advance and
+        // the peer will retransmit), and the peer is choked with the
+        // reference's own `DELAY_REQUESTED` vocabulary.
+        //
+        // Reference contract: i2pd deletes the overflow packet, sets
+        // `m_IsChoking3`, and still calls `SendQuickAck()`
+        // (`libi2pd/Streaming.cpp:256-269`); I2P Java drops the packet
+        // and calls `setChoking(true)`, which calls `ackImmediately()`
+        // (`.../impl/ConnectionPacketHandler.java:145-161`).
+        use i2pr_proto::streaming::{DELAY_CHOKE, FLAG_DELAY_REQUESTED};
+
+        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
+        let cap = manager.delivered_cap_bytes();
+        let (window, per_packet) =
+            fill_inbound_buffer_to_cap(&mut manager, &local, receive_stream_id);
+        assert_eq!(manager.pending_bytes_for(connection_id), cap);
+        let delivered_before = manager.pending_delivered_len();
+        assert_eq!(delivered_before, window);
+
+        // The next in-order payload does not fit.
+        let overflow = raw_data_packet_with_payload(
+            receive_stream_id,
+            REMOTE_STREAM_ID,
+            window as u32 + 1,
+            per_packet,
+        );
+        manager
+            .process_inbound_packet(
+                &overflow,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("overflow observation");
+
+        // The payload was dropped: it reached neither the application
+        // nor the delivered-byte accounting.
+        assert_eq!(
+            manager.pending_delivered_len(),
+            delivered_before,
+            "the over-cap payload must not reach the application"
+        );
+        assert_eq!(
+            manager.pending_bytes_for(connection_id),
+            cap,
+            "the over-cap payload must not be accounted as delivered"
+        );
+        // The peer is choked.
+        assert!(
+            manager.is_choking(connection_id),
+            "the peer must be choked while the inbound buffer is full"
+        );
+
+        // The next outbound packet for the connection carries the
+        // reference's choke vocabulary.
+        let acks = manager.poll_acks(NOW_MS + 60_000);
+        assert_eq!(acks.len(), 1, "the ACK is still emitted after a drop");
+        let envelope = decode_client_payload(
+            &acks[0].application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("client payload");
+        let (packet, _) = decode_streaming_packet(
+            &envelope.payload,
+            i2pr_proto::streaming::StreamingReceiveLimit::default(),
+            i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
+        )
+        .expect("streaming packet");
+        assert_ne!(
+            packet.flags.bits() & FLAG_DELAY_REQUESTED,
+            0,
+            "the choke must ride on the outbound packet"
+        );
+        assert_eq!(
+            packet.options.delay_requested,
+            Some(DELAY_CHOKE),
+            "the choke must use the reference's choke delay"
+        );
+        // The choke is released once it has been carried.
+        assert!(!manager.is_choking(connection_id));
+    }
+
+    #[test]
+    fn immediate_ack_request_is_honoured() {
+        // Plan 487 WP1 regression matrix: an explicit immediate-ACK
+        // request (delay value 0) is honoured on the reference's
+        // schedule — it is emitted at once, not deferred to the
+        // delayed-ACK deadline.
+        let (mut manager, local, _remote, _connection_id, receive_stream_id) = established_pair();
+        let packet =
+            raw_data_packet_with_immediate_ack_request(receive_stream_id, REMOTE_STREAM_ID, 1);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("immediate-ack delivery");
+        let queued = manager.drain_outbound();
+        assert_eq!(
+            queued.len(),
             1,
-            "NO_ACK piggyback must not clear the standalone deadline"
+            "an immediate-ACK request must be answered at once"
+        );
+        assert_eq!(
+            queued[0].sequence, 0,
+            "the immediate ACK is an ACK-only packet"
+        );
+        assert_eq!(
+            manager.pending_ack_count(),
+            0,
+            "the immediate ACK must not also arm the delayed deadline"
+        );
+    }
+
+    #[test]
+    fn ack_only_packet_never_schedules_an_ack() {
+        // Plan 487 WP1 regression matrix: no ACK-of-ACK loop. The
+        // plain-ACK control form (sequence 0 without SYNCHRONIZE)
+        // never enters the application receive window and never
+        // schedules an acknowledgement.
+        let (mut manager, local, _remote, _connection_id, receive_stream_id) = established_pair();
+        let packet = raw_ack_only_packet(receive_stream_id, REMOTE_STREAM_ID);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("ack-only observation");
+        assert_eq!(manager.pending_ack_count(), 0);
+        assert!(manager.drain_outbound().is_empty());
+        assert!(manager.poll_acks(NOW_MS + 60_000).is_empty());
+    }
+
+    #[test]
+    fn plan487_four_stage_attribution_counts_each_stage_independently() {
+        // Plan 487 WP2: the four DATA-phase stages are counted by their
+        // own counters and none is inferred from another.
+        //
+        // Stage 1 (manager arrival): inbound DATA that reached the
+        // application receive window as new data.
+        // Stage 2 (ACK generated): acknowledgements the manager
+        // produced, with `no_ack_emitted` as a permanent negative
+        // control.
+        let (mut manager, local, _remote, _connection_id, receive_stream_id) = established_pair();
+        let before_ingress = manager.data_packet_ingress();
+        let before_ack = manager.ack_generation();
+
+        let packet = raw_data_packet_with_payload(
+            receive_stream_id,
+            REMOTE_STREAM_ID,
+            1,
+            crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES,
+        );
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("in-order delivery");
+
+        let ingress = manager.data_packet_ingress().delta_since(before_ingress);
+        assert_eq!(ingress.observed, 1);
+        assert_eq!(ingress.accepted, 1);
+        assert_eq!(ingress.rejected, 0);
+        assert_eq!(
+            ingress.data_arrived, 1,
+            "stage 1 (manager arrival) must count the new DATA"
+        );
+        assert_eq!(ingress.payload_bytes_admitted, 2048);
+
+        let ack = manager.ack_generation().delta_since(before_ack);
+        assert_eq!(
+            ack.generated, 1,
+            "stage 2 (ACK generated) must count the produced acknowledgement"
+        );
+        assert_eq!(
+            ack.no_ack_emitted, 0,
+            "Plan 487 WP1 removed the NO_ACK suppression; the control must stay zero"
+        );
+        assert_eq!(ack.generated_after_drop, 0);
+
+        // A control packet is accepted but is not a manager arrival.
+        let before_ingress = manager.data_packet_ingress();
+        let control = raw_ack_only_packet(receive_stream_id, REMOTE_STREAM_ID);
+        manager
+            .process_inbound_packet(
+                &control,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("control observation");
+        let ingress = manager.data_packet_ingress().delta_since(before_ingress);
+        assert_eq!(ingress.accepted, 1);
+        assert_eq!(
+            ingress.data_arrived, 0,
+            "a control packet is not a manager arrival"
         );
     }
 

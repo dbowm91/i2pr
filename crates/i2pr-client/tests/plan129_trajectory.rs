@@ -615,7 +615,10 @@ fn establish_stream(
 
     // B has exactly one pending inbound stream on its listening port.
     assert_eq!(b.streaming.listener_backlog(PORT_B), 1);
-    let b_conn = b.streaming.accept(PORT_B).expect("pending inbound stream");
+    let b_conn = b
+        .streaming
+        .accept(PORT_B, *clock)
+        .expect("pending inbound stream");
     assert_eq!(
         b.streaming.get_connection(b_conn).expect("b conn").state(),
         ConnectionState::InboundSynReceived
@@ -1476,6 +1479,7 @@ fn plan_129_non_protocol_six_client_payload_never_reaches_streaming() {
         sequence: 0,
         send_stream_id: 0,
         receive_stream_id: 0,
+        kind: i2pr_client::streaming::transport::OutboundPacketKind::Datagram,
     };
     let connections_before = side_b.streaming.connection_count();
     let (_, outcome) = pipe(&mut side_a, &mut side_b, &request, 0x1290_7100, clock);
@@ -1516,6 +1520,7 @@ fn plan_129_outbound_adapter_bounds_the_encoded_client_payload_not_the_mtu() {
         sequence: 0,
         send_stream_id: 0,
         receive_stream_id: 0,
+        kind: i2pr_client::streaming::transport::OutboundPacketKind::Datagram,
     };
 
     // Empty payload rejected.

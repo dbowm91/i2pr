@@ -1,0 +1,17 @@
+{
+  "mesh": {
+    "intros_produced": 1,
+    "peers": 3,
+    "refusals": 0,
+    "requests_admitted": 1,
+    "responses_forwarded": 1,
+    "tags_issued": 1
+  },
+  "plan": 490,
+  "receipt_digests": {
+    "admitted": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "forwarded": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "intro": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+  },
+  "schema": "i2pr-ssu2-introducer-mesh-v1"
+}

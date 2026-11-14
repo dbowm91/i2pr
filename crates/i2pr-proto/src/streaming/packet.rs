@@ -181,6 +181,35 @@ pub const FLAG_OFFLINE_SIGNATURE: u16 = 0x0800;
 /// of these bits set.
 pub const FLAG_RESERVED_MASK: u16 = 0xF000;
 
+/// Congestion-choking delay carried in a `DELAY_REQUESTED` option.
+///
+/// A peer that receives this value treats it as "reduce your send
+/// window": the value is a **choke signal**, not an acknowledgement
+/// delay the receiver is expected to honour on its own packets.
+///
+/// Reference values, read at this repository's exact pins:
+///
+/// - i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) defines
+///   `DELAY_CHOKING = 60000`, `DELAY_CHOKING_JAVA = 61000`,
+///   `DELAY_CHOKING_2 = 65535`, and `DELAY_CHOKING_3 = 65534`
+///   (`libi2pd/Streaming.h:75-78`). Its receive path applies the
+///   choke for any `delayRequested >= DELAY_CHOKING`
+///   (`libi2pd/Streaming.cpp:454-486`).
+/// - I2P Java 2.13.0 (`9134f808337b401e8e53c73734c81fab04280c9d`)
+///   defines `MIN_DELAY_CHOKE = 60001` and `SEND_DELAY_CHOKE = 61000`
+///   (`apps/streaming/java/src/net/i2p/client/streaming/impl/Packet.java:181-182`)
+///   and chokes for any `getOptionalDelay() >= MIN_DELAY_CHOKE`
+///   (`.../impl/ConnectionPacketHandler.java:135-143`).
+///
+/// `61000` is the only value in the choke vocabulary that **both**
+/// references recognise as a choke, so it is the interoperable choice:
+/// i2pd applies its choke and reduces its send window to 64 packets
+/// (`libi2pd/Streaming.cpp:470-477`, `:976-977`), and Java applies its
+/// choke and its congestion handling
+/// (`.../impl/Connection.java:1091-1100`). It fits the 16-bit wire
+/// field and stays clear of the reserved flag bits.
+pub const DELAY_CHOKE: u16 = 61000;
+
 /// Initial originator SYN flag set:
 /// `SYNCHRONIZE | SIGNATURE_INCLUDED | FROM_INCLUDED |
 /// MAX_PACKET_SIZE_INCLUDED | NO_ACK` = `0x04A9`.

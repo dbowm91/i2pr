@@ -3,7 +3,14 @@
 The daemon's `[bandwidth]` section is disabled by default. Enabling it creates
 one process-wide governor and passes that handle to the enabled SSU2 owner.
 Rates are directional bytes per second; `burst_bytes` bounds the token bucket
-and every single reservation. `share_percent` is retained for capacity-class
+and every single reservation. The default burst is 72_819 bytes: the smallest
+value that fits one maximum NTCP2 data frame (65_537 wire bytes) above the
+default 10 percent control reserve, `ceil(65_537 * 100 / 90)` (Plan 484).
+Raising `control_reserve_percent` can push the required minimum above this
+default; that configuration stays fail-closed at NTCP2 construction time
+rather than clamping. An explicitly configured smaller burst keeps exact
+semantics and is likewise rejected by the construction gate — set
+`burst_bytes` explicitly to override the default. `share_percent` is retained for capacity-class
 qualification only when the same governor remains healthy. It does not change
 the configured rate or describe observed utilization.
 

@@ -300,6 +300,7 @@ async fn pump_responder_loop(
     mut handle: Ssu2DaemonHandle,
     delivery: i2pr_daemon::router_i2np::RouterDeliveryService,
     responder: BuildResponder,
+    reply_ids: &[(u32, u32)],
     shutdown: CancellationToken,
 ) {
     loop {
@@ -321,6 +322,11 @@ async fn pump_responder_loop(
                     ..
                 } = dispatch
                 {
+                    let Some((_, reply_message_id)) =
+                        reply_ids.iter().find(|(outer, _)| *outer == message_id)
+                    else {
+                        continue;
+                    };
                     let message = match I2npMessage::decode_short_transport(
                         &inbound.bytes,
                         MAX_I2NP_MESSAGE_BYTES,
@@ -340,7 +346,7 @@ async fn pump_responder_loop(
                     let mut payload = Vec::with_capacity(1 + expected);
                     payload.push(body.count());
                     payload.extend_from_slice(body.records());
-                    let Some(reply_wire) = responder.process_build(&payload, message_id) else {
+                    let Some(reply_wire) = responder.process_build(&payload, *reply_message_id) else {
                         continue;
                     };
                     let request = match RouterDeliveryRequest::new(
@@ -454,6 +460,7 @@ async fn outbound_one_hop_build_installs_into_pool_and_registry() {
         handle_b,
         responder_delivery,
         responder,
+        &[(0x51A4_3002, 0x51A4_3001)],
         responder_token.clone(),
     ));
 
@@ -478,7 +485,7 @@ async fn outbound_one_hop_build_installs_into_pool_and_registry() {
         keys_a.hash,
     );
     let bridge_header = BridgeHeader::ShortTransport {
-        message_id,
+        message_id: message_id.wrapping_add(1),
         expiration_seconds: wall_secs().saturating_add(60) as u32,
     };
     let submit = coord
@@ -545,6 +552,7 @@ async fn inbound_one_hop_build_installs_into_pool_and_registry() {
         handle_b,
         responder_delivery,
         responder,
+        &[(0x51A4_3102, 0x51A4_3101)],
         responder_token.clone(),
     ));
 
@@ -569,7 +577,7 @@ async fn inbound_one_hop_build_installs_into_pool_and_registry() {
         keys_a.hash,
     );
     let bridge_header = BridgeHeader::ShortTransport {
-        message_id,
+        message_id: message_id.wrapping_add(1),
         expiration_seconds: wall_secs().saturating_add(60) as u32,
     };
     let submit = coord
@@ -626,6 +634,7 @@ async fn liveness_scheduler_pairs_both_directions() {
         handle_b,
         responder_delivery,
         responder,
+        &[(0x51A4_3202, 0x51A4_3201), (0x51A4_3302, 0x51A4_3301)],
         responder_token.clone(),
     ));
 
@@ -650,7 +659,7 @@ async fn liveness_scheduler_pairs_both_directions() {
         keys_a.hash,
     );
     let outbound_header = BridgeHeader::ShortTransport {
-        message_id: 0x51A4_3201,
+        message_id: 0x51A4_3202,
         expiration_seconds: wall_secs().saturating_add(60) as u32,
     };
     let _outbound_submit = coord
@@ -678,7 +687,7 @@ async fn liveness_scheduler_pairs_both_directions() {
         keys_a.hash,
     );
     let inbound_header = BridgeHeader::ShortTransport {
-        message_id: 0x51A4_3301,
+        message_id: 0x51A4_3302,
         expiration_seconds: wall_secs().saturating_add(60) as u32,
     };
     let _inbound_submit = coord
@@ -1009,6 +1018,7 @@ async fn pump_reference_shaped_responder_loop(
     mut handle: Ssu2DaemonHandle,
     delivery: i2pr_daemon::router_i2np::RouterDeliveryService,
     responder: BuildResponder,
+    reply_ids: &[(u32, u32)],
     shutdown: CancellationToken,
 ) {
     loop {
@@ -1028,6 +1038,11 @@ async fn pump_reference_shaped_responder_loop(
                     ..
                 } = dispatch
                 {
+                    let Some((_, reply_message_id)) =
+                        reply_ids.iter().find(|(outer, _)| *outer == message_id)
+                    else {
+                        continue;
+                    };
                     let message = match I2npMessage::decode_short_transport(
                         &inbound.bytes,
                         MAX_I2NP_MESSAGE_BYTES,
@@ -1058,9 +1073,9 @@ async fn pump_reference_shaped_responder_loop(
                     // tries endpoint-garlic first and falls back to
                     // forward on missing garlic material.
                     let reply_wire = responder
-                        .process_build_as_reference_endpoint(&payload, message_id)
+                        .process_build_as_reference_endpoint(&payload, *reply_message_id)
                         .or_else(|| {
-                            responder.process_build_as_reference_gateway_forward(&payload, message_id)
+                            responder.process_build_as_reference_gateway_forward(&payload, *reply_message_id)
                         });
                     let Some(reply_wire) = reply_wire else { continue; };
                     let request = match RouterDeliveryRequest::new(
@@ -1109,6 +1124,7 @@ async fn outbound_one_hop_via_reference_garlic_gateway_installs() {
         handle_b,
         responder_delivery,
         responder,
+        &[(0x51A4_4002, 0x51A4_4001)],
         responder_token.clone(),
     ));
 
@@ -1133,7 +1149,7 @@ async fn outbound_one_hop_via_reference_garlic_gateway_installs() {
         keys_a.hash,
     );
     let bridge_header = BridgeHeader::ShortTransport {
-        message_id,
+        message_id: message_id.wrapping_add(1),
         expiration_seconds: wall_secs().saturating_add(60) as u32,
     };
     coord
@@ -1211,6 +1227,7 @@ async fn inbound_one_hop_via_reference_forward_installs() {
         handle_b,
         responder_delivery,
         responder,
+        &[(0x51A4_4102, 0x51A4_4101)],
         responder_token.clone(),
     ));
 
@@ -1235,7 +1252,7 @@ async fn inbound_one_hop_via_reference_forward_installs() {
         keys_a.hash,
     );
     let bridge_header = BridgeHeader::ShortTransport {
-        message_id,
+        message_id: message_id.wrapping_add(1),
         expiration_seconds: wall_secs().saturating_add(60) as u32,
     };
     coord

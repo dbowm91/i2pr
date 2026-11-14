@@ -21,10 +21,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use i2pr_crypto::{RouterIdentityBundle, X25519PrivateKey};
 use i2pr_proto::{Date, Hash, Mapping, RouterAddress};
 use i2pr_runtime::{
-    CancellationToken, ChildFailurePolicy, ChildScope, Ssu2DialOutcome, Ssu2DialTarget,
-    Ssu2EstablishedLink, Ssu2IdentityMaterial, Ssu2InboundI2np, Ssu2RuntimeConfig,
+    CancellationToken, ChildFailurePolicy, ChildScope, RelayIntroBlock, RelayRequestBlock,
+    RelayResponseBlock, Ssu2DialOutcome, Ssu2DialTarget, Ssu2Endpoint, Ssu2EstablishedLink,
+    Ssu2IdentityMaterial, Ssu2InboundI2np, Ssu2RelayEvent, Ssu2RelayQueueError, Ssu2RuntimeConfig,
     Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome,
-    Ssu2ServiceHandle, Ssu2SocketConfig, Ssu2TestFaults,
+    Ssu2ServiceHandle, Ssu2SocketConfig, Ssu2TagRequestError, Ssu2TestFaults,
 };
 use i2pr_transport::{
     EncodedI2npMessage, LinkId, MAX_I2NP_MESSAGE_BYTES, PeerId, TerminationCategory, TransportKind,
@@ -435,6 +436,101 @@ async fn bidirectional_i2np_exchange_with_fragmentation() {
     b.shutdown_scope().await;
 }
 
+/// Plan 480 source-owner receipt contract: an explicitly enabled offline
+/// observer sees the real UDP session, exact authenticated ingress, and only
+/// the I2NP ID whose encrypted datagram was accepted by the socket writer.
+#[tokio::test]
+async fn qualification_observer_tracks_real_authenticated_ssu2_events() {
+    let config = Ssu2RuntimeConfig {
+        qualification_observer: true,
+        ..Ssu2RuntimeConfig::default()
+    };
+    let a = start_fixture_with_config(config, make_router_keys()).await;
+    let mut b = start_fixture_with_config(config, make_router_keys()).await;
+    let observer_a = a.service.qualification_observer().expect("observer A");
+    let observer_b = b.service.qualification_observer().expect("observer B");
+
+    let _link = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+    let expected_id = 0xA480;
+    send(&a, b.keys.peer, expected_id, 128, 0x48);
+    let received = recv_exact(&mut b.handle, 1).await;
+    assert_eq!(received[0][1..5], expected_id.to_be_bytes());
+
+    let (events_a, overflow_a) = observer_a.drain();
+    let (events_b, overflow_b) = observer_b.drain();
+    assert!(!overflow_a && !overflow_b);
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::LocalIdentityAttested
+            && event.link_generation() == 0
+    }));
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::SocketsBound
+            && event.link_generation() == 0
+    }));
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::OutboundSessionAuthenticated
+            && event.peer_commitment() == observer_a.peer_commitment(b.keys.peer).expect("peer")
+    }));
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::I2npQueueAccepted
+            && event.message_id() == Some(expected_id)
+            && event.peer_commitment() == observer_a.peer_commitment(b.keys.peer).expect("peer")
+    }));
+    assert!(events_a.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::I2npDatagramWritten
+            && event.message_id() == Some(expected_id)
+            && event.peer_commitment() == observer_a.peer_commitment(b.keys.peer).expect("peer")
+    }));
+    assert!(events_b.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::AuthenticatedI2npReceived
+            && event.message_id() == Some(expected_id)
+            && event.peer_commitment() == observer_b.peer_commitment(a.keys.peer).expect("peer")
+    }));
+
+    a.shutdown_scope().await;
+    b.shutdown_scope().await;
+    let (shutdown_events, overflowed) = observer_a.drain();
+    assert!(!overflowed);
+    assert!(shutdown_events.iter().any(|event| {
+        event.kind() == i2pr_runtime::Ssu2QualificationEventKind::RouterShutdown
+            && event.link_generation() == 0
+    }));
+}
+
+#[tokio::test]
+async fn source_write_receipt_waits_for_every_original_ssu2_fragment() {
+    let a = start_fixture(make_router_keys()).await;
+    let mut b = start_fixture(make_router_keys()).await;
+    let _link = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+
+    let expected_id = 0xA481;
+    let bytes = i2np_message(expected_id, 3_600, 0x49);
+    let message = EncodedI2npMessage::new(bytes.clone()).expect("message");
+    let (outcome, link_id, receipt) =
+        a.service
+            .send_i2np_with_receipt(b.keys.peer, message, Duration::from_secs(5));
+    assert_eq!(outcome, Ssu2SendOutcome::Accepted);
+    assert!(
+        link_id.is_some(),
+        "ticket must bind to one active generation"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        receipt.expect("accepted send returns ticket"),
+    )
+    .await
+    .expect("bounded source-write receipt")
+    .expect("session owner settles source-write receipt");
+    assert_eq!(recv_exact(&mut b.handle, 1).await, vec![bytes]);
+
+    a.shutdown_scope().await;
+    b.shutdown_scope().await;
+}
+
 #[tokio::test]
 async fn data_loss_recovers_with_exact_once_delivery() {
     let a = start_fixture(make_router_keys()).await;
@@ -726,4 +822,344 @@ fn inbound_handoff_shape_is_transport_neutral() {
         peer: PeerId::from_hash(Hash::from_bytes([9_u8; 32])),
         bytes: vec![6, 0, 0, 0, 1, 0, 0, 0, 2, 9],
     });
+}
+
+// ---------------------------------------------------------------------------
+// Plan 499 — the live relay-tag request path (WP2) and the outbound relay
+// carriage API (WP3).
+// ---------------------------------------------------------------------------
+
+/// Builds one valid Relay Intro block for the carriage rows.
+fn relay_intro_block(alice: &RouterKeys, relay_tag: u32) -> RelayIntroBlock {
+    RelayIntroBlock::new(
+        *alice.hash.as_bytes(),
+        0x5A5A_0001,
+        relay_tag,
+        u32::try_from(wall_secs()).unwrap_or(1_700_000_000),
+        2,
+        Ssu2Endpoint::from_socket_addr("127.0.0.1:43000".parse().expect("addr")).expect("endpoint"),
+        vec![0xA5; 64],
+    )
+    .expect("relay intro")
+}
+
+/// Builds one valid Relay Request block for the carriage rows.
+fn relay_request_block(relay_tag: u32) -> RelayRequestBlock {
+    RelayRequestBlock::new(
+        0x5A5A_0002,
+        relay_tag,
+        u32::try_from(wall_secs()).unwrap_or(1_700_000_000),
+        2,
+        Ssu2Endpoint::from_socket_addr("127.0.0.1:43001".parse().expect("addr")).expect("endpoint"),
+        vec![0xB6; 64],
+    )
+    .expect("relay request")
+}
+
+/// Builds one valid Relay Response block for the carriage rows.
+fn relay_response_block() -> RelayResponseBlock {
+    RelayResponseBlock::accept(
+        0x5A5A_0003,
+        u32::try_from(wall_secs()).unwrap_or(1_700_000_000),
+        2,
+        Ssu2Endpoint::from_socket_addr("127.0.0.1:43002".parse().expect("addr")).expect("endpoint"),
+        vec![0xC7; 64],
+        0x1234_5678_9ABC_DEF0,
+    )
+    .expect("relay response")
+}
+
+/// Waits until the peer's relay counters show at least `expected` observed
+/// relay-tag requests.
+async fn wait_for_tag_requests(fixture: &Fixture, expected: u64) {
+    let deadline = tokio::time::Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if fixture.service.relay_counters().tag_requests_observed >= expected {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "observed relay-tag requests did not reach {expected}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Plan 499 (WP2): a live peer that asks for a relay tag over a real
+/// session receives one, and the tag resolves to the **requesting** peer's
+/// router hash — the sharp half of the row, because it proves the tag is
+/// bound to the handshake-authenticated requester and to nobody else.
+#[tokio::test]
+async fn live_relay_tag_request_answers_with_a_tag_bound_to_the_requester() {
+    let introducer = Ssu2RuntimeConfig {
+        introducer_service: true,
+        ..Ssu2RuntimeConfig::default()
+    };
+    // The requester keeps its own introducer gate off: the request
+    // carries no policy, and the answer comes from the receiving peer's
+    // operator opt-in.
+    let mut a = start_fixture(make_router_keys()).await;
+    let b = start_fixture_with_config(introducer, make_router_keys()).await;
+
+    let _link = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+
+    a.service
+        .queue_relay_tag_request(b.keys.peer)
+        .expect("queue the relay-tag request");
+
+    let observed = tokio::time::timeout(WAIT_TIMEOUT, a.handle.next_relay_event())
+        .await
+        .expect("bounded relay handoff wait")
+        .expect("relay handoff open");
+    assert_eq!(observed.peer, b.keys.peer);
+    let Ssu2RelayEvent::Tag(tag) = observed.event else {
+        panic!("the requesting peer must observe a relay tag");
+    };
+    assert_ne!(tag, 0, "a relay tag is never zero");
+    assert_eq!(
+        b.service.relay_tag_owner(tag, wall_secs()),
+        Some(*a.keys.hash.as_bytes()),
+        "the tag must be bound to the requesting peer's router hash"
+    );
+    assert_eq!(
+        a.service.relay_tag_owner(tag, wall_secs()),
+        None,
+        "the tag must be bound to nobody else"
+    );
+
+    let counters = b.service.relay_counters();
+    assert_eq!(counters.tag_requests_observed, 1);
+    assert_eq!(counters.tags_issued, 1);
+    assert_eq!(counters.tag_refused_disabled, 0);
+    assert_eq!(counters.tag_refused_quota, 0);
+    assert_eq!(
+        a.service.relay_counters().tags_observed_inbound,
+        1,
+        "the requester counts the tag it observed"
+    );
+
+    a.shutdown_scope().await;
+    b.shutdown_scope().await;
+}
+
+/// Plan 499 (WP2): with the operator's default-off introducer opt-in, a
+/// relay-tag request is refused by reason. No tag is issued, no answer is
+/// queued, and nothing resolves to an owner.
+#[tokio::test]
+async fn relay_tag_request_is_refused_when_the_introducer_is_disabled() {
+    let mut a = start_fixture(make_router_keys()).await;
+    // The default configuration keeps the introducer service disabled.
+    let b = start_fixture(make_router_keys()).await;
+    assert!(!b.service.introducer_service_enabled());
+
+    let _link = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+
+    a.service
+        .queue_relay_tag_request(b.keys.peer)
+        .expect("queue the relay-tag request");
+    wait_for_tag_requests(&b, 1).await;
+
+    let counters = b.service.relay_counters();
+    assert_eq!(counters.tag_refused_disabled, 1);
+    assert_eq!(counters.tags_issued, 0);
+    assert_eq!(counters.tag_refused_quota, 0);
+    assert_eq!(counters.tag_refused_random, 0);
+
+    // No tag reaches the requester.
+    match tokio::time::timeout(Duration::from_millis(500), a.handle.next_relay_event()).await {
+        Err(_) => {}
+        Ok(Some(event)) => panic!("no relay tag may surface: {event:?}"),
+        Ok(None) => panic!("the relay handoff closed early"),
+    }
+    // Nothing was bound, so no tag resolves to an owner.
+    assert_eq!(b.service.relay_tag_owner(1, wall_secs()), None);
+    assert_eq!(b.service.relay_tag_owner(u32::MAX, wall_secs()), None);
+    assert_eq!(
+        a.service.relay_counters().tags_observed_inbound,
+        0,
+        "the requester observed no tag"
+    );
+
+    a.shutdown_scope().await;
+    b.shutdown_scope().await;
+}
+
+/// Plan 499 (WP3): a queued relay block leaves on the next Data packet of
+/// the live session and the peer decodes it intact.
+#[tokio::test]
+async fn queued_relay_intro_reaches_the_peer_intact() {
+    let a = start_fixture(make_router_keys()).await;
+    let mut b = start_fixture(make_router_keys()).await;
+
+    let _link = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+
+    let intro = relay_intro_block(&a.keys, 0x0BAD_F00D);
+    a.service
+        .queue_relay_intro(b.keys.peer, intro.clone())
+        .expect("queue the relay intro");
+
+    let observed = tokio::time::timeout(WAIT_TIMEOUT, b.handle.next_relay_event())
+        .await
+        .expect("bounded relay handoff wait")
+        .expect("relay handoff open");
+    assert_eq!(observed.peer, a.keys.peer);
+    let Ssu2RelayEvent::Intro(received) = observed.event else {
+        panic!("the peer must observe the queued relay intro");
+    };
+    assert_eq!(received, intro, "the relay block must arrive intact");
+    assert_eq!(
+        a.service.relay_counters().blocks_queued,
+        1,
+        "the sender counts the queued block"
+    );
+
+    a.shutdown_scope().await;
+    b.shutdown_scope().await;
+}
+
+/// Plan 499 (WP3): a peer with no live session is refused; the runtime
+/// never guesses a destination.
+#[tokio::test]
+async fn relay_carriage_without_a_live_session_is_refused() {
+    let a = start_fixture(make_router_keys()).await;
+    let unknown = PeerId::from_bytes([0x5A; 32]);
+
+    assert_eq!(
+        a.service
+            .queue_relay_intro(unknown, relay_intro_block(&a.keys, 0x0BAD_F00D)),
+        Err(Ssu2RelayQueueError::NoSession)
+    );
+    assert_eq!(
+        a.service
+            .queue_relay_request(unknown, relay_request_block(0x0BAD_F00D)),
+        Err(Ssu2RelayQueueError::NoSession)
+    );
+    assert_eq!(
+        a.service
+            .queue_relay_response(unknown, relay_response_block()),
+        Err(Ssu2RelayQueueError::NoSession)
+    );
+    assert_eq!(
+        a.service.queue_relay_tag_request(unknown),
+        Err(Ssu2TagRequestError::NotQueued(
+            Ssu2RelayQueueError::NoSession
+        ))
+    );
+    assert_eq!(
+        a.service.relay_counters().blocks_refused_no_session,
+        4,
+        "every refusal is counted by reason"
+    );
+    assert_eq!(a.service.relay_counters().blocks_queued, 0);
+
+    a.shutdown_scope().await;
+}
+
+/// Plan 499 (WP3): once the session is terminated the runtime releases
+/// the link and the peer index in the same locked operation, so the
+/// carriage is refused instead of being carried by a dead session.
+///
+/// The `SessionTerminated` mapping itself — the transport's
+/// `SessionError::Terminated` — is covered by the runtime's focused unit
+/// test (`relay_session_errors_map_onto_carriage_refusals`), because a
+/// terminated session is never observable through the public carriage API.
+#[tokio::test]
+async fn relay_carriage_after_the_session_terminates_is_refused() {
+    let a = start_fixture(make_router_keys()).await;
+    let b = start_fixture(make_router_keys()).await;
+
+    let link = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+
+    link.link.close(TerminationCategory::LocalShutdown);
+    wait_for_active(&a, 0).await;
+
+    assert_eq!(
+        a.service
+            .queue_relay_intro(b.keys.peer, relay_intro_block(&a.keys, 0x0BAD_F00D)),
+        Err(Ssu2RelayQueueError::NoSession)
+    );
+    assert_eq!(
+        a.service.queue_relay_tag_request(b.keys.peer),
+        Err(Ssu2TagRequestError::NotQueued(
+            Ssu2RelayQueueError::NoSession
+        ))
+    );
+
+    a.shutdown_scope().await;
+    b.shutdown_scope().await;
+}
+
+/// Plan 499 (WP3): the transport's control queue is bounded at
+/// `DATA_MAX_SENT_PACKETS` (256). Once it is at that ceiling the runtime
+/// refuses the carriage with `ControlQueueFull` instead of growing the
+/// queue.
+///
+/// The ceiling is reached by starving the session's congestion window:
+/// the peer's socket is gone, so no acknowledgement ever arrives and the
+/// session stops transmitting, which leaves the queued controls in place.
+#[tokio::test]
+async fn relay_carriage_is_refused_once_the_control_queue_is_full() {
+    let a = start_fixture(make_router_keys()).await;
+    let b = start_fixture(make_router_keys()).await;
+
+    let _link = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+
+    // The peer goes away without a termination block, so the session
+    // stays registered but never receives an acknowledgement.
+    b.service.shutdown();
+    let joined_b = b.scope.shutdown().await.joined();
+    assert!(joined_b >= 1, "loop task must join");
+
+    let intro = relay_intro_block(&a.keys, 0x0BAD_F00D);
+    let mut refused = None;
+    for _ in 0..4_096 {
+        match a.service.queue_relay_intro(b.keys.peer, intro.clone()) {
+            Ok(()) => {}
+            Err(error) => {
+                refused = Some(error);
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        refused,
+        Some(Ssu2RelayQueueError::ControlQueueFull),
+        "the bounded control queue must refuse the carriage"
+    );
+    assert_eq!(
+        a.service.relay_counters().blocks_refused_control_queue_full,
+        1,
+        "the refusal is counted by reason"
+    );
+    assert_eq!(a.service.relay_counters().blocks_refused_no_session, 0);
+
+    a.shutdown_scope().await;
+}
+
+/// Plan 499: the carriage refusal reasons have stable, count-only keys.
+#[test]
+fn relay_queue_error_reason_keys_are_stable() {
+    assert_eq!(Ssu2RelayQueueError::NoSession.reason(), "no_session");
+    assert_eq!(
+        Ssu2RelayQueueError::AmbiguousSession.reason(),
+        "ambiguous_session"
+    );
+    assert_eq!(
+        Ssu2RelayQueueError::SessionTerminated.reason(),
+        "session_terminated"
+    );
+    assert_eq!(
+        Ssu2RelayQueueError::ControlQueueFull.reason(),
+        "control_queue_full"
+    );
 }

@@ -201,9 +201,14 @@ fn verify_generated(
     let mut names = BTreeSet::new();
     for index in 0..archive.len() {
         let file = archive.by_index(index)?;
+        // Plan 487 WP6 (zip 9): the entry name is now fallible.
+        let entry_name = file
+            .name()
+            .map_err(|_| BuildError::Verification)?
+            .into_owned();
         if file.is_dir()
             || file.compression() != CompressionMethod::Stored
-            || !names.insert(file.name().to_owned())
+            || !names.insert(entry_name)
         {
             return Err(BuildError::Verification);
         }

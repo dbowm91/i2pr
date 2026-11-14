@@ -76,7 +76,7 @@ Line counts are `wc -l` against current source.
 
 | Module | File | Lines | Responsibility | Key public types / items |
 | --- | --- | --- | --- | --- |
-| crate root | `lib.rs` | 725 | Identity key wrappers, identity bundle, RouterInfo/LS2/MLS2 verification, SHA-256 helpers, constant-time compare, bounded NetDB reply AEAD, algorithm constants | `CryptoError`, `X25519PrivateKey`, `X25519SharedSecret`, `TransportStaticKey`, `SigningPrivateKey`, `EncryptionPrivateKey`, `RouterIdentityBundle`, `verify_signature`, `verify_router_info`, `verify_lease_set2`, `verify_meta_lease_set`, `sha256`, `router_identity_hash`, `constant_time_eq`, `seal_netdb_ecies_reply`, `open_netdb_ecies_reply` |
+| crate root | `lib.rs` | 773 | Identity key wrappers, identity bundle, RouterInfo/LS2/MLS2 verification, the RouterInfo re-sign, SHA-256 helpers, constant-time compare, bounded NetDB reply AEAD, algorithm constants | `CryptoError`, `X25519PrivateKey`, `X25519SharedSecret`, `TransportStaticKey`, `SigningPrivateKey`, `EncryptionPrivateKey`, `RouterIdentityBundle`, `verify_signature`, `verify_router_info`, `verify_lease_set2`, `verify_meta_lease_set`, `resign_router_info_with_published`, `sha256`, `router_identity_hash`, `constant_time_eq`, `seal_netdb_ecies_reply`, `open_netdb_ecies_reply` |
 | `hkdf` | `hkdf.rs` | 188 | RFC 5869 HKDF-SHA256 extract-and-expand, one-shot and 32-byte wrappers, `Zeroizing` returns | `HkdfError`, `MAX_HKDF_OUTPUT_LEN`, `hkdf_sha256_extract_and_expand`, `hkdf_sha256_32` |
 | `ecies` | `ecies.rs` | 2968 | ECIES-X25519-AEAD-Ratchet destination session layer: ephemeral keypair, Elligator2 representative codec, Noise transcript, directional tag-set ratchets, bound NS/NSR/ES codecs, 41 inline tests + frozen vector module | `EciesError`, `EciesEphemeralKeypair`, `EciesEphemeralRepresentative`, `EciesEphemeralSecret`, `EciesTagSet`, `EciesTagSetEntry`, `BoundNewSessionMessage`, `BoundNewSessionSender`, `NewSessionResponder`, `SealedNewSessionReply`, `OpenedNewSessionReply`, `OpenedBoundNewSession`, `NewSessionReplyMessage`, `ExistingSessionMessage`, `seal_bound_new_session`, `open_bound_new_session`, `seal_new_session_reply`, `open_new_session_reply`, `seal_existing_session`, `open_existing_session`, `decode_representative` |
 | `chacha` | `chacha.rs` | 258 | Raw RFC 8439 keystream pinned to the I2P layer initial block counter 1, with a zeroizing key owner | `ChachaError`, `LayerCipherKey`, `chacha20_xor_layer`, `chacha20_xor_layer_owned` |
@@ -124,6 +124,7 @@ each re-exports its public items at the crate root:
 | `EncryptionPrivateKey` | struct, `lib.rs:248` | X25519 seed, zeroizing, **no DH method** |
 | `RouterIdentityBundle` | struct, `lib.rs:275` | no `Debug` at all |
 | `verify_signature`, `verify_router_info`, `verify_lease_set2`, `verify_meta_lease_set` | fns | typed rejection of wrong key type / bad length / failed verification |
+| `resign_router_info_with_published` | fn | **Plan 518**: re-dates and re-signs an encoded RouterInfo with the router's own key, then decodes and verifies the result before returning it. Only the date and the signature change |
 | `sha256`, `router_identity_hash`, `constant_time_eq` | fns | |
 | `seal_netdb_ecies_reply`, `open_netdb_ecies_reply` | fns | narrow supplied-key ECIES reply |
 

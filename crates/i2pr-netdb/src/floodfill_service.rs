@@ -1072,6 +1072,103 @@ mod tests {
         assert!(replication.is_none());
     }
 
+    /// Plan 483 — replication candidacy (dissemination) is caps-agnostic.
+    /// A controlled tiered-`fN` record is offered for direct replication
+    /// exactly like classless `f`; role advertisement is a separate
+    /// decision owned by the candidate scan, not the store path.
+    #[test]
+    fn tiered_floodfill_record_is_offered_for_replication_like_classless_f() {
+        let (message, peer) = router_store_with_caps(0x275, 7, Some("fN"));
+        let mut service = FloodfillStoreService::default();
+        let mut db = ServerNetDb::default();
+        let effect = service.handle(
+            &mut db,
+            &message,
+            FloodfillRole::Serving,
+            FloodfillIngress::DirectPeer(peer),
+            0x1234,
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 1,
+            },
+        );
+        let FloodfillStoreEffect::Stored {
+            outcome,
+            acknowledgement,
+            replication,
+            ..
+        } = effect
+        else {
+            panic!("tiered publisher store must reach validated storage")
+        };
+        assert_eq!(outcome, ServerInsertOutcome::Inserted);
+        assert_eq!(
+            acknowledgement
+                .expect("nonzero token requests an ack")
+                .reply_token,
+            7
+        );
+        assert!(replication.is_some());
+    }
+
+    /// Plan 483 — the tiered-addressed (`L`, non-`f`) record still reaches
+    /// the network through replication, but never as a floodfill referral:
+    /// the candidate scan admits it only to the non-floodfill set, while
+    /// the tiered-`fN` record is admitted only to the floodfill set. This
+    /// pins the 479 handoff 438 inherits: dissemination without role.
+    #[test]
+    fn tiered_addressed_record_is_disseminated_but_never_a_floodfill_referral() {
+        let (lowtier_message, lowtier_peer) = router_store_with_caps(0x276, 7, Some("L"));
+        let (eligible_message, eligible_peer) = router_store_with_caps(0x277, 7, Some("fN"));
+        let mut service = FloodfillStoreService::default();
+        let mut db = ServerNetDb::default();
+        for (message, peer, label) in [
+            (&lowtier_message, lowtier_peer, "tiered addressed"),
+            (&eligible_message, eligible_peer, "tiered floodfill"),
+        ] {
+            let effect = service.handle(
+                &mut db,
+                message,
+                FloodfillRole::Serving,
+                FloodfillIngress::DirectPeer(peer),
+                0x1234,
+                FloodfillTime {
+                    wall_ms: 1,
+                    monotonic_ms: 1,
+                },
+            );
+            let FloodfillStoreEffect::Stored {
+                outcome,
+                replication,
+                ..
+            } = effect
+            else {
+                panic!("{label} store must reach validated storage")
+            };
+            assert_eq!(outcome, ServerInsertOutcome::Inserted);
+            assert!(
+                replication.is_some(),
+                "{label} store must be dissemination-offered"
+            );
+        }
+        let excluded = BTreeSet::new();
+        let age = FloodfillStorePolicy::default().max_provenance_age_ms;
+        let floodfill_set = db.router_info_candidates(1, age, true, &excluded, 8192);
+        let floodfill_keys: Vec<Hash> = floodfill_set.iter().map(|peer| *peer.as_hash()).collect();
+        assert!(floodfill_keys.contains(&eligible_message.key));
+        assert!(
+            !floodfill_keys.contains(&lowtier_message.key),
+            "non-f tiered record must never enter the floodfill referral set"
+        );
+        let addressed_set = db.router_info_candidates(1, age, false, &excluded, 8192);
+        let addressed_keys: Vec<Hash> = addressed_set.iter().map(|peer| *peer.as_hash()).collect();
+        assert!(addressed_keys.contains(&lowtier_message.key));
+        assert!(
+            !addressed_keys.contains(&eligible_message.key),
+            "floodfill record must never enter the non-floodfill set"
+        );
+    }
+
     #[test]
     fn zero_token_replica_is_stored_without_ack_or_reflood() {
         let (message, peer) = router_store(0x274, 0);

@@ -528,7 +528,10 @@ fn establish_stream(
     let _ = plan_ns;
 
     assert_eq!(b.streaming.listener_backlog(PORT_B), 1);
-    let b_conn = b.streaming.accept(PORT_B).expect("pending inbound stream");
+    let b_conn = b
+        .streaming
+        .accept(PORT_B, *clock)
+        .expect("pending inbound stream");
 
     // Reverse-routing handoff: install the validated sender LS2.
     let validated_a = b
@@ -752,7 +755,10 @@ fn plan130_fresh_handshake_sequence_transition_over_full_stack() {
         0x1301_0100,
         clock,
     );
-    let b_conn = side_b.streaming.accept(PORT_B).expect("pending stream");
+    let b_conn = side_b
+        .streaming
+        .accept(PORT_B, clock)
+        .expect("pending stream");
 
     // Reverse-routing handoff for the reply.
     let validated_a = side_b
@@ -1540,6 +1546,7 @@ fn plan130_plain_ack_is_never_application_data_and_never_schedules_an_ack() {
         sequence: 0,
         send_stream_id: 0x0102_0304,
         receive_stream_id: 0x0506_0708,
+        kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
     };
     let (_, hostile_outcome) = pipe(
         &mut side_a,

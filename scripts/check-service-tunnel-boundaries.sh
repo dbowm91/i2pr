@@ -119,9 +119,56 @@ fi
 #    client listeners or server TCP targets. The runtime-neutral
 #    crate already rejects non-loopback values structurally; this
 #    check enforces the same property on the TOML parsing surface.
-if grep -REn 'bind_address.*"0\.0\.0\.0"|bind_address.*"192\.|bind_address.*"10\.' \
-  "$root/crates/i2pr-daemon/src/config.rs" >/dev/null; then
+#
+#    Plan 496 amendment. The rule's own words are "the production
+#    daemon config", so the scan covers the production parsing surface
+#    only: everything before the column-zero `#[cfg(test)]` that opens
+#    the test module. The inline `#[cfg(test)]` test helpers inside
+#    production code are indented and are deliberately *not* a cut
+#    point, so the scan still covers the whole production surface.
+#
+#    This is a scoping correction, not an exemption. The production
+#    surface contains no non-loopback `bind_address` literal at all:
+#    the NTCP2 transport's private-LAN bind address is a
+#    runtime-supplied value that `normalize_ntcp2` validates
+#    structurally (RFC1918 IPv4 only, explicit nonzero port, default
+#    off), so scoping the scan to the production surface restores the
+#    rule's exact strength and exempts no production surface. What
+#    scoping removes is Plan 496's private-LAN *fixtures*, which live
+#    in the test module and are fixtures rather than the parsing
+#    surface.
+#
+#    The positive control proves the scanner still fires on a
+#    production-shaped non-loopback literal, and the scope control
+#    proves the scan stops at the test module rather than at an
+#    indented inline test helper.
+non_loopback_bind_literal='bind_address.*"0\.0\.0\.0"|bind_address.*"192\.|bind_address.*"10\.'
+scan_production_bind_literals() {
+  awk '/^#\[cfg\(test\)\]/{exit} {print}' | grep -En "$non_loopback_bind_literal" || true
+}
+offenders="$(scan_production_bind_literals < "$root/crates/i2pr-daemon/src/config.rs")"
+if [[ -n "$offenders" ]]; then
   echo "production daemon config must not accept non-loopback bind addresses" >&2
+  echo "$offenders" >&2
+  exit 1
+fi
+if [[ -z "$(printf '%s\n' 'struct RawSamConfig {' \
+    '    bind_address: String = "192.168.1.1",' '}' | scan_production_bind_literals)" ]]; then
+  echo "Plan 496 loopback-bind positive control failed" >&2
+  exit 1
+fi
+if [[ -z "$(printf '%s\n' 'struct RawSamConfig {' \
+    '    bind_address: String = "127.0.0.1",' \
+    '    #[cfg(test)]' '    fn helper() {}' \
+    '    bind_address: String = "192.168.1.1",' '}' | scan_production_bind_literals)" ]]; then
+  echo "Plan 496 loopback-bind inline-test-helper control failed" >&2
+  exit 1
+fi
+if [[ -n "$(printf '%s\n' 'struct RawSamConfig {' \
+    '    bind_address: String = "127.0.0.1",' '}' \
+    '#[cfg(test)]' 'mod tests {' \
+    '    const FIXTURE: &str = "bind_address = \"192.168.1.1\"";' '}' | scan_production_bind_literals)" ]]; then
+  echo "Plan 496 loopback-bind scope control failed" >&2
   exit 1
 fi
 

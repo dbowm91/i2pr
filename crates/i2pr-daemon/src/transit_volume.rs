@@ -9,21 +9,22 @@
 //!
 //! # Posture, not instrumentation
 //!
-//! Ordinary product profiles never construct a transit data-plane owner:
-//! production composition consults
-//! [`crate::transit_owner::controlled_transit_disabled_probe`] so the
-//! live-owner module has a production caller without dispatching, and
-//! `scripts/check-m11-transit-boundaries.sh` rule 10 pins that shape. A
-//! production router therefore relays nothing, and the honest answer for
-//! all three selectors is `0`, `0`, and `0.0`.
+//! The **default** product profile constructs no transit data-plane owner:
+//! the composition root publishes [`TransitParticipation::Disabled`], which
+//! holds **no counters at all**, so the honest answer for all three
+//! selectors is `0`, `0`, and `0.0`.
 //!
 //! Those zeros are not a missing value wearing a zero costume.
-//! [`TransitParticipation::Disabled`] holds **no counters at all**, so it
-//! is structurally incapable of reporting a non-zero volume; the zero is a
-//! property of the enforced posture, and the only way to obtain a non-zero
-//! is a real [`TransitVolumeCounters`] that a real forward dispatch has
-//! advanced. Enabling participation is a separate product-posture decision
-//! and is deliberately not reachable from this module.
+//! [`TransitParticipation::Disabled`] is structurally incapable of
+//! reporting a non-zero volume; the zero is a property of the enforced
+//! posture, and the only way to obtain a non-zero is a real
+//! [`TransitVolumeCounters`] that a real forward dispatch has advanced.
+//!
+//! Plan 502 made the participating profile reachable: when the operator
+//! opts in, the SSU2 service installs the owner and republishes the posture
+//! as `Enabled` with that service's own counters. The default profile is
+//! unchanged, and the posture — not the instrumentation — is still what
+//! decides what a router reports.
 //!
 //! # Bounded and read-only on the read side
 //!

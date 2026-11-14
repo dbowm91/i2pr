@@ -1274,6 +1274,11 @@ fn short_build_construction_from_multi(error: MultiRecordError) -> ShortBuildCon
         MultiRecordError::SlotExhausted => ShortBuildConstructionError::InvalidPath {
             reason: "multi-record slot allocator exhausted",
         },
+        MultiRecordError::MessageIdAllocationExhausted => {
+            ShortBuildConstructionError::InvalidPath {
+                reason: "per-hop message-id allocation exhausted",
+            }
+        }
         MultiRecordError::RoleTopologyInvalid { reason } => {
             ShortBuildConstructionError::InvalidPath { reason }
         }
@@ -1324,6 +1329,7 @@ fn rebuild_prepared_context(context: &HopCryptoContext) -> PreparedHopContext {
         state: context.inner.state.clone(),
         layer_keys: context.inner.layer_keys.clone(),
         role: context.inner.role,
+        forwarding_message_id: context.inner.forwarding_message_id,
     }
 }
 

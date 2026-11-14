@@ -24,11 +24,12 @@ use i2pr_crypto::X25519PrivateKey;
 use i2pr_proto::SigningPublicKey;
 use i2pr_transport::{AddressFamily, PeerTestOutcomeKind, ReachabilitySignal, ReachabilityState};
 use i2pr_transport_ssu2::{
-    IntroKey, IntroducerProvenance, IntroducerRecord, IntroducerTable, PeerTestBlock,
-    PeerTestOutcome, PeerTestRole, PeerTestTable, PublicationPolicy, PublicationRequest,
-    RelayIntroBlock, RelayIntroducer, RelayRequestBlock, RelayRequester, RelayResponseBlock,
-    RelayTarget, Role, SessionConfig, SessionEvent, Ssu2Capabilities, Ssu2Endpoint, Ssu2PublicKey,
-    Ssu2Session, Ssu2SplitKeys, Ssu2Transcript, build_hole_punch, build_out_of_session_peer_test,
+    AddressBlock, BlockError, IntroKey, IntroducerProvenance, IntroducerRecord, IntroducerTable,
+    PeerTestBlock, PeerTestOutcome, PeerTestRole, PeerTestTable, PublicationPolicy,
+    PublicationRequest, RelayIntroBlock, RelayIntroducer, RelayRequestBlock, RelayRequester,
+    RelayResponseBlock, RelayTagBlock, RelayTarget, Role, SessionConfig, SessionError,
+    SessionEvent, Ssu2AddressClass, Ssu2Capabilities, Ssu2Endpoint, Ssu2PublicKey, Ssu2Session,
+    Ssu2SplitKeys, Ssu2Transcript, build_hole_punch, build_out_of_session_peer_test,
     hole_punch_conn_ids, parse_hole_punch, parse_out_of_session_peer_test, peer_test_conn_ids,
     peer_test_preimage, relay_request_preimage, relay_response_preimage,
 };
@@ -147,6 +148,7 @@ fn paired_sessions() -> (Ssu2Session, Ssu2Session) {
             initial_send_packet_number: 0,
             max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
             idle_timeout_ms: 300_000,
+            keepalive_interval_ms: None,
         },
         alice_keys,
     )
@@ -160,6 +162,7 @@ fn paired_sessions() -> (Ssu2Session, Ssu2Session) {
             initial_send_packet_number: 0,
             max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
             idle_timeout_ms: 300_000,
+            keepalive_interval_ms: None,
         },
         bob_keys,
     )
@@ -461,6 +464,87 @@ fn relay_intro_reaches_target_and_replay_does_not_reamplify() {
 }
 
 #[test]
+fn relay_tag_request_traverses_session_to_introducer() {
+    let (mut alice, mut bob) = paired_sessions();
+    // The request body is empty: the asking session is the whole
+    // destination, so nothing names a target on the wire.
+    alice.queue_relay_tag_request().expect("queue");
+    let events = carry(&mut alice, &mut bob, NOW_MS);
+    assert!(
+        events.contains(&SessionEvent::RelayTagRequest),
+        "the peer decodes the empty relay-tag request"
+    );
+}
+
+#[test]
+fn relay_tag_traverses_session_with_the_exact_tag() {
+    let (mut alice, mut bob) = paired_sessions();
+    let tag = 0x0BAD_F00D_u32;
+    let block = RelayTagBlock::new(tag).expect("tag");
+    alice.queue_relay_tag(block).expect("queue");
+    let events = carry(&mut alice, &mut bob, NOW_MS);
+    let received = events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::RelayTag(value) => Some(*value),
+            _ => None,
+        })
+        .expect("relay tag event carries the exact tag");
+    assert_eq!(received, tag);
+}
+
+#[test]
+fn relay_tag_controls_are_refused_on_a_terminated_session() {
+    let (mut alice, _bob) = paired_sessions();
+    alice.initiate_termination(0).expect("terminate");
+    assert!(alice.is_terminated());
+    let block = RelayTagBlock::new(0x0BAD_F00D).expect("tag");
+    assert_eq!(
+        alice.queue_relay_tag_request(),
+        Err(SessionError::Terminated),
+        "a terminated session accepts no new control"
+    );
+    assert_eq!(
+        alice.queue_relay_tag(block),
+        Err(SessionError::Terminated),
+        "a terminated session accepts no new control"
+    );
+}
+
+#[test]
+fn relay_tag_controls_are_refused_at_the_control_queue_ceiling() {
+    let (mut alice, _bob) = paired_sessions();
+    // The control queue is private, so the only honest way to reach the
+    // ceiling from the public surface is to fill it with real controls.
+    // An unrelated control fills it, so the refusal below is a property
+    // of the shared queue and not of the tag path.
+    let endpoint = v4(10, 40000);
+    for _ in 0..i2pr_transport_ssu2::constants::DATA_MAX_SENT_PACKETS {
+        alice
+            .queue_address(AddressBlock::new(endpoint))
+            .expect("fill");
+    }
+    let block = RelayTagBlock::new(0x0BAD_F00D).expect("tag");
+    assert_eq!(
+        alice.queue_relay_tag_request(),
+        Err(SessionError::LocalPolicyDenied),
+        "the ceiling refuses one more control"
+    );
+    assert_eq!(
+        alice.queue_relay_tag(block),
+        Err(SessionError::LocalPolicyDenied),
+        "the ceiling refuses one more control"
+    );
+}
+
+#[test]
+fn zero_relay_tag_is_rejected_before_the_queue() {
+    // The nonzero invariant is pinned at the block layer: a zero tag
+    // never becomes a queueable control.
+    assert_eq!(RelayTagBlock::new(0), Err(BlockError::RelayMalformed));
+}
+
+#[test]
 fn peer_test_msg4_traverses_session_and_invalid_inputs_are_bounded() {
     let (mut bob, mut alice) = paired_sessions();
     let mut table = PeerTestTable::new();
@@ -622,8 +706,10 @@ fn introducer_records_feed_publication_and_expire_cleanly() {
         .expect("insert");
     let validated = table.validated_introducers(NOW_SECS);
     assert_eq!(validated.len(), 1);
-    // Publication with validated introducers renders the
-    // direct-with-introducers form; without opt-in it fails closed.
+    // Publication with validated introducers renders the introducer-only
+    // form (Plan 490): an address that publishes introducers omits
+    // host/port and carries the family capability the specification
+    // demands alongside them. Without opt-in it fails closed.
     let caps = Ssu2Capabilities::empty();
     let request = |allow_introducers: bool| PublicationRequest {
         policy: PublicationPolicy::new(true, allow_introducers),
@@ -642,10 +728,28 @@ fn introducer_records_feed_publication_and_expire_cleanly() {
         now_secs: NOW_SECS,
         evidence_expires_secs: NOW_SECS + 600,
     };
-    assert!(matches!(
-        i2pr_transport_ssu2::build_publication_snapshot(request(true)),
-        Ok(i2pr_transport_ssu2::PublicationOutcome::Direct(_))
-    ));
+    let Ok(i2pr_transport_ssu2::PublicationOutcome::IntroducerOnly(snapshot)) =
+        i2pr_transport_ssu2::build_publication_snapshot(request(true))
+    else {
+        panic!("validated introducers must render the introducer-only form");
+    };
+    assert_eq!(snapshot.address_class(), Ssu2AddressClass::IntroducerOnly);
+    let keys: Vec<&str> = snapshot
+        .option_entries()
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect();
+    assert!(!keys.contains(&"host"));
+    assert!(!keys.contains(&"port"));
+    // The SSU2 introducer group is the specification's: the
+    // introducer's router hash, its expiry and its relay tag. The SSU 1
+    // options are not part of an SSU2 address.
+    assert!(keys.contains(&"ih0"));
+    assert!(keys.contains(&"iexp0"));
+    assert!(keys.contains(&"itag0"));
+    assert!(!keys.contains(&"ihost0"));
+    assert!(!keys.contains(&"iport0"));
+    assert!(!keys.contains(&"ikey0"));
     assert!(i2pr_transport_ssu2::build_publication_snapshot(request(false)).is_err());
     // Expiry withdraws: past the lifetime nothing validates.
     assert!(table.validated_introducers(NOW_SECS + 601).is_empty());
@@ -685,6 +789,13 @@ fn reachability_consumes_typed_outcomes_conservatively() {
     // first two are distinct — path + peer-observed + peer-test = 3.
     assert_eq!(tracker.state(), ReachabilityState::Reachable);
     // Contradictory mismatch downgrades without last-write-wins flip.
+    //
+    // Plan 528: the contradiction floor is separate from the
+    // corroboration floor, so one distinct contradicting class takes the
+    // router off `ObservedUnconfirmed`. A bare disagreement is not a
+    // firewalled verdict, so the router is `Unreachable` -- it never
+    // claims to be reachable, and it does not claim to be firewalled
+    // either.
     tracker.record(
         ReachabilitySignal::PeerTestResult {
             family: AddressFamily::Ipv4,
@@ -692,8 +803,8 @@ fn reachability_consumes_typed_outcomes_conservatively() {
         },
         now + std::time::Duration::from_secs(3),
     );
-    assert_eq!(tracker.state(), ReachabilityState::ObservedUnconfirmed);
-    // Inconclusive never flips arbitrarily (stays unconfirmed here).
+    assert_eq!(tracker.state(), ReachabilityState::Unreachable);
+    // Inconclusive never flips arbitrarily (the contradiction stands).
     tracker.record(
         ReachabilitySignal::PeerTestResult {
             family: AddressFamily::Ipv4,
@@ -701,8 +812,13 @@ fn reachability_consumes_typed_outcomes_conservatively() {
         },
         now + std::time::Duration::from_secs(4),
     );
-    assert_eq!(tracker.state(), ReachabilityState::ObservedUnconfirmed);
-    // Relay success signals firewalled, never direct.
+    assert_eq!(tracker.state(), ReachabilityState::Unreachable);
+    // A firewalled verdict signals firewalled, never direct.
+    //
+    // Plan 528: the specification's peer-test result table concludes
+    // FIREWALLED from one peer test, and so does the pinned reference, so
+    // the verdict alone is enough; the relay-success indication is a
+    // second, independent route to the same state.
     let mut firewalled = ReachabilityTracker::new(ReachabilityPolicy::default()).expect("policy");
     firewalled.record(
         ReachabilitySignal::PeerTestResult {
@@ -711,13 +827,15 @@ fn reachability_consumes_typed_outcomes_conservatively() {
         },
         now,
     );
-    firewalled.record(
+    assert_eq!(firewalled.state(), ReachabilityState::Firewalled);
+    let mut relayed = ReachabilityTracker::new(ReachabilityPolicy::default()).expect("policy");
+    relayed.record(
         ReachabilitySignal::RelayFirewalledSignal {
             family: AddressFamily::Ipv4,
         },
         now + std::time::Duration::from_secs(1),
     );
-    assert_eq!(firewalled.state(), ReachabilityState::Firewalled);
+    assert_eq!(relayed.state(), ReachabilityState::Firewalled);
     // Full Alice trajectory outcome maps to the Confirmed kind.
     let mut alice_table = PeerTestTable::new();
     let observed = v4(10, 40000);

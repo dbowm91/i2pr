@@ -470,8 +470,9 @@ pub async fn run_irc_server_loop(
             _ = ticker.tick() => {}
         }
         let mut accepted_ids = Vec::new();
+        let now_ms = service_streaming_now_ms();
         manager.with_destination_bridge(runtime.destination_id, |bridge| {
-            while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port) {
+            while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port, now_ms) {
                 accepted_ids.push(connection_id);
             }
         });

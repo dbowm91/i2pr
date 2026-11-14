@@ -222,6 +222,28 @@ impl RouterInfo {
         &self.signed_bytes
     }
 
+    /// Returns the signed region re-encoded with a fresh publication date.
+    ///
+    /// Plan 518: only the publication date changes. The addresses, the peers
+    /// and the options are re-encoded from **this record's own** decoded
+    /// parts, so nothing else can drift: the result is the same content
+    /// under a new date, and the caller re-signs it.
+    ///
+    /// The re-encoded region is not signed. A caller that publishes it must
+    /// sign the returned bytes.
+    pub fn signed_bytes_with_published(&self, published: Date) -> Result<Vec<u8>, CodecError> {
+        encode_to_vec(MAX_COMMON_STRUCTURE_SIZE, |encoder| {
+            Self::encode_unsigned(
+                encoder,
+                &self.router_identity,
+                published,
+                &self.addresses,
+                &self.peers,
+                &self.options,
+            )
+        })
+    }
+
     /// Returns the typed RouterInfo signature.
     pub fn signature(&self) -> &SignatureValue {
         &self.signature

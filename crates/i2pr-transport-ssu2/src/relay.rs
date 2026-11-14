@@ -674,11 +674,32 @@ struct IntroducerRequest {
     deadline_ms: u64,
 }
 
+/// The bounded disposition of one inbound RelayResponse at the
+/// introducer (Bob) role.
+///
+/// Only a verified response produces [`Self::Forwarded`]; every other
+/// path is a typed refusal that leaves no state behind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IntroducerResponseOutcome {
+    /// Charlie's response verified against the tracked request and must
+    /// be forwarded to the requester (Alice).
+    Forwarded {
+        /// The authenticated requester the response belongs to.
+        alice_hash: [u8; 32],
+        /// The typed status Charlie returned.
+        code: crate::block::RelayResponseCode,
+    },
+    /// No live request matches the response's nonce. The entry is not
+    /// created: an unknown correlation is refused, never tracked.
+    UnknownRequest,
+}
+
 /// Bounded Bob-side introducer table.
 ///
 /// The runtime instantiates this only when configuration explicitly
-/// enables introducer service (disabled by default); the daemon
-/// rejects `introducer_service = true` until Plan 160 closes.
+/// enables introducer service (disabled by default). Plan 490 makes
+/// the daemon's `ssu2.introducer_service` key available, still default
+/// off; the daemon owns the opt-in.
 ///
 /// `Debug` is redacted (counts + enablement only): tags bind router
 /// hashes and relay tags (Plan 160 §12).
@@ -712,6 +733,15 @@ impl RelayIntroducer {
 
     /// Creates an enabled introducer for controlled tests only.
     pub fn enabled_for_tests() -> Self {
+        Self::enabled()
+    }
+
+    /// Creates an enabled introducer.
+    ///
+    /// The role is opt-in: the daemon's `ssu2.introducer_service` key
+    /// (default off) is the only production gate, and this constructor
+    /// is reached from the runtime service only when that key is on.
+    pub fn enabled() -> Self {
         Self {
             tags: HashMap::new(),
             requests: HashMap::new(),
@@ -734,9 +764,33 @@ impl RelayIntroducer {
         self.requests.len()
     }
 
+    /// Returns the peer a live relay tag identifies.
+    ///
+    /// The specification binds a relay tag to the introduction *target*:
+    /// the target asks the introducer for a tag and publishes it, and a
+    /// requester presents that tag to name the target. The tag is the
+    /// only in-band link between the requester and the target, so the
+    /// role owner resolves the target through this accessor before it
+    /// verifies the requester's signature over the target's hash.
+    ///
+    /// An unknown or expired tag returns `None`; no state is created.
+    pub fn tag_owner(&self, tag: u32, now_secs: u64) -> Option<[u8; 32]> {
+        let entry = self.tags.get(&tag)?;
+        if entry.expired(now_secs) {
+            return None;
+        }
+        Some(entry.alice_hash)
+    }
+
     /// Issues one relay tag bound to `alice_hash` from caller
     /// randomness (production: OS CSPRNG). Tags expire
     /// deterministically; shutdown clears them (see `shutdown`).
+    ///
+    /// The bound peer is the peer the tag *identifies*. In the SSU2
+    /// relay process the target asks the introducer for a tag and
+    /// publishes it; a requester presents that tag to name the target.
+    /// The bound hash is therefore the introduction target, and the
+    /// parameter name is historical.
     pub fn issue_tag(
         &mut self,
         tag: u32,
@@ -857,6 +911,55 @@ impl RelayIntroducer {
             },
         );
         Ok(true)
+    }
+
+    /// Handles one authenticated RelayResponse from Charlie (Bob).
+    ///
+    /// The response is correlated by nonce against the live request
+    /// table, the sender must be the Charlie the request named, and
+    /// Charlie's signature over the specification's
+    /// `RelayAgreementOK` preimage must verify. A verified response
+    /// consumes its tracked request, so a replayed response cannot
+    /// produce a second forward. Every refusal is typed and leaves no
+    /// state behind.
+    pub fn on_response(
+        &mut self,
+        block: &RelayResponseBlock,
+        sender_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        charlie_signer: &SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<IntroducerResponseOutcome, RelayError> {
+        if !self.enabled {
+            return Err(RelayError::ServiceDisabled);
+        }
+        check_relay_freshness(block.timestamp(), now_secs)?;
+        // A Bob-coded rejection is Bob's own answer; Charlie never
+        // sends one. Refusing it here keeps the wrong role from
+        // terminating a live request.
+        if matches!(
+            block.code(),
+            crate::block::RelayResponseCode::RejectedByBob(_)
+        ) {
+            return Err(RelayError::WrongRole);
+        }
+        self.expire_requests_locked(now_ms);
+        let Some(tracked) = self.requests.get(&block.nonce()) else {
+            return Ok(IntroducerResponseOutcome::UnknownRequest);
+        };
+        if tracked.charlie_hash != *sender_hash {
+            return Err(RelayError::SenderMismatch);
+        }
+        verify_relay_response(block, bob_hash, Some(charlie_signer), block.signature())?;
+        let alice_hash = tracked.alice_hash;
+        // One response per request: consume the tracked entry so a
+        // replay is refused as an unknown correlation.
+        self.requests.remove(&block.nonce());
+        Ok(IntroducerResponseOutcome::Forwarded {
+            alice_hash,
+            code: block.code(),
+        })
     }
 
     /// Expires tags/requests, returning expired request nonces.
@@ -1432,5 +1535,157 @@ mod tests {
         let expired = requester.poll_expired(RELAY_REQUEST_TIMEOUT_MS + 1);
         assert_eq!(expired.len(), MAX_RELAY_REQUESTS_GLOBAL);
         assert!(requester.is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // Plan 490 — the Bob-side RelayResponse correlation.
+    // -------------------------------------------------------------------
+
+    fn introducer_with_live_request() -> RelayIntroducer {
+        let mut introducer = RelayIntroducer::enabled();
+        introducer.issue_tag(7, ALICE_HASH, 1000).expect("tag");
+        introducer
+            .on_request(
+                &request(21, 7, 1000),
+                &ALICE_HASH,
+                &BOB_HASH,
+                &CHARLIE_HASH,
+                &alice_pub(),
+                200,
+                1000,
+                100,
+            )
+            .expect("admit");
+        introducer
+    }
+
+    #[test]
+    fn a_relay_response_is_forwarded_to_the_tracked_requester() {
+        let mut introducer = introducer_with_live_request();
+        assert_eq!(
+            introducer.on_response(
+                &accept(21, 1000, 99),
+                &CHARLIE_HASH,
+                &BOB_HASH,
+                &charlie_pub(),
+                1000,
+                200,
+            ),
+            Ok(IntroducerResponseOutcome::Forwarded {
+                alice_hash: ALICE_HASH,
+                code: crate::block::RelayResponseCode::Accept,
+            })
+        );
+        // The tracked request is consumed: a replay is an unknown
+        // correlation, never a second forward.
+        assert_eq!(
+            introducer.on_response(
+                &accept(21, 1000, 99),
+                &CHARLIE_HASH,
+                &BOB_HASH,
+                &charlie_pub(),
+                1000,
+                300,
+            ),
+            Ok(IntroducerResponseOutcome::UnknownRequest)
+        );
+    }
+
+    #[test]
+    fn a_relay_response_from_another_peer_is_refused() {
+        let mut introducer = introducer_with_live_request();
+        assert_eq!(
+            introducer.on_response(
+                &accept(21, 1000, 99),
+                &[0xEE; 32],
+                &BOB_HASH,
+                &charlie_pub(),
+                1000,
+                200,
+            ),
+            Err(RelayError::SenderMismatch)
+        );
+        // The refusal leaves the tracked request intact.
+        assert_eq!(introducer.request_count(), 1);
+    }
+
+    #[test]
+    fn an_untracked_relay_response_is_refused_without_state() {
+        let mut introducer = RelayIntroducer::enabled();
+        assert_eq!(
+            introducer.on_response(
+                &accept(21, 1000, 99),
+                &CHARLIE_HASH,
+                &BOB_HASH,
+                &charlie_pub(),
+                1000,
+                200,
+            ),
+            Ok(IntroducerResponseOutcome::UnknownRequest)
+        );
+        assert_eq!(introducer.request_count(), 0);
+    }
+
+    #[test]
+    fn an_unverified_relay_response_is_refused() {
+        let mut introducer = introducer_with_live_request();
+        // Signed by a key that is not Charlie's.
+        let wrong = SigningPrivateKey::from_bytes([0x77; 32])
+            .public_key()
+            .expect("wrong pub");
+        assert_eq!(
+            introducer.on_response(
+                &accept(21, 1000, 99),
+                &CHARLIE_HASH,
+                &BOB_HASH,
+                &wrong,
+                1000,
+                200,
+            ),
+            Err(RelayError::InvalidSignature)
+        );
+        assert_eq!(introducer.request_count(), 1);
+    }
+
+    #[test]
+    fn a_bob_coded_rejection_from_charlie_is_refused() {
+        let mut introducer = introducer_with_live_request();
+        let rejection = RelayResponseBlock::reject(
+            crate::block::RelayResponseCode::RejectedByBob(1),
+            21,
+            1000,
+            2,
+            None,
+            Vec::new(),
+        )
+        .expect("reject");
+        assert_eq!(
+            introducer.on_response(
+                &rejection,
+                &CHARLIE_HASH,
+                &BOB_HASH,
+                &charlie_pub(),
+                1000,
+                200,
+            ),
+            Err(RelayError::WrongRole)
+        );
+        assert_eq!(introducer.request_count(), 1);
+    }
+
+    #[test]
+    fn a_disabled_introducer_refuses_every_response() {
+        let mut introducer = RelayIntroducer::disabled();
+        assert_eq!(
+            introducer.on_response(
+                &accept(21, 1000, 99),
+                &CHARLIE_HASH,
+                &BOB_HASH,
+                &charlie_pub(),
+                1000,
+                200,
+            ),
+            Err(RelayError::ServiceDisabled)
+        );
     }
 }

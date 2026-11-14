@@ -12,14 +12,18 @@
 //!
 //! The service owns the protocol tables ([`PeerTestTable`],
 //! [`RelayRequester`], [`RelayIntroducer`], [`RelayTarget`],
-//! [`IntroducerTable`]) plus the router-level [`ReachabilityTracker`],
-//! per-source rate limiters, and response-size budgets. Callers only
+//! [`IntroducerTable`]) plus per-source rate limiters and
+//! response-size budgets. Callers only
 //! invoke it after their session (in-session Msgs 1–4, relay blocks) or
 //! intro-key AEAD (out-of-session Msgs 5–7, HolePunch) authenticated
 //! each datagram; this service then enforces admission before crypto,
-//! drives the tables with explicit signer keys, and feeds only typed
-//! family-only outcomes to reachability. A decoded block never mutates
-//! RouterInfo/NetDB here.
+//! drives the tables with explicit signer keys, and returns the typed
+//! family-only outcomes it computes. Plan 527: the **runtime** records
+//! them. This service used to keep a reachability tracker of its own, and
+//! that tracker held every contradicting signal the router could produce
+//! and was read by nothing -- the product read a different tracker, one
+//! that only ever received confirming evidence. A decoded block never
+//! mutates RouterInfo/NetDB here.
 //!
 //! Socket ownership for this pass: deterministic tests own their
 //! loopback `UdpSocket`s and call this service after `recv_from`
@@ -32,9 +36,10 @@
 //!
 //! Introducer public service stays disabled by default
 //! ([`Ssu2PeerRelayConfig::introducer_enabled`] defaults to `false`);
-//! controlled tests opt in explicitly. Relay success feeds
-//! `RelayFirewalledSignal`-class evidence and never proves direct
-//! inbound reachability.
+//! controlled tests opt in explicitly. Relay success is the
+//! **requester's** firewalled fact and never proves direct inbound
+//! reachability; the runtime records it, because the runtime owns the
+//! router's reachability.
 //!
 //! Normative traceability:
 //! `plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md` §§2–12. No
@@ -42,16 +47,12 @@
 //! [`Ssu2PeerRelayService::poll_expired`] scheduler input), no secret
 //! logging (§12: snapshots and `Debug` carry counts only).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use i2pr_proto::SigningPublicKey;
-use i2pr_transport::{
-    AddressFamily, PeerTestOutcomeKind, ReachabilityPolicy, ReachabilitySignal, ReachabilityState,
-    ReachabilityTracker,
-};
+
 use i2pr_transport_ssu2::{
     IntroducerProvenance, IntroducerRecord, IntroducerTable, PeerTestBlock, PeerTestOutcome,
     PeerTestRole, PeerTestTable, RelayIntroducer, RelayRequester, RelayTarget, Ssu2Endpoint,
@@ -66,6 +67,13 @@ pub const PEER_RELAY_MAX_SIGNERS: usize = 128;
 /// Maximum response bytes per request byte (anti-amplification).
 pub const PEER_RELAY_RESPONSE_BUDGET_NUMERATOR: usize = 3;
 
+/// Plan 524: the margin an introducer record's expiry is pulled back by.
+///
+/// A tag whose own expiry is within this margin is not a usable
+/// introducer: the tag would be at the end of its life before the peers
+/// that read it could use it.
+pub const INTRODUCER_EXPIRY_MARGIN_SECS: u64 = 600;
+
 /// Runtime configuration for peer-test/relay coordination.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Ssu2PeerRelayConfig {
@@ -74,8 +82,8 @@ pub struct Ssu2PeerRelayConfig {
     pub introducer_enabled: bool,
 }
 
-/// Privacy-safe snapshot (counts + reachability only; no hashes,
-/// nonces, tags, endpoints, or signatures).
+/// Privacy-safe snapshot (counts only; no hashes, nonces, tags,
+/// endpoints, or signatures).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Ssu2PeerRelaySnapshot {
     /// Live peer tests.
@@ -110,8 +118,6 @@ pub struct Ssu2PeerRelaySnapshot {
     pub freshness_rejections: u64,
     /// Entries expired by the central scheduler.
     pub expirations: u64,
-    /// Conservative router-level reachability state.
-    pub reachability: ReachabilityState,
 }
 
 /// One-second sliding rate window per source.
@@ -129,10 +135,25 @@ pub struct Ssu2PeerRelayService {
     introducer: Mutex<RelayIntroducer>,
     target: Mutex<RelayTarget>,
     introducers: Mutex<IntroducerTable>,
-    reachability: Mutex<ReachabilityTracker>,
+    /// Plan 527: this service no longer owns a reachability tracker. The
+    /// router's reachability has **one** owner -- the runtime -- and the
+    /// tracker that lived here was written and never read, so every
+    /// contradicting signal the router could produce was invisible to the
+    /// product. The service returns the typed facts it computes and the
+    /// runtime records them.
     signers: Mutex<HashMap<[u8; 32], SigningPublicKey>>,
     rates: Mutex<HashMap<IpAddr, RateWindow>>,
     counters: Mutex<SnapCounters>,
+    /// Plan 531: the nonces of this router's live relay requests.
+    ///
+    /// The table is a **routing** table, not a second copy of the
+    /// transport's requester table: it holds a nonce and its deadline
+    /// and nothing else. It is written only where the transport's own
+    /// table is written -- when a request starts, when it completes and
+    /// when it is cancelled -- and it is bounded by the transport's own
+    /// global ceiling. It exists so the runtime can route an inbound
+    /// Relay Response to the role that asked for it.
+    requester_nonces: Mutex<BTreeMap<u32, u64>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -156,25 +177,25 @@ impl std::fmt::Debug for Ssu2PeerRelayService {
 
 impl Ssu2PeerRelayService {
     /// Creates a coordinator. Introducer service is disabled unless
-    /// `config.introducer_enabled` opts in (controlled tests only).
+    /// `config.introducer_enabled` opts in. Plan 490 makes the opt-in
+    /// reachable in production: the daemon's `ssu2.introducer_service`
+    /// key (default off) is the only gate.
     pub fn new(config: Ssu2PeerRelayConfig) -> Result<Self, &'static str> {
-        let reachability =
-            ReachabilityTracker::new(ReachabilityPolicy::default()).map_err(|_| "policy")?;
         Ok(Self {
             config,
             peer_tests: Mutex::new(PeerTestTable::new()),
             requester: Mutex::new(RelayRequester::new()),
             introducer: Mutex::new(if config.introducer_enabled {
-                RelayIntroducer::enabled_for_tests()
+                RelayIntroducer::enabled()
             } else {
                 RelayIntroducer::disabled()
             }),
             target: Mutex::new(RelayTarget::new()),
             introducers: Mutex::new(IntroducerTable::new()),
-            reachability: Mutex::new(reachability),
             signers: Mutex::new(HashMap::new()),
             rates: Mutex::new(HashMap::new()),
             counters: Mutex::new(SnapCounters::default()),
+            requester_nonces: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -259,8 +280,12 @@ impl Ssu2PeerRelayService {
             )
     }
 
-    /// Feeds one authenticated peer-test block to its test and mirrors
-    /// any typed outcome into reachability (family-only).
+    /// Feeds one authenticated peer-test block to its test and returns the
+    /// typed outcome (family-only).
+    ///
+    /// Plan 527: the caller records the outcome. The service no longer
+    /// keeps a reachability tracker, so a contradicting outcome cannot be
+    /// written into a tracker the product never reads.
     #[allow(clippy::too_many_arguments)]
     pub fn on_peer_test(
         &self,
@@ -375,7 +400,6 @@ impl Ssu2PeerRelayService {
                     now_secs,
                     now_ms,
                 )?;
-            self.mirror_peer_outcome(outcome);
             return Ok(outcome);
         }
         // Try each candidate key; the table enforces all other gates
@@ -409,7 +433,6 @@ impl Ssu2PeerRelayService {
                         .peer_tests
                         .lock()
                         .map_err(|_| PeerTestError::TooManyTests)? = trial;
-                    self.mirror_peer_outcome(outcome);
                     if outcome.is_some()
                         && let Ok(mut counters) = self.counters.lock()
                     {
@@ -454,52 +477,12 @@ impl Ssu2PeerRelayService {
         }
     }
 
-    fn mirror_peer_outcome(&self, outcome: Option<PeerTestOutcome>) {
-        let Some(outcome) = outcome else {
-            return;
-        };
-        let signal = match outcome {
-            PeerTestOutcome::DirectReachabilityConfirmed { family, .. } => {
-                ReachabilitySignal::PeerTestResult {
-                    family,
-                    outcome: PeerTestOutcomeKind::Confirmed,
-                }
-            }
-            PeerTestOutcome::AddressMismatch { family, .. } => ReachabilitySignal::PeerTestResult {
-                family,
-                outcome: PeerTestOutcomeKind::AddressMismatch,
-            },
-            PeerTestOutcome::FirewalledLikely { family } => ReachabilitySignal::PeerTestResult {
-                family,
-                outcome: PeerTestOutcomeKind::FirewalledLikely,
-            },
-            PeerTestOutcome::Inconclusive { family } => ReachabilitySignal::PeerTestResult {
-                family,
-                outcome: PeerTestOutcomeKind::Inconclusive,
-            },
-            PeerTestOutcome::Rejected { family } => ReachabilitySignal::PeerTestResult {
-                family,
-                outcome: PeerTestOutcomeKind::Rejected,
-            },
-        };
-        if let Ok(mut reachability) = self.reachability.lock() {
-            // Monotonic clock for the tracker: wall-clock seconds are
-            // not monotonic across test restarts, so key expiry off the
-            // tracker's own default TTL from now.
-            reachability.record(signal, Duration::from_secs(1));
-        }
-    }
-
-    /// Records an externally-decided firewalled indication (e.g. relay
-    /// success proves the requester needs introducers, never direct
-    /// reachability).
-    pub fn note_relay_firewalled(&self, family: AddressFamily) {
-        if let Ok(mut reachability) = self.reachability.lock() {
-            reachability.record(
-                ReachabilitySignal::RelayFirewalledSignal { family },
-                Duration::from_secs(1),
-            );
-        }
+    /// Counts one relay response.
+    ///
+    /// Plan 527: the count stays with the service -- only the tracker
+    /// moved. The router's reachability has one owner, and this service is
+    /// not it.
+    fn count_relay_response(&self) {
         if let Ok(mut counters) = self.counters.lock() {
             counters.relay_responses = counters.relay_responses.saturating_add(1);
         }
@@ -518,7 +501,34 @@ impl Ssu2PeerRelayService {
         self.requester
             .lock()
             .map_err(|_| i2pr_transport_ssu2::RelayError::TooManyRequests)?
-            .start(nonce, tag, bob_hash, charlie_hash, alice_endpoint, now_ms)
+            .start(nonce, tag, bob_hash, charlie_hash, alice_endpoint, now_ms)?;
+        // The routing table is written only where the transport's own
+        // table is written, so the two cannot drift.
+        if let Ok(mut nonces) = self.requester_nonces.lock() {
+            nonces.insert(
+                nonce,
+                now_ms.saturating_add(i2pr_transport_ssu2::RELAY_REQUEST_TIMEOUT_MS),
+            );
+        }
+        Ok(())
+    }
+
+    /// Returns whether one nonce belongs to a live relay request of this
+    /// router (Plan 531).
+    ///
+    /// The check is a **routing** decision, not a verification: the
+    /// signature is verified later, when the requester owner hands the
+    /// response to the transport. A response that correlates with no live
+    /// request is not the requester's, and it keeps travelling the
+    /// introducer's handoff exactly as before.
+    pub fn is_requester_nonce(&self, nonce: u32, now_ms: u64) -> bool {
+        let Ok(mut nonces) = self.requester_nonces.lock() else {
+            return false;
+        };
+        // The routing table expires on the same deadline the transport's
+        // own table uses, so the two cannot disagree about a live request.
+        nonces.retain(|_, deadline| now_ms < *deadline);
+        nonces.contains_key(&nonce)
     }
 
     /// Handles one authenticated RelayResponse (Alice, sender must be Bob).
@@ -556,7 +566,12 @@ impl Ssu2PeerRelayService {
                 .map_err(|_| RelayError::TooManyRequests)?
                 .on_response(block, sender_hash, bob_hash, None, now_secs, now_ms)?;
             if state == i2pr_transport_ssu2::relay::RequesterState::Completed {
-                self.note_relay_firewalled(block_family_hint());
+                // Plan 527: a completed request is the **requester's**
+                // firewalled fact -- the requester needed a relay, so it
+                // is not directly reachable. The service keeps the count;
+                // the runtime owns the router's reachability and records
+                // the indication through its own recorder.
+                self.count_relay_response();
             }
             return Ok(state);
         }
@@ -591,6 +606,113 @@ impl Ssu2PeerRelayService {
         Err(last_error)
     }
 
+    /// Handles one authenticated RelayResponse for a requester whose
+    /// target's signing key the caller already resolved (Plan 531).
+    ///
+    /// The table's own variant resolves the signer from the registered
+    /// signer table; the requester side resolves it from the target's
+    /// **validated** RouterInfo, which is the daemon's authority and not
+    /// the runtime's. The correlation, the sender check, the freshness
+    /// window and the signature verification are the transport's own and
+    /// are identical in both paths.
+    pub fn on_relay_response_with_signer(
+        &self,
+        block: &i2pr_transport_ssu2::RelayResponseBlock,
+        sender_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        charlie_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<i2pr_transport_ssu2::RequesterState, i2pr_transport_ssu2::RelayError> {
+        use i2pr_transport_ssu2::RelayError;
+        // Bob rejections need no key.
+        if matches!(
+            block.code(),
+            i2pr_transport_ssu2::RelayResponseCode::RejectedByBob(_)
+        ) {
+            let state = self
+                .requester
+                .lock()
+                .map_err(|_| RelayError::TooManyRequests)?
+                .on_response(block, sender_hash, bob_hash, None, now_secs, now_ms)?;
+            if state == i2pr_transport_ssu2::RequesterState::Completed {
+                self.count_relay_response();
+            }
+            return Ok(state);
+        }
+        let mut trial = self
+            .requester
+            .lock()
+            .map_err(|_| RelayError::TooManyRequests)?
+            .clone();
+        match trial.on_response(
+            block,
+            sender_hash,
+            bob_hash,
+            Some(charlie_signer),
+            now_secs,
+            now_ms,
+        ) {
+            Ok(state) => {
+                *self
+                    .requester
+                    .lock()
+                    .map_err(|_| RelayError::TooManyRequests)? = trial;
+                if let Ok(mut counters) = self.counters.lock() {
+                    counters.relay_responses = counters.relay_responses.saturating_add(1);
+                }
+                Ok(state)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Handles one authenticated HolePunch whose target's signing key the
+    /// caller already resolved (Plan 531).
+    ///
+    /// The correlation, the connection-ID check, the freshness window and
+    /// the signature verification are the transport's own; only the
+    /// signer's origin differs from the table-driven variant.
+    pub fn on_hole_punch_with_signer(
+        &self,
+        message: &i2pr_transport_ssu2::HolePunchMessage,
+        bob_hash: &[u8; 32],
+        charlie_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        use i2pr_transport_ssu2::RelayError;
+        let mut trial = self
+            .requester
+            .lock()
+            .map_err(|_| RelayError::TooManyRequests)?
+            .clone();
+        match trial.on_hole_punch(message, bob_hash, Some(charlie_signer), now_secs, now_ms) {
+            Ok(ready) => {
+                *self
+                    .requester
+                    .lock()
+                    .map_err(|_| RelayError::TooManyRequests)? = trial;
+                if ready {
+                    // The exchange is over: the nonce leaves the routing
+                    // table with the transport's own entry.
+                    if let Ok(mut nonces) = self.requester_nonces.lock() {
+                        nonces.remove(&message.response.nonce());
+                    }
+                    // Plan 527: a ready hole punch is the requester's
+                    // firewalled fact. The service keeps the count; the
+                    // runtime records the indication.
+                    self.count_relay_response();
+                    if let Ok(mut counters) = self.counters.lock() {
+                        counters.hole_punches = counters.hole_punches.saturating_add(1);
+                    }
+                }
+                Ok(ready)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Handles one authenticated HolePunch (Alice, from Charlie).
     pub fn on_hole_punch(
         &self,
@@ -620,9 +742,10 @@ impl Ssu2PeerRelayService {
                         .lock()
                         .map_err(|_| RelayError::TooManyRequests)? = trial;
                     if ready {
-                        // Relay success proves the requester is firewalled
-                        // (needs introducers), never directly reachable.
-                        self.note_relay_firewalled(AddressFamily::Ipv4);
+                        // Plan 527: a ready hole punch is the requester's
+                        // firewalled fact. The service keeps the count; the
+                        // runtime records the indication.
+                        self.count_relay_response();
                         if let Ok(mut counters) = self.counters.lock() {
                             counters.hole_punches = counters.hole_punches.saturating_add(1);
                         }
@@ -643,6 +766,10 @@ impl Ssu2PeerRelayService {
     }
 
     /// Issues one introducer tag bound to `alice_hash` (Bob, enabled only).
+    ///
+    /// The bound peer is the peer the tag *identifies* — in the SSU2
+    /// relay process, the introduction target. The parameter name is
+    /// historical.
     pub fn issue_relay_tag(
         &self,
         tag: u32,
@@ -655,8 +782,31 @@ impl Ssu2PeerRelayService {
             .issue_tag(tag, alice_hash, now_secs)
     }
 
+    /// Issues one introducer tag that identifies `target_hash` (Bob).
+    pub fn issue_introducer_tag(
+        &self,
+        tag: u32,
+        target_hash: &[u8; 32],
+        now_secs: u64,
+    ) -> Result<(), i2pr_transport_ssu2::RelayError> {
+        self.issue_relay_tag(tag, *target_hash, now_secs)
+    }
+
+    /// Resolves the peer a live introducer tag identifies.
+    pub fn introducer_tag_owner(&self, tag: u32, now_secs: u64) -> Option<[u8; 32]> {
+        self.introducer
+            .lock()
+            .ok()
+            .and_then(|introducer| introducer.tag_owner(tag, now_secs))
+    }
+
     /// Handles one authenticated RelayRequest (Bob, enabled only).
     /// `request_bytes` enforces the response-size budget before crypto.
+    ///
+    /// This is the requester-shaped entry point: the relay tag belongs
+    /// to the requesting peer. Plan 490 adds
+    /// [`Self::on_relay_request_for_target`] for the specification's
+    /// shape, where the tag identifies the introduction target.
     #[allow(clippy::too_many_arguments)]
     pub fn on_relay_request(
         &self,
@@ -664,6 +814,76 @@ impl Ssu2PeerRelayService {
         alice_hash: &[u8; 32],
         bob_hash: &[u8; 32],
         charlie_hash: &[u8; 32],
+        request_bytes: usize,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        let signer = {
+            let signers = self
+                .signers
+                .lock()
+                .map_err(|_| i2pr_transport_ssu2::RelayError::TooManyRequests)?;
+            signers.get(alice_hash).cloned()
+        };
+        let Some(signer) = signer else {
+            self.count_signature_rejection();
+            return Err(i2pr_transport_ssu2::RelayError::InvalidSignature);
+        };
+        self.on_relay_request_with_signer(
+            block,
+            alice_hash,
+            bob_hash,
+            charlie_hash,
+            &signer,
+            request_bytes,
+            now_secs,
+            now_ms,
+        )
+    }
+
+    /// Handles one authenticated RelayRequest in the specification's
+    /// shape (Bob, enabled only).
+    ///
+    /// The relay tag identifies the introduction *target*: the target
+    /// asks the introducer for a tag and publishes it, and a requester
+    /// presents that tag to name the target. `target_hash` is therefore
+    /// the peer the tag identifies and the hash the requester's
+    /// signature binds; `requester_signer` is the requester's own key.
+    /// `request_bytes` enforces the response-size budget before crypto.
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_relay_request_for_target(
+        &self,
+        block: &i2pr_transport_ssu2::RelayRequestBlock,
+        _requester_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        target_hash: &[u8; 32],
+        requester_signer: &i2pr_proto::SigningPublicKey,
+        request_bytes: usize,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        // The tag identifies the target, so the transport's tag binding
+        // and the requester's signature preimage both name it.
+        self.on_relay_request_with_signer(
+            block,
+            target_hash,
+            bob_hash,
+            target_hash,
+            requester_signer,
+            request_bytes,
+            now_secs,
+            now_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn on_relay_request_with_signer(
+        &self,
+        block: &i2pr_transport_ssu2::RelayRequestBlock,
+        tag_owner: &[u8; 32],
+        bob_hash: &[u8; 32],
+        preimage_hash: &[u8; 32],
+        signer: &i2pr_proto::SigningPublicKey,
         request_bytes: usize,
         now_secs: u64,
         now_ms: u64,
@@ -676,29 +896,16 @@ impl Ssu2PeerRelayService {
             }
             return Err(RelayError::InvalidSignature);
         }
-        let signer = {
-            let signers = self
-                .signers
-                .lock()
-                .map_err(|_| RelayError::TooManyRequests)?;
-            signers.get(alice_hash).cloned()
-        };
-        let Some(signer) = signer else {
-            if let Ok(mut counters) = self.counters.lock() {
-                counters.signature_rejections = counters.signature_rejections.saturating_add(1);
-            }
-            return Err(RelayError::InvalidSignature);
-        };
         let emit = self
             .introducer
             .lock()
             .map_err(|_| RelayError::TooManyRequests)?
             .on_request(
                 block,
-                alice_hash,
+                tag_owner,
                 bob_hash,
-                charlie_hash,
-                &signer,
+                preimage_hash,
+                signer,
                 request_bytes,
                 now_secs,
                 now_ms,
@@ -710,6 +917,81 @@ impl Ssu2PeerRelayService {
             counters.relay_intros = counters.relay_intros.saturating_add(1);
         }
         Ok(emit)
+    }
+
+    fn count_signature_rejection(&self) {
+        if let Ok(mut counters) = self.counters.lock() {
+            counters.signature_rejections = counters.signature_rejections.saturating_add(1);
+        }
+    }
+
+    /// Handles one authenticated RelayResponse from Charlie (Bob).
+    ///
+    /// The response is correlated against the live request table; only a
+    /// response whose sender is the Charlie the request named, and whose
+    /// signature verifies, is forwarded to the requester. Every refusal
+    /// is typed and leaves no state behind (Plan 490).
+    pub fn on_introducer_relay_response(
+        &self,
+        block: &i2pr_transport_ssu2::RelayResponseBlock,
+        sender_hash: &[u8; 32],
+        bob_hash: &[u8; 32],
+        target_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<i2pr_transport_ssu2::IntroducerResponseOutcome, i2pr_transport_ssu2::RelayError>
+    {
+        use i2pr_transport_ssu2::RelayError;
+        let outcome = self
+            .introducer
+            .lock()
+            .map_err(|_| RelayError::TooManyRequests)?
+            .on_response(
+                block,
+                sender_hash,
+                bob_hash,
+                target_signer,
+                now_secs,
+                now_ms,
+            )?;
+        if let Ok(mut counters) = self.counters.lock()
+            && matches!(
+                outcome,
+                i2pr_transport_ssu2::IntroducerResponseOutcome::Forwarded { .. }
+            )
+        {
+            counters.relay_responses = counters.relay_responses.saturating_add(1);
+        }
+        Ok(outcome)
+    }
+
+    /// Handles one authenticated RelayIntro (Charlie) whose requester's
+    /// signing key the caller already resolved (Plan 531).
+    ///
+    /// The target role's verification is the transport's own: the
+    /// forwarded RelayRequest view is reconstructed and Alice's signature
+    /// over the specification's preimage is verified, so only the
+    /// signer's origin differs from the table-driven variant.
+    pub fn on_relay_intro_with_signer(
+        &self,
+        block: &i2pr_transport_ssu2::RelayIntroBlock,
+        expected_bob_hash: &[u8; 32],
+        expected_charlie_hash: &[u8; 32],
+        alice_signer: &i2pr_proto::SigningPublicKey,
+        now_secs: u64,
+        now_ms: u64,
+    ) -> Result<bool, i2pr_transport_ssu2::RelayError> {
+        self.target
+            .lock()
+            .map_err(|_| i2pr_transport_ssu2::RelayError::TooManyRequests)?
+            .on_intro(
+                block,
+                expected_bob_hash,
+                expected_charlie_hash,
+                alice_signer,
+                now_secs,
+                now_ms,
+            )
     }
 
     /// Handles one authenticated RelayIntro (Charlie).
@@ -743,6 +1025,17 @@ impl Ssu2PeerRelayService {
                 now_secs,
                 now_ms,
             )
+    }
+
+    /// Consumes one pending relay introduction (Plan 532).
+    ///
+    /// The transport's target table owns the pending introduction; this
+    /// releases it after the hole punch has been emitted, so a replayed
+    /// introduction cannot produce a second emission.
+    pub fn consume_target_intro(&self, nonce: u32) {
+        if let Ok(mut target) = self.target.lock() {
+            target.consume(nonce);
+        }
     }
 
     /// Inserts one authenticated introducer record.
@@ -791,8 +1084,8 @@ impl Ssu2PeerRelayService {
     }
 
     /// Marks one test inconclusive (third-peer refusal/timeout) without
-    /// falsely confirming or denying reachability. Mirrors the outcome
-    /// into reachability as the neutral kind.
+    /// falsely confirming or denying reachability, and returns the
+    /// neutral outcome for the caller to record.
     pub fn mark_peer_test_inconclusive(
         &self,
         nonce: u32,
@@ -803,7 +1096,6 @@ impl Ssu2PeerRelayService {
             .lock()
             .map_err(|_| i2pr_transport_ssu2::PeerTestError::TooManyTests)?
             .mark_inconclusive(nonce, now_ms)?;
-        self.mirror_peer_outcome(Some(outcome));
         Ok(outcome)
     }
 
@@ -818,16 +1110,22 @@ impl Ssu2PeerRelayService {
             .lock()
             .map_err(|_| i2pr_transport_ssu2::PeerTestError::TooManyTests)?
             .mark_firewalled(nonce, now_ms)?;
-        self.mirror_peer_outcome(Some(outcome));
         Ok(outcome)
     }
 
     /// Cancels one relay request and releases its quota.
     pub fn cancel_relay_request(&self, nonce: u32) -> Result<(), i2pr_transport_ssu2::RelayError> {
-        self.requester
+        let outcome = self
+            .requester
             .lock()
             .map_err(|_| i2pr_transport_ssu2::RelayError::TooManyRequests)?
-            .cancel(nonce)
+            .cancel(nonce);
+        if outcome.is_ok()
+            && let Ok(mut nonces) = self.requester_nonces.lock()
+        {
+            nonces.remove(&nonce);
+        }
+        outcome
     }
 
     /// Central expiry scheduler: polls every table with one call, prunes
@@ -900,26 +1198,7 @@ impl Ssu2PeerRelayService {
         }
     }
 
-    /// Returns the conservative reachability state.
-    pub fn reachability_state(&self) -> ReachabilityState {
-        self.reachability
-            .lock()
-            .map(|tracker| tracker.state())
-            .unwrap_or(ReachabilityState::Unknown)
-    }
-
-    /// Records one externally validated path signal (for tests that own
-    /// sessions elsewhere).
-    pub fn note_validated_path(&self, family: AddressFamily) {
-        if let Ok(mut reachability) = self.reachability.lock() {
-            reachability.record(
-                ReachabilitySignal::ValidatedPath { family },
-                Duration::from_secs(1),
-            );
-        }
-    }
-
-    /// Returns a privacy-safe snapshot (counts + reachability only).
+    /// Returns a privacy-safe snapshot (counts only).
     pub fn snapshot(&self) -> Ssu2PeerRelaySnapshot {
         let counters = self
             .counters
@@ -960,14 +1239,25 @@ impl Ssu2PeerRelayService {
             signature_rejections: counters.signature_rejections,
             freshness_rejections: counters.freshness_rejections,
             expirations: counters.expirations,
-            reachability: self.reachability_state(),
         }
     }
 
     /// Inserts a validated introducer record from authenticated session
     /// evidence (provenance-tagged for publication selection).
+    ///
+    /// Plan 524. `now_secs` is the **wall clock**: it is the clock the
+    /// table sweeps expired records against. The margin belongs to the
+    /// *record*, not to the clock — a tag whose own expiry is within
+    /// [`INTRODUCER_EXPIRY_MARGIN_SECS`] is not a usable introducer, so
+    /// the record's effective expiry is pulled back by the margin and the
+    /// sweep still runs against the real clock. (The previous shape
+    /// derived the sweep clock from the record's own expiry, which made
+    /// the sweep run in the future and expired live records early; this
+    /// path had no production caller until Plan 524.)
+    #[allow(clippy::too_many_arguments)]
     pub fn note_authenticated_introducer(
         &self,
+        now_secs: u64,
         peer_hash: [u8; 32],
         endpoint: Ssu2Endpoint,
         intro_key: i2pr_transport_ssu2::address::IntroKey,
@@ -975,20 +1265,17 @@ impl Ssu2PeerRelayService {
         expires_secs: u64,
         provenance: IntroducerProvenance,
     ) -> Result<(), i2pr_transport_ssu2::IntroducerError> {
+        let effective_expiry = expires_secs.saturating_sub(INTRODUCER_EXPIRY_MARGIN_SECS);
         let record = IntroducerRecord::new(
             peer_hash,
             endpoint,
             intro_key,
             relay_tag,
-            expires_secs,
+            effective_expiry,
             provenance,
         )?;
-        self.insert_introducer(record, expires_secs.saturating_sub(600))
+        self.insert_introducer(record, now_secs)
     }
-}
-
-fn block_family_hint() -> AddressFamily {
-    AddressFamily::Ipv4
 }
 
 /// Why one peer-test/relay datagram was rate-limited (privacy-safe).
@@ -1043,7 +1330,6 @@ mod tests {
         );
         let snapshot = service.snapshot();
         assert_eq!(snapshot.live_relay_tags, 0);
-        assert_eq!(snapshot.reachability, ReachabilityState::Unknown);
     }
 
     #[test]

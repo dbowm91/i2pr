@@ -1867,6 +1867,20 @@ async fn plan376_a_routed_request_survives_a_product_restart() {
     first
         .cancel
         .cancel(i2pr_runtime::CancellationReason::OperatorRequest);
+    let shutdown = first.scope.shutdown().await;
+    assert!(
+        !shutdown.failed(),
+        "generation one child tasks must shut down cleanly: {shutdown:?}"
+    );
+    assert_eq!(
+        shutdown.remaining(),
+        0,
+        "generation one must join every owned task before restart"
+    );
+    assert!(
+        shutdown.joined() > 0,
+        "generation one must have owned tasks to shut down"
+    );
     drop(first);
     assert!(
         tokio::time::timeout(

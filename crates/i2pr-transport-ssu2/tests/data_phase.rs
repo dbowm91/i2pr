@@ -123,6 +123,7 @@ fn paired_sessions() -> (Ssu2Session, Ssu2Session) {
             initial_send_packet_number: 0,
             max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
             idle_timeout_ms: 300_000,
+            keepalive_interval_ms: None,
         },
         alice_keys,
     )
@@ -136,6 +137,7 @@ fn paired_sessions() -> (Ssu2Session, Ssu2Session) {
             initial_send_packet_number: 0,
             max_payload_bytes: SessionConfig::max_payload_for_mtu(1280, false),
             idle_timeout_ms: 300_000,
+            keepalive_interval_ms: None,
         },
         bob_keys,
     )
@@ -1133,6 +1135,29 @@ fn two_sessions_isolate_pressure() {
     pump(
         &mut alice_b,
         &mut bob_b,
+        &mut now_ms,
+        &mut Vec::new(),
+        &mut bob_events,
+        &mut alice_events,
+    );
+    assert_eq!(delivered_messages(&bob_events), vec![message]);
+}
+
+#[test]
+fn cell_sized_tunneldata_reassembles_across_two_fragments() {
+    // Plan 478: a 1037-byte type-18 message (9-byte header + 1028
+    // body, the exact shape of a tunneled build cell) must
+    // reassemble end to end across two polls.
+    let (mut alice, mut bob) = paired_sessions();
+    let mut now_ms = NOW_MS;
+    let message = i2np_bytes(18, 0x8003_0042, 1028, 0xAB);
+    assert_eq!(message.len(), 1037);
+    alice.queue_i2np_message(message.clone()).expect("queue");
+    let mut bob_events = Vec::new();
+    let mut alice_events = Vec::new();
+    pump(
+        &mut alice,
+        &mut bob,
         &mut now_ms,
         &mut Vec::new(),
         &mut bob_events,

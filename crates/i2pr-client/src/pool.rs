@@ -8,11 +8,14 @@
 //! [`EstablishedMaterial`] is accepted; there is no production placeholder
 //! path.
 
+use std::collections::BTreeMap;
+
 use i2pr_proto::Hash;
 use i2pr_tunnel::pool::ActivationError;
 use i2pr_tunnel::{
     BoundedTunnelPool, EstablishedMaterial, EstablishedTunnel, LocalZeroHopInbound,
-    LocalZeroHopOutbound, RegisterError, RegisterOutcome, TunnelDirection, TunnelSlot, TunnelState,
+    LocalZeroHopOutbound, RegisterError, RegisterOutcome, TunnelDirection, TunnelId, TunnelSlot,
+    TunnelState,
 };
 
 use crate::config::{DestinationConfig, DestinationConfigError};
@@ -105,6 +108,16 @@ pub struct DestinationTunnelPool {
     /// Cumulative standby-to-base promotions since construction or
     /// the last [`Self::release_all`] (Plan 296).
     standby_promotions: u64,
+    /// Pool slot to local inbound endpoint receive tunnel id, for
+    /// every live remote or zero-hop inbound registration. The
+    /// shared pool registrations are keyed by the creator tunnel
+    /// id, which is a distinct allocator draw from the local
+    /// endpoint id the data plane and the owner table key on
+    /// (Plan 478: mixing the two deafened all tunneled service
+    /// inbound after the first pool refresh). This map is the
+    /// single durable translation; it is maintained on every
+    /// insert and every removal path.
+    inbound_local_receive: BTreeMap<TunnelSlot, TunnelId>,
 }
 
 impl DestinationTunnelPool {
@@ -124,6 +137,7 @@ impl DestinationTunnelPool {
             // from zero upward; zero-hop allocates from 0x4000_0000.
             next_zero_hop_slot: 0x4000_0000,
             standby_promotions: 0,
+            inbound_local_receive: BTreeMap::new(),
         })
     }
 
@@ -181,6 +195,8 @@ impl DestinationTunnelPool {
         }
         let slot = self.alloc_zero_hop_slot();
         self.zero_hop_inbound = Some((slot, entry));
+        self.inbound_local_receive
+            .insert(slot, entry.receive_tunnel());
         self.consecutive_failures = 0;
         Ok(slot)
     }
@@ -247,10 +263,22 @@ impl DestinationTunnelPool {
                 expected: TunnelDirection::Inbound,
             });
         }
+        // Capture the local endpoint receive id before the material
+        // moves into the shared pool (Plan 478).
+        let local_receive = established.local_inbound_receive();
         let outcome = self
             .inner
             .register_inbound_with_material(established, now_seconds)
             .map_err(DestinationPoolError::from)?;
+        // The shared pool keys registrations by the creator tunnel
+        // id, which never reaches the data plane or the owner
+        // table; record the local endpoint id from the pre-move
+        // material so refresh/eviction translate slots without
+        // mixing the namespaces (Plan 478). Insert-if-absent: a
+        // duplicate registration names an already-mapped slot.
+        self.inbound_local_receive
+            .entry(outcome.slot())
+            .or_insert(local_receive);
         self.consecutive_failures = 0;
         Ok(outcome.slot())
     }
@@ -287,6 +315,9 @@ impl DestinationTunnelPool {
         let inbound_before = self.inner.inbound_len();
         let outbound_before = self.inner.outbound_len();
         let mut evicted = self.inner.advance_time(now_seconds);
+        for slot in &evicted {
+            self.inbound_local_receive.remove(slot);
+        }
         if let Some((slot, entry)) = &self.zero_hop_inbound
             && !entry.is_usable(now_seconds)
         {
@@ -347,6 +378,7 @@ impl DestinationTunnelPool {
             && *stored == slot
         {
             self.zero_hop_inbound = None;
+            self.inbound_local_receive.remove(&slot);
             let _ = self.note_build_failure();
             return true;
         }
@@ -363,6 +395,7 @@ impl DestinationTunnelPool {
         let outbound_before = self.inner.outbound_len();
         let removed = self.inner.mark_failed(slot).is_some();
         if removed {
+            self.inbound_local_receive.remove(&slot);
             // Exactly one remote slot left; a held standby covers it.
             if inbound_before > self.inner.inbound_len() {
                 if standby_in_before > 0 {
@@ -383,6 +416,7 @@ impl DestinationTunnelPool {
             && *stored == slot
         {
             self.zero_hop_inbound = None;
+            self.inbound_local_receive.remove(&slot);
             return true;
         }
         if let Some((stored, _)) = &self.zero_hop_outbound
@@ -391,7 +425,11 @@ impl DestinationTunnelPool {
             self.zero_hop_outbound = None;
             return true;
         }
-        self.inner.remove(slot).is_some()
+        if self.inner.remove(slot).is_some() {
+            self.inbound_local_receive.remove(&slot);
+            return true;
+        }
+        false
     }
 
     /// Number of registered inbound tunnels (remote + zero-hop).
@@ -513,6 +551,59 @@ impl DestinationTunnelPool {
         sources
     }
 
+    /// Number of inbound tunnels whose advertised lease still outlives the
+    /// rotation horizon at `now_seconds`.
+    ///
+    /// A tunnel whose advertised lease ends inside the rotation window
+    /// cannot carry the lease the destination keeps advertising for the
+    /// next cycle: the advertised lease would die before the replacement
+    /// exists. The replenishment counts only the tunnels that still
+    /// cover the rotation horizon, so the replacement is built while the
+    /// old tunnel is still alive and the destination never has an
+    /// unresolvable gap (Plan 487 WP4).
+    ///
+    /// The count is bounded by the pool's own inbound registrations; the
+    /// zero-hop local route counts when its own advertised lease covers
+    /// the horizon.
+    pub fn inbound_lease_covering_count(&self, now_seconds: u64) -> usize {
+        let lifetime = u64::from(self.config.tunnel_lifetime_seconds());
+        let margin = u64::from(self.config.lease_publication_margin_seconds());
+        let horizon =
+            now_seconds.saturating_add(u64::from(self.config.lease_rotation_margin_seconds()));
+        let mut covering = 0usize;
+        for registration in self.inner.inbound_registrations() {
+            if registration.state() != TunnelState::Established {
+                continue;
+            }
+            let tunnel_expires = registration.created_at_seconds().saturating_add(lifetime);
+            if tunnel_expires.saturating_sub(margin) > horizon {
+                covering = covering.saturating_add(1);
+            }
+        }
+        if let Some((_, entry)) = &self.zero_hop_inbound
+            && entry.is_usable(now_seconds)
+            && entry.expires_seconds().saturating_sub(margin) > horizon
+        {
+            covering = covering.saturating_add(1);
+        }
+        covering
+    }
+
+    /// How many more inbound tunnels the pool can still admit.
+    ///
+    /// The replenishment is bounded by this: a build whose registration
+    /// the pool must reject as "pool full" is a wasted tunnel build.
+    pub fn inbound_free_capacity(&self) -> usize {
+        let capacity = usize::from(self.config.pool_inbound_capacity());
+        let established = self
+            .inner
+            .inbound_registrations()
+            .iter()
+            .filter(|registration| registration.state() == TunnelState::Established)
+            .count();
+        capacity.saturating_sub(established)
+    }
+
     /// Returns the active remote outbound registrations in stable slot order.
     pub fn outbound_registrations(&self) -> Vec<i2pr_tunnel::TunnelRegistration> {
         self.inner.outbound_registrations()
@@ -574,9 +665,21 @@ impl DestinationTunnelPool {
         if self.zero_hop_outbound.take().is_some() {
             released += 1;
         }
+        self.inbound_local_receive.clear();
         self.consecutive_failures = 0;
         self.standby_promotions = 0;
         released
+    }
+
+    /// Returns the local inbound endpoint receive tunnel id bound to
+    /// the supplied pool slot, when the slot holds a live remote or
+    /// zero-hop inbound registration. The shared pool registrations
+    /// key on the creator tunnel id; this is the durable
+    /// translation to the id the data plane, the owner table, and
+    /// the bridge key on (Plan 478). Returns `None` for unknown,
+    /// outbound, or already-removed slots.
+    pub fn inbound_local_receive(&self, slot: TunnelSlot) -> Option<TunnelId> {
+        self.inbound_local_receive.get(&slot).copied()
     }
 }
 
@@ -685,6 +788,49 @@ mod tests {
     }
 
     #[test]
+    fn inbound_covering_count_withdraws_a_tunnel_inside_the_rotation_window() {
+        // Plan 487 WP4 regression: the replenishment must count the
+        // tunnels whose advertised lease still outlives the rotation
+        // horizon, so the replacement is built while the old tunnel is
+        // still alive. Counting the raw registration instead left the
+        // advertised lease to die before the replacement existed, and the
+        // rotation had nothing better to publish.
+        let mut pool = pool();
+        pool.register_inbound(established_inbound(31), 0)
+            .expect("register");
+        let lifetime = u64::from(DestinationConfig::balanced().tunnel_lifetime_seconds());
+        let publication =
+            u64::from(DestinationConfig::balanced().lease_publication_margin_seconds());
+        let rotation = u64::from(DestinationConfig::balanced().lease_rotation_margin_seconds());
+        // The advertised lease ends at `lifetime - publication`. The
+        // tunnel stops covering the horizon `rotation` seconds earlier.
+        assert_eq!(pool.inbound_lease_covering_count(0), 1);
+        let horizon_start = lifetime - publication - rotation;
+        assert_eq!(pool.inbound_lease_covering_count(horizon_start - 1), 1);
+        assert_eq!(
+            pool.inbound_lease_covering_count(horizon_start),
+            0,
+            "a tunnel inside the rotation window no longer covers the target"
+        );
+        assert_eq!(pool.inbound_lease_covering_count(horizon_start + 1), 0);
+        // The tunnel is still registered and still usable while its
+        // advertised lease lives: the withdrawal is a *replenishment*
+        // signal, not an eviction.
+        assert_eq!(pool.inbound_registrations().len(), 1);
+        assert_eq!(pool.inbound_lease_sources(horizon_start).len(), 1);
+    }
+
+    #[test]
+    fn inbound_covering_count_ignores_withdrawn_and_failed_tunnels() {
+        let mut pool = pool();
+        pool.register_inbound(established_inbound(32), 0)
+            .expect("register");
+        let slot = pool.inbound_lease_sources(0)[0].slot();
+        assert!(pool.mark_failed(slot));
+        assert_eq!(pool.inbound_lease_covering_count(0), 0);
+    }
+
+    #[test]
     fn direction_mismatch_is_rejected() {
         let mut pool = pool();
         let error = pool
@@ -749,7 +895,10 @@ mod tests {
         // Plan 296: base target 2 plus backup 2 holds two standby
         // inbound tunnels; failing base tunnels promotes standby
         // (usability on the base target preserved) while failures
-        // still count toward the replacement threshold.
+        // still count toward the replacement threshold. Plan 487 WP4
+        // adds one replacement headroom slot past base plus backup: the
+        // tunnel that replaces an expiring lease has to be admissible
+        // while that lease's tunnel is still alive.
         let config =
             DestinationConfig::try_new(2, 2, 1, 2, 2, 0, false, 600, 2, 8, 64, 1024, 60, 120)
                 .expect("config");
@@ -766,11 +915,16 @@ mod tests {
         assert_eq!(pool.standby_outbound(), 0);
         assert_eq!(pool.standby_promotions(), 0);
         assert!(pool.is_usable(0));
-        // The effective target bounds registration: a fifth
-        // inbound tunnel has nowhere to stand by.
+        // The effective target plus the Plan 487 WP4 replacement headroom
+        // bounds registration: one more inbound tunnel stands by, and
+        // the next has nowhere to stand by.
         assert!(
-            pool.register_inbound(established_inbound(37), 0).is_err(),
-            "registration past base plus backup must fail"
+            pool.register_inbound(established_inbound(37), 0).is_ok(),
+            "the replacement headroom admits one tunnel past base plus backup"
+        );
+        assert!(
+            pool.register_inbound(established_inbound(38), 0).is_err(),
+            "registration past base plus backup plus the replacement headroom must fail"
         );
         // Fail two base tunnels: both promote, usability holds,
         // and both failures count toward the threshold.
@@ -779,17 +933,18 @@ mod tests {
             assert!(pool.mark_failed(slot));
         }
         assert_eq!(pool.standby_promotions(), 2);
-        assert_eq!(pool.standby_inbound(), 0);
+        assert_eq!(pool.standby_inbound(), 1);
         assert!(pool.is_usable(0));
         assert_eq!(pool.consecutive_failures(), 2);
         assert!(!pool.replacement_paused());
-        // Fail the remaining base tunnels: no standby left, so no
-        // further promotion and usability is lost.
-        for _ in 0..2 {
+        // Fail the remaining inbound tunnels: no standby left, so no
+        // further promotion beyond the one the headroom slot still
+        // covered, and usability is lost.
+        while !pool.inbound_lease_sources(0).is_empty() {
             let slot = pool.inbound_lease_sources(0)[0].slot();
             assert!(pool.mark_failed(slot));
         }
-        assert_eq!(pool.standby_promotions(), 2);
+        assert_eq!(pool.standby_promotions(), 3);
         assert!(!pool.is_usable(0));
     }
 
@@ -860,16 +1015,87 @@ mod tests {
         assert_eq!(pool.outbound_registrations().len(), 2);
         assert_eq!(pool.inbound_lease_sources(0).len(), 2);
 
-        assert!(pool.register_inbound(established_inbound(99), 0).is_err());
+        // Plan 487 WP4: the inbound pool carries one replacement headroom
+        // so the tunnel that replaces an expiring lease can be admitted
+        // while that tunnel is still alive. The outbound pool keeps its
+        // plain target bound.
+        assert!(pool.register_inbound(established_inbound(99), 0).is_ok());
+        assert!(
+            pool.register_inbound(established_inbound(98), 0).is_err(),
+            "the replacement headroom admits exactly one tunnel"
+        );
         assert!(
             pool.register_outbound(established_outbound(100), 0)
                 .is_err()
         );
 
         let evicted = pool.advance_time(u64::from(pool.config().tunnel_lifetime_seconds()));
-        assert_eq!(evicted.len(), 4);
+        assert_eq!(evicted.len(), 5);
         assert!(pool.inbound_registrations().is_empty());
         assert!(pool.outbound_registrations().is_empty());
         assert!(pool.inbound_lease_sources(u64::MAX).is_empty());
+    }
+
+    /// Plan 478 — the pool records the local endpoint receive id
+    /// per inbound slot, distinct from the creator id the shared
+    /// registrations key on. The data plane, the owner table, and
+    /// the bridge all key on the local id; this translation is what
+    /// keeps refresh/eviction in the right namespace.
+    #[test]
+    fn inbound_slot_maps_to_local_endpoint_receive_id() {
+        let mut pool = pool();
+        let material = established_inbound(40);
+        let creator = material.creator_tunnel_id();
+        let local = material.local_inbound_receive();
+        assert_ne!(creator, local, "fixture must exercise distinct namespaces");
+        let slot = pool.register_inbound(material, 0).expect("register");
+        assert_eq!(pool.inbound_local_receive(slot), Some(local));
+        // The shared registration still keys on the creator id.
+        let registration = pool
+            .inbound_registrations()
+            .into_iter()
+            .find(|registration| registration.slot() == slot)
+            .expect("registration");
+        assert_eq!(registration.tunnel_id(), creator);
+    }
+
+    /// Plan 478 — every removal path drops the local translation:
+    /// expiry eviction, explicit failure, unconditional removal,
+    /// and full release. A stale translation would resurrect a
+    /// dead endpoint id into a later refresh.
+    #[test]
+    fn inbound_local_translation_cleared_on_every_removal_path() {
+        let mut pool = pool();
+        let first = pool
+            .register_inbound(established_inbound(41), 0)
+            .expect("register");
+        let second = pool
+            .register_inbound(established_inbound(42), 0)
+            .expect("register");
+        assert!(pool.inbound_local_receive(first).is_some());
+        assert!(pool.inbound_local_receive(second).is_some());
+
+        assert!(pool.mark_failed(first));
+        assert_eq!(pool.inbound_local_receive(first), None);
+        assert!(pool.inbound_local_receive(second).is_some());
+
+        assert!(pool.remove(second));
+        assert_eq!(pool.inbound_local_receive(second), None);
+
+        let third = pool
+            .register_inbound(established_inbound(43), 0)
+            .expect("register");
+        assert!(pool.inbound_local_receive(third).is_some());
+        let lifetime = u64::from(pool.config().tunnel_lifetime_seconds());
+        let evicted = pool.advance_time(lifetime);
+        assert!(evicted.contains(&third));
+        assert_eq!(pool.inbound_local_receive(third), None);
+
+        let fourth = pool
+            .register_inbound(established_inbound(44), 0)
+            .expect("register");
+        assert!(pool.inbound_local_receive(fourth).is_some());
+        pool.release_all();
+        assert_eq!(pool.inbound_local_receive(fourth), None);
     }
 }

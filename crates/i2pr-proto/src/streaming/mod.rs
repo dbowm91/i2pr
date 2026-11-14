@@ -22,18 +22,19 @@ pub mod packet;
 pub mod payload;
 
 pub use packet::{
-    CLOSE_FLAGS, DEFAULT_ADVERTISED_MAX_PAYLOAD, FLAG_CLOSE, FLAG_DELAY_REQUESTED, FLAG_ECHO,
-    FLAG_FROM_INCLUDED, FLAG_MAX_PACKET_SIZE_INCLUDED, FLAG_NO_ACK, FLAG_OFFLINE_SIGNATURE,
-    FLAG_PROFILE_INTERACTIVE, FLAG_RESERVED_MASK, FLAG_RESET, FLAG_SIGNATURE_INCLUDED,
-    FLAG_SIGNATURE_REQUESTED, FLAG_SYNCHRONIZE, INITIAL_SYN_FLAGS, MAX_STREAMING_NACK_COUNT,
-    MAX_STREAMING_OPTION_BYTES, MAX_STREAMING_PACKET_BYTES, MAX_STREAMING_PAYLOAD_BYTES,
-    MIN_STREAMING_HEADER_BYTES, RESET_FLAGS, SYN_REPLAY_NACK_COUNT, SYN_RESPONSE_FLAGS,
-    SignatureLocation, StreamingFlags, StreamingHeaderPeek, StreamingOptionDecodeContext,
-    StreamingOptions, StreamingPacket, StreamingPacketBuilder, StreamingPacketError,
-    StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage, decode_streaming_packet,
-    encode_streaming_packet, encode_syn_replay_binding, install_packet_signature,
-    install_packet_signature_at, peek_streaming_header, validate_initial_syn,
-    validate_signature_policy, validate_syn_response, verify_syn_replay_binding,
+    CLOSE_FLAGS, DEFAULT_ADVERTISED_MAX_PAYLOAD, DELAY_CHOKE, FLAG_CLOSE, FLAG_DELAY_REQUESTED,
+    FLAG_ECHO, FLAG_FROM_INCLUDED, FLAG_MAX_PACKET_SIZE_INCLUDED, FLAG_NO_ACK,
+    FLAG_OFFLINE_SIGNATURE, FLAG_PROFILE_INTERACTIVE, FLAG_RESERVED_MASK, FLAG_RESET,
+    FLAG_SIGNATURE_INCLUDED, FLAG_SIGNATURE_REQUESTED, FLAG_SYNCHRONIZE, INITIAL_SYN_FLAGS,
+    MAX_STREAMING_NACK_COUNT, MAX_STREAMING_OPTION_BYTES, MAX_STREAMING_PACKET_BYTES,
+    MAX_STREAMING_PAYLOAD_BYTES, MIN_STREAMING_HEADER_BYTES, RESET_FLAGS, SYN_REPLAY_NACK_COUNT,
+    SYN_RESPONSE_FLAGS, SignatureLocation, StreamingFlags, StreamingHeaderPeek,
+    StreamingOptionDecodeContext, StreamingOptions, StreamingPacket, StreamingPacketBuilder,
+    StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage,
+    decode_streaming_packet, encode_streaming_packet, encode_syn_replay_binding,
+    install_packet_signature, install_packet_signature_at, peek_streaming_header,
+    validate_initial_syn, validate_signature_policy, validate_syn_response,
+    verify_syn_replay_binding,
 };
 pub use payload::{
     ClientPayload, ClientPayloadDecodeError, ClientPayloadEncodeError,
