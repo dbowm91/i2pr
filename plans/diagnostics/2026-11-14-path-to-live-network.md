@@ -64,6 +64,32 @@ withdrew at boot+30 min — **with the reachability state unchanged**, so the
 withdrawal is a readiness decision, not a lapse. The categorical reasons are
 now logged (`d2f2a567`) and are the next data point rather than a hypothesis.
 
+**Measured cause, 2026-11-14 04:47–04:53.** `d2f2a567` added the categorical
+reasons to the withdrawal line, and the first flap it caught was:
+
+```text
+04:47:45  withdrew  reasons=[AddressUnqualified, ReachabilityUnconfirmed]
+04:52:15  withdrew  reasons=[AddressUnqualified, ReachabilityUnconfirmed]
+04:52:15  Reachable -> Reachable  classes=3  evidence_expires_in_millis=59949
+04:53:15  withdrew  reasons=[AddressUnqualified, ReachabilityUnconfirmed]
+```
+
+Both reasons are computed from `readiness.material.is_some_and(...)`
+(`crates/i2pr-daemon/src/floodfill.rs:1048`), so their **co-occurrence means the
+publication material was absent** at the sampling instant — while the
+reachability state was `Reachable` with three classes 18 ms later. The material
+is built by `publication_material`, which polls expiry and then refuses when
+`reachability != Reachable || expiry <= now`. The only variant consistent with
+both facts is `ReachabilityUnqualified` at the instant a supporting class
+expired *inside* that call: the state dips to two classes, the gate withdraws,
+and the next refresh (the re-validation completed 17 ms later) restores it — the
+`04:52:15` transition line reports the net result and **cannot see the dip**,
+because the dip happens inside the gate rather than on the maintenance pass.
+
+That is why the role flaps on a 30 s–4 min beat and not on the 30-minute TTL: it
+is sampling a threshold it sits exactly on. The 59 949 ms remaining in that log
+line is the same signal that withdrew the role 60 seconds later.
+
 *Durable fix:* give class 1 a real producer. The reference does it with the
 **SSU2 in-band peer test** (block type 13, messages 4–7, Address block in
 messages 6/7), which i2pr does not implement — its peer test is an I2NP

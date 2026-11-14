@@ -3743,6 +3743,26 @@ impl Ssu2RuntimeService {
             )
         };
         if reachability != ReachabilityState::Reachable || expiry <= now {
+            // Plan 549: this refusal is sampled by the floodfill eligibility
+            // evaluation, and a class that expires *inside* this call takes the
+            // state below the corroboration threshold for an instant -- long
+            // enough to withdraw the role, and invisible to the transition
+            // reporter, which only runs on the maintenance pass. Reporting the
+            // sample itself is what makes the withdrawal explainable.
+            tracing::info!(
+                transition = "publication_material_refused",
+                reason = "reachability_unqualified",
+                reachability = ?reachability,
+                supporting_classes = corroboration,
+                evidence_expires_in_millis = u64::try_from(
+                    expiry
+                        .saturating_sub(now)
+                        .as_millis()
+                        .min(u128::from(u64::MAX))
+                )
+                .unwrap_or(u64::MAX),
+                "the publication gate sampled reachability below its floor"
+            );
             return Err(Ssu2PublicationUnavailable::ReachabilityUnqualified);
         }
         let bound = match family {
