@@ -11,8 +11,8 @@ name: Build i2pr arm64
 # host would need a newer glibc and would fail at exec with a version error that
 # looks like a code defect.
 #
-# Last rebuild: Plan 549 (the path in use is re-proved, every reachability
-# transition is reported, and a floodfill withdrawal names its reasons) -- these
+# Last rebuild: Plan 549 (the path in use is re-proved, transitions and gate
+# refusals are reported, and a floodfill withdrawal names its reasons) -- these
 # change what the runtime says about itself, so the artifact was rebuilt to
 # observe it, not because the wire changed.
 #
