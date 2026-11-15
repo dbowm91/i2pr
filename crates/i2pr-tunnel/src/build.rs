@@ -242,23 +242,21 @@ mod tests {
     }
 
     #[test]
-    fn short_layout_rejects_wrong_length() {
-        // DeferredBuildRecords::new already rejects mismatched
-        // lengths; the test proves the constructor and the layout
-        // validator agree on the contract.
-        let bytes = vec![0_u8; SHORT_BUILD_RECORD_SIZE - 1];
-        let outcome = DeferredBuildRecords::new(1, SHORT_BUILD_RECORD_SIZE, bytes);
-        assert!(outcome.is_err());
+    fn layout_rejects_wrong_record_size() {
+        let bytes = vec![0_u8; SHORT_BUILD_RECORD_SIZE];
+        let records =
+            DeferredBuildRecords::new(1, SHORT_BUILD_RECORD_SIZE, bytes).expect("records");
+        assert!(matches!(
+            BuildRecordLayout::Variable.validate(&records),
+            Err(BuildRecordLayoutError::LengthMismatch { .. })
+        ));
     }
 
     #[test]
-    fn layout_rejects_over_maximum_records() {
+    fn record_constructor_rejects_over_maximum_records() {
         let count = (MAX_BUILD_RECORDS + 1) as u8;
         let bytes = vec![0_u8; count as usize * SHORT_BUILD_RECORD_SIZE];
-        let outcome = DeferredBuildRecords::new(count, SHORT_BUILD_RECORD_SIZE, bytes);
-        // DeferredBuildRecords::new already enforces the count
-        // ceiling; the test simply proves the validation is bounded.
-        let _ = outcome;
+        assert!(DeferredBuildRecords::new(count, SHORT_BUILD_RECORD_SIZE, bytes).is_err());
     }
 
     #[test]

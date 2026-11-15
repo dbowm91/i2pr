@@ -2,7 +2,7 @@
 
 Status: **`passed-portable-service-tunnel-boundary-and-ownership-contract`**.
 
-Plan of record: [`349-portable-service-tunnel-boundary-and-ownership-contract.md`](../../implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md).
+Archived plan: [`349-portable-service-tunnel-boundary-and-ownership-contract.md`](../../archive/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md).
 
 ## Implementation
 

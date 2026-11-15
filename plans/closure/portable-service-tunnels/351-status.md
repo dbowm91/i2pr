@@ -2,7 +2,7 @@
 
 Status: **`passed-portable-service-tunnel-external-adapter-conformance-and-sam-handoff`**.
 
-Plan of record: [`351-external-adapter-conformance-and-sam-handoff-contract.md`](../../implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md).
+Archived plan: [`351-external-adapter-conformance-and-sam-handoff-contract.md`](../../archive/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md).
 
 ## Implementation
 

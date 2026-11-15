@@ -517,8 +517,7 @@ async fn route(state: &Arc<Mutex<LinkState>>, frame: Frame) -> Result<(), AppdEr
         }
         state.streams.insert(*stream, *session);
     }
-    // A dropped receiver means the caller already gave up; the reply is simply
-    // discarded, which is not a protocol fault.
+    // A dropped reply receiver is not a protocol fault.
     let _ = entry.reply.send(message);
     Ok(())
 }

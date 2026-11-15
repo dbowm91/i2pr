@@ -1,9 +1,6 @@
-# Machine-readable support inventory. Authority reconciled through the passed Plan 283 corrective (2026-10-02).
-# M11 one-family experimental progression passed; public transit remains disabled,
-# non-advertised, and unclaimed. M12 Plans 270-276 passed on the type-5-deferred floor;
-# Plans 277/282 stopped with retained work and Plan 283 passed (Option 3 peer-test
-# evidence driver + controlled activation); Plan 278 ready. No daemon floodfill
-# interoperability qualification or broad advertisement is claimed.
+# Machine-readable support inventory. Closure records are authoritative; see
+# plans/registry.md for a current status summary. Experimental evidence does not
+# imply public advertisement or general interoperability.
 schema = 1
 milestone = 7
 plan_103_implementation_floor = "plans/closure/netdb/103-status.md"
@@ -125,9 +122,9 @@ plan_153_plan_of_record = "plans/closure/sam/153-m7-closure-authority-and-ci-hyg
 plan_153_closure = "plans/closure/sam/153-status.md"
 plan_153_status = "passed-post-m7-authority-and-ci-hygiene"
 plan_368_plan_of_record = "plans/implementation/sam/368-sam33-primary-subsession-shared-destination-profile.md"
-plan_368_status = "in-progress-sam33-primary-subsession-shared-destination-profile"
-sam33_primary_subsessions = "not-yet-claimed"
-sam33_stream_datagram_raw_shared_destination = "not-yet-claimed"
+plan_368_status = "passed-sam33-primary-subsession-shared-destination-profile"
+sam33_primary_subsessions = "passed-local-experimental-profile"
+sam33_stream_datagram_raw_shared_destination = "passed-local-experimental-profile"
 plan_154_plan_of_record = "plans/implementation/ssu2/154-m8-ssu2-transport-and-reachability-roadmap.md"
 plan_154_closure = "plans/closure/ssu2/154-status.md"
 plan_154_status = "registered-m8-ssu2-v2-roadmap-blocked-by-plan153"

@@ -90,7 +90,7 @@ cancellation; transport code passes bounded encoded-I2NP owners through explicit
 consuming handoffs and keeps peer references, addresses, keys, transcripts, and
 payload bytes out of default debugging and snapshots. These boundaries are
 enforced by `scripts/check-dependency-direction.sh` and
-`scripts/check-runtime-boundaries.sh` — fix code, never weaken scripts.
+`scripts/check-runtime-boundaries.sh`: fix code, never weaken scripts.
 
 Committed protocol fixtures must be sanitized, locally authored or provenance-
 recorded, free of private keys/live identities/addresses/destinations, and
@@ -104,7 +104,7 @@ Tests may bind loopback addresses and use paused Tokio time, but must never
 contact public I2P peers. Runtime address observations are candidates for later
 policy only: they must not mutate NetDB, RouterInfo, or publication state.
 
-## Historical lanes (closed — read-only)
+## Historical lanes (closed, read-only)
 
 Per-lane contributor rules live with their records. Do not extend these lanes
 without a new plan-of-record:
@@ -157,8 +157,7 @@ peer-derived labels.
 Keep dependencies focused, centralize workspace versions, review transitive
 impact and unsafe-code exposure, and record why a new dependency is needed.
 Do not copy implementation code or test vectors from another router until
-license and provenance review is complete. The project license is intentionally
-not selected yet.
+license and provenance review is complete. The project is MIT-licensed.
 
 Make focused commits that explain behavior and tests. Handoffs should list
 changed files, commands and results, dependency changes, security-relevant

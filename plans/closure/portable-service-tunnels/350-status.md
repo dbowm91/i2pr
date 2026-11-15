@@ -2,7 +2,7 @@
 
 Status: **`passed-portable-service-tunnel-package-api-stabilization-publication-blocked-by-license-selection`**.
 
-Plan of record: [`350-service-tunnel-package-api-and-dependency-stabilization.md`](../../implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md).
+Archived plan: [`350-service-tunnel-package-api-and-dependency-stabilization.md`](../../archive/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md).
 
 ## Implementation
 

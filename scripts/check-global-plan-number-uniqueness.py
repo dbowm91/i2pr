@@ -99,14 +99,24 @@ PLAN_NAME = re.compile(r"^(\d{3})-[^/]+\.md$")
 def find_collisions(plans_root: Path, tolerated: dict[str, set[str]] | None = None) -> list[str]:
     owners: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     implementations = plans_root / "implementation"
-    for path in sorted(implementations.rglob("*.md")):
-        match = PLAN_NAME.match(path.name)
-        if not match:
+    archive = plans_root / "archive"
+    # Archived plans retain ownership only when their subsystem closure remains.
+    for source_root in (implementations, archive):
+        archived = source_root == archive
+        if not source_root.exists():
             continue
-        number = match.group(1)
-        relative = path.relative_to(plans_root).as_posix()
-        subsystem = path.parent.relative_to(implementations).as_posix()
-        owners[number][subsystem].add(relative)
+        for path in sorted(source_root.rglob("*.md")):
+            match = PLAN_NAME.match(path.name)
+            if not match:
+                continue
+            number = match.group(1)
+            subsystem = path.parent.relative_to(source_root).as_posix()
+            if archived and not (
+                plans_root / "closure" / subsystem / f"{number}-status.md"
+            ).is_file():
+                continue
+            relative = path.relative_to(plans_root).as_posix()
+            owners[number][subsystem].add(relative)
 
     errors: list[str] = []
     for number, by_subsystem in sorted(owners.items()):
