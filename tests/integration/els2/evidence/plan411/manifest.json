@@ -1,0 +1,10 @@
+{
+  "attempts": 1,
+  "bind_policy": "127.0.0.1 only",
+  "java_pin": "9134f808337b401e8e53c73734c81fab04280c9d",
+  "reseed": "disabled",
+  "result_sha256": "328431861c350e32720f2d2d4662bed6697233ac0e4c9f539276672a61e1e8ce",
+  "schema": "i2pr-java-sam-diagnostic-manifest-v1",
+  "source_revision": "9134f808337b401e8e53c73734c81fab04280c9d",
+  "source_trace_sha256": "5e037e55fd5c3d8ca1cfa8e6d6aa3a592cf1539d0ff2dc955cf86192f92a6766"
+}

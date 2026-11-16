@@ -25,10 +25,9 @@
 
 use std::fs;
 
-use i2pr_crypto::RouterIdentityBundle;
 use i2pr_daemon::bootstrap::{
     Bootstrap, BootstrapPolicy, BootstrapReport, BootstrapState, ReseedAttemptSummary,
-    bootstrap_with_offline_reseed, build_trust_set, store_summary,
+    bootstrap_with_offline_reseed, bootstrap_with_online_reseed, build_trust_set, store_summary,
 };
 use i2pr_daemon::config::{
     Config, NetDbConfig, Ntcp2Config, ReseedConfig, ReseedSourceConfig, RouterConfig,
@@ -38,14 +37,11 @@ use i2pr_netdb::RouterInfoStoreConfig;
 use i2pr_netdb_persist::{CacheLoader, CacheLoaderLimits, LoadedCacheState};
 use i2pr_proto::{Date, Mapping};
 use i2pr_storage::IdentityStore;
-use rand_chacha::ChaCha8Rng;
-use rand_core::SeedableRng;
 use tempfile::tempdir;
 
-fn make_bundle(seed: u64) -> RouterIdentityBundle {
-    let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    RouterIdentityBundle::generate(&mut rng).expect("deterministic test identity")
-}
+#[path = "../src/tests/support/reseed_fixture.rs"]
+mod reseed_fixture;
+use reseed_fixture::make_bundle;
 
 fn minimal_config(data_dir: &std::path::Path) -> Config {
     Config {
@@ -429,6 +425,92 @@ fn empty_cache_with_reseed_disabled_does_not_call_offline_reseed() {
 }
 
 #[test]
+fn invalid_online_bundle_keeps_empty_cache_unmodified() {
+    let directory = tempdir().expect("directory");
+    let data_dir = directory.path().join("fresh-state");
+    let mut config = minimal_config(&data_dir);
+    config.reseed.enabled = true;
+    let bundle = make_bundle(0x432);
+    let builder = i2pr_netdb::LocalRouterInfoBuilder::new(&bundle);
+    let report =
+        bootstrap_with_online_reseed(&config, &builder, 1_800_000_000, b"bad su3".to_vec())
+            .expect("failed candidate leaves bootstrap degraded");
+    assert_eq!(report.final_state, BootstrapState::Empty);
+    assert_eq!(report.snapshot.reseed_attempts, 1);
+    assert!(report.reseed_report.is_none());
+    assert_eq!(report.snapshot.record_count, 0);
+}
+
+#[test]
+fn valid_online_su3_bootstraps_empty_store_and_survives_restart() {
+    let directory = tempdir().expect("directory");
+    let data_dir = directory.path().join("fresh-state");
+    let certificate_path = directory.path().join("reseed-signer.der");
+    let now_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time")
+        .as_secs();
+    let (su3, certificate) =
+        reseed_fixture::signed_reseed_fixture(now_seconds, "trusted", 0x432_104);
+    fs::write(&certificate_path, certificate).expect("write explicit signer trust");
+    let mut config = minimal_config(&data_dir);
+    config.netdb.min_router_infos = 1;
+    config.reseed.enabled = true;
+    config.reseed.sources.push(ReseedSourceConfig {
+        url: None,
+        signer_id: "trusted".to_owned(),
+        certificate_path,
+        tls_root_path: None,
+    });
+    let trust = build_trust_set(&config.reseed.sources).expect("build test trust");
+    let ingestor = i2pr_netdb_persist::ReseedIngestor::new(&trust);
+    let mut probe = i2pr_netdb::RouterInfoStore::default();
+    let probe_result = ingestor.ingest_su3_into(
+        &su3,
+        now_seconds,
+        i2pr_netdb::ValidationContext::new(Date::from_millis(now_seconds * 1000)),
+        &mut probe,
+        None,
+    );
+    assert!(
+        probe_result.is_ok(),
+        "fixture verification: {probe_result:?}"
+    );
+    let cache_probe_dir = directory.path().join("cache-probe");
+    IdentityStore::prepare_directory(&cache_probe_dir).expect("prepare cache probe");
+    let cache_probe = CacheLoader::new(i2pr_storage::cache_seam::ByteCache::in_data_dir(
+        &cache_probe_dir,
+    ));
+    let mut cache_probe_store = i2pr_netdb::RouterInfoStore::default();
+    let cache_probe_result = ingestor.ingest_su3_into(
+        &su3,
+        now_seconds,
+        i2pr_netdb::ValidationContext::new(Date::from_millis(now_seconds * 1000)),
+        &mut cache_probe_store,
+        Some(&cache_probe),
+    );
+    assert!(
+        cache_probe_result.is_ok(),
+        "cache fixture verification: {cache_probe_result:?}"
+    );
+    let local_bundle = make_bundle(0x432_106);
+    let builder = i2pr_netdb::LocalRouterInfoBuilder::new(&local_bundle);
+    let report = bootstrap_with_online_reseed(&config, &builder, now_seconds, su3)
+        .expect("verified online SU3 candidate");
+    assert_eq!(report.reseed_attempts[0].outcome, "completed");
+    assert_eq!(report.final_state, BootstrapState::CacheSufficient);
+    assert_eq!(report.snapshot.record_count, 1);
+    assert_eq!(report.snapshot.reseed_attempts, 1);
+    assert_eq!(report.reseed_report.as_ref().unwrap().inserts.inserted, 1);
+
+    let restart = bootstrap_with_offline_reseed(&config, &builder, now_seconds + 1, None)
+        .expect("restart from verified cache");
+    assert_eq!(restart.final_state, BootstrapState::CacheSufficient);
+    assert_eq!(restart.snapshot.reseed_attempts, 0);
+    assert!(restart.cache_report.is_some());
+}
+
+#[test]
 fn local_router_info_has_no_ntcp2_address() {
     let bundle = make_bundle(0xDEAD);
     let builder = i2pr_netdb::LocalRouterInfoBuilder::new(&bundle);
@@ -659,8 +741,10 @@ fn build_trust_set_rejects_unparseable_certificate() {
     let cert_path = directory.path().join("not-a-cert.pem");
     std::fs::write(&cert_path, b"not a der certificate").expect("write");
     let sources = vec![ReseedSourceConfig {
+        url: None,
         signer_id: "x".to_owned(),
         certificate_path: cert_path,
+        tls_root_path: None,
     }];
     let error = build_trust_set(&sources).unwrap_err();
     assert!(matches!(
@@ -732,8 +816,10 @@ fn bootstrap_with_typed_failure_outcome_is_observable() {
     let mut config = minimal_config(&path);
     config.reseed.enabled = true;
     config.reseed.sources.push(ReseedSourceConfig {
+        url: None,
         signer_id: "missing".to_owned(),
         certificate_path: path.join("not-installed.pem"),
+        tls_root_path: None,
     });
     let builder = i2pr_netdb::LocalRouterInfoBuilder::new(&bundle);
     let bundle_path = path.join("dummy.su3");

@@ -53,8 +53,8 @@ pub use ntcp2_data_oracle::{
 };
 pub use ntcp2_driver::{
     HandshakeClock, HandshakeCounterSnapshot, HandshakeDriverConfig, HandshakeDriverError,
-    HandshakeRun, HandshakeRunOutcome, PaddingProfile, drive_initiator_handshake,
-    drive_initiator_handshake_observed, drive_responder_handshake,
+    HandshakeRun, HandshakeRunOutcome, PaddingProfile, ResponderHandshakeIoOperation,
+    drive_initiator_handshake, drive_initiator_handshake_observed, drive_responder_handshake,
     drive_responder_handshake_observed,
 };
 pub use ntcp2_handshake_observer::{

@@ -1,6 +1,8 @@
 # Transit Tunnels Roadmap
 
-Status: active
+Status: M11 one-family experimental qualification closed via Plan 268; public transit remains off. Normal-daemon opt-in continuation Plan 436 registered, blocked on Plan 433.
+
+**Recovery continuation (2026-10-10):** [Plan 436](../implementation/transit-tunnels/436-normal-daemon-transit-participation-optin.md) integrates bounded participant admission and transit forwarding into the **same** normal daemon authenticated I2NP owner, after Plan 433. It must not promote one-family M11 evidence into a public participation claim. [Recovery roadmap](core-router-recovery-roadmap.md). Earlier M11 attempts and terminal evidence unchanged.
 
 Long-term references:
 

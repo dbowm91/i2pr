@@ -74,7 +74,11 @@ pub use sam::{SamServiceError, SamServiceState, StreamingPools};
 use cli::{CheckConfigArgs, Cli, Command, IdentityCommand, RunArgs};
 use config::Config;
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
-use i2pr_netdb::{LocalRouterInfoBuilder, RouterInfoStoreConfig};
+use i2pr_netdb::{
+    LocalRouterInfoBuilder, RouterInfoStore, RouterInfoStoreConfig, ValidationContext,
+};
+use i2pr_netdb_persist::{ReseedIngestLimits, ReseedIngestor};
+use i2pr_proto::Date;
 use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::IdentityStore;
 use std::path::PathBuf;
@@ -1991,6 +1995,15 @@ pub fn bootstrap_daemon(
     now_seconds: u64,
     offline_reseed_path: Option<std::path::PathBuf>,
 ) -> Result<(bootstrap::BootstrapReport, Arc<Mutex<bootstrap::Bootstrap>>), DaemonError> {
+    bootstrap_daemon_inner(config, now_seconds, offline_reseed_path, None)
+}
+
+fn bootstrap_daemon_inner(
+    config: &Config,
+    now_seconds: u64,
+    offline_reseed_path: Option<std::path::PathBuf>,
+    online_reseed_bundle: Option<Vec<u8>>,
+) -> Result<(bootstrap::BootstrapReport, Arc<Mutex<bootstrap::Bootstrap>>), DaemonError> {
     let store = IdentityStore::in_data_dir(&config.router.data_dir);
     let bundle = store.load().map_err(|e| {
         DaemonError::RuntimeIdentity(format!("failed to load router identity: {e}"))
@@ -2002,12 +2015,94 @@ pub fn bootstrap_daemon(
     if let Some(path) = offline_reseed_path {
         bootstrap = bootstrap.with_offline_reseed_path(path);
     }
+    if let Some(bundle) = online_reseed_bundle {
+        bootstrap = bootstrap.with_online_reseed_bundle(bundle);
+    }
     let policy = bootstrap::BootstrapPolicy::from_config(config);
     let report = bootstrap
         .run(&config.router.data_dir, &builder, policy, now_seconds)
         .map_err(|e| DaemonError::RuntimeBootstrap(e.to_string()))?;
     let shared = Arc::new(Mutex::new(bootstrap));
     Ok((report, shared))
+}
+
+async fn fetch_online_reseed(
+    config: &Config,
+    now_seconds: u64,
+    minimum_new_records: usize,
+) -> Option<Vec<u8>> {
+    if !config.reseed.enabled
+        || !config
+            .reseed
+            .sources
+            .iter()
+            .any(|source| source.url.is_some())
+    {
+        return None;
+    }
+    let trust = match bootstrap::build_trust_set(&config.reseed.sources) {
+        Ok(trust) => trust,
+        Err(_) => {
+            tracing::warn!("online reseed trust store is unavailable");
+            return None;
+        }
+    };
+    let limits = ReseedIngestLimits {
+        max_su3_bytes: config
+            .reseed
+            .max_su3_bytes
+            .min(bootstrap::MAX_RESEED_BYTES_HARD),
+        ..ReseedIngestLimits::default()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    for source in &config.reseed.sources {
+        let Some(url) = source.url.as_deref() else {
+            continue;
+        };
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let response = crate::addressbook_fetch::fetch_reseed_https(
+            url,
+            source.tls_root_path.as_deref(),
+            config.reseed.max_su3_bytes,
+            remaining.min(Duration::from_secs(20)),
+        )
+        .await;
+        let Ok(response) = response else {
+            continue;
+        };
+        let framing = i2pr_su3::parse(
+            &response.body,
+            i2pr_su3::Su3Limits {
+                max_file_bytes: config.reseed.max_su3_bytes,
+                max_content_bytes: config.reseed.max_su3_bytes,
+                ..i2pr_su3::Su3Limits::default()
+            },
+        );
+        if !matches!(framing, Ok(ref header) if header.signer_id == source.signer_id) {
+            continue;
+        }
+        let mut probe = RouterInfoStore::with_config(RouterInfoStoreConfig::new(
+            config.netdb.max_records,
+            config.netdb.max_encoded_bytes,
+        ));
+        let ingestor = ReseedIngestor::with_limits(&trust, limits);
+        let validation_time = now_seconds.saturating_mul(1000);
+        if let Ok(report) = ingestor.ingest_su3_into(
+            &response.body,
+            now_seconds,
+            ValidationContext::new(Date::from_millis(validation_time)),
+            &mut probe,
+            None,
+        ) && report.verifier.accepted.len() >= minimum_new_records
+        {
+            return Some(response.body);
+        }
+    }
+    tracing::warn!("all configured HTTPS reseed sources failed bounded verification");
+    None
 }
 
 /// Executes the live daemon run with Tokio runtime and supervisor.
@@ -2020,7 +2115,23 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let (report, bootstrap_handle) = bootstrap_daemon(&config, now_seconds, None)?;
+    let (mut report, mut bootstrap_handle) = bootstrap_daemon(&config, now_seconds, None)?;
+    if matches!(
+        report.final_state,
+        bootstrap::BootstrapState::Empty | bootstrap::BootstrapState::ReseedRequired
+    ) && let Some(bundle) = fetch_online_reseed(
+        &config,
+        now_seconds,
+        config
+            .netdb
+            .min_router_infos
+            .saturating_sub(report.snapshot.record_count),
+    )
+    .await
+    {
+        (report, bootstrap_handle) =
+            bootstrap_daemon_inner(&config, now_seconds, None, Some(bundle))?;
+    }
     tracing::info!(
         state = %report.final_state,
         record_count = report.snapshot.record_count,
@@ -2149,9 +2260,133 @@ mod tests {
 
     use clap::Parser;
 
+    #[path = "support/reseed_fixture.rs"]
+    mod reseed_fixture;
+
     use super::*;
     use crate::cli::{CheckConfigArgs, Command, IdentityArgs, IdentityCommand, RunArgs};
     use crate::error::ExitCode;
+
+    #[tokio::test]
+    async fn online_reseed_does_not_fetch_without_operator_consent() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let config_text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[reseed]\nenabled = false\n[[reseed.sources]]\nurl = \"https://one.example/i2pseeds.su3?netid=2\"\nsigner_id = \"one\"\ncertificate_path = \"missing-one.der\"\n[[reseed.sources]]\nurl = \"https://two.example/i2pseeds.su3?netid=2\"\nsigner_id = \"two\"\ncertificate_path = \"missing-two.der\"\n",
+            directory.path().join("state").to_string_lossy()
+        );
+        let config = Config::parse(&config_text).expect("valid disabled reseed config");
+        assert!(
+            fetch_online_reseed(&config, 1_800_000_000, 1)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn authorized_https_reseed_bootstraps_and_reuses_cold_start_cache() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let data_dir = directory.path().join("state");
+        IdentityStore::prepare_directory(&data_dir).expect("prepare identity directory");
+        let identity =
+            i2pr_crypto::RouterIdentityBundle::generate(&mut OsRng).expect("fresh local identity");
+        IdentityStore::in_data_dir(&data_dir)
+            .save_new(&identity)
+            .expect("persist local identity");
+
+        let now_seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_secs();
+        let (signed_bundle, signer_certificate) =
+            reseed_fixture::signed_reseed_fixture(now_seconds, "trusted", 0x432_104);
+        let (_, second_signer_certificate) =
+            reseed_fixture::signed_reseed_fixture(now_seconds, "spare", 0x432_204);
+
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+            .expect("local HTTPS certificate");
+        let server_certificate = certified.cert.der().clone();
+        let server_key = rustls_pki_types::PrivateKeyDer::Pkcs8(
+            rustls_pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()),
+        );
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![server_certificate.clone()], server_key)
+            .expect("local HTTPS server config");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind local HTTPS fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let tls_root = directory.path().join("https-root.der");
+        std::fs::write(&tls_root, server_certificate.as_ref()).expect("persist HTTPS root");
+        let signer_path = directory.path().join("signer.der");
+        let second_signer_path = directory.path().join("second-signer.der");
+        std::fs::write(&signer_path, signer_certificate).expect("persist signer");
+        std::fs::write(&second_signer_path, second_signer_certificate)
+            .expect("persist second signer");
+
+        let response_body = signed_bundle.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept HTTPS client");
+            let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config));
+            let mut stream = acceptor.accept(stream).await.expect("accept TLS");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 512];
+            while !request.ends_with(b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).await.expect("read request");
+                assert_ne!(count, 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..count]);
+                assert!(request.len() <= 4096, "bounded fixture request");
+            }
+            assert!(request.starts_with(b"GET /i2pseeds.su3?netid=2 HTTP/1.1\r\nHost: localhost:"));
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .await
+                .expect("write response headers");
+            stream
+                .write_all(&response_body)
+                .await
+                .expect("write signed response");
+            stream.shutdown().await.expect("close HTTPS fixture");
+        });
+
+        let config_text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[netdb]\nmin_router_infos = 1\nmin_floodfill_advertisers = 0\n[reseed]\nenabled = true\nmax_su3_bytes = 1048576\n[[reseed.sources]]\nurl = \"https://localhost:{port}/i2pseeds.su3?netid=2\"\nsigner_id = \"trusted\"\ncertificate_path = {:?}\ntls_root_path = {:?}\n[[reseed.sources]]\nurl = \"https://two.example/i2pseeds.su3?netid=2\"\nsigner_id = \"spare\"\ncertificate_path = {:?}\n",
+            data_dir.to_string_lossy(),
+            signer_path.to_string_lossy(),
+            tls_root.to_string_lossy(),
+            second_signer_path.to_string_lossy(),
+        );
+        let config = Config::parse(&config_text).expect("authorized two-source config");
+        let fetched = fetch_online_reseed(&config, now_seconds, 1)
+            .await
+            .expect("valid signed bundle fetched over trusted HTTPS");
+        assert_eq!(fetched, signed_bundle);
+
+        let (report, bootstrap) = bootstrap_daemon_inner(&config, now_seconds, None, Some(fetched))
+            .expect("cold-start bootstrap from online bundle");
+        assert_eq!(
+            report.final_state,
+            bootstrap::BootstrapState::ReadyForNetworkIntegration
+        );
+        assert_eq!(report.snapshot.record_count, 1);
+        let cache_directory = data_dir.join("netdb").join("routers");
+        assert!(cache_directory.is_dir(), "validated cache persisted");
+        drop(bootstrap);
+
+        let (restarted, _) =
+            bootstrap_daemon(&config, now_seconds, None).expect("restart from persisted cache");
+        assert_eq!(
+            restarted.final_state,
+            bootstrap::BootstrapState::ReadyForNetworkIntegration
+        );
+        assert_eq!(restarted.snapshot.record_count, 1);
+    }
 
     #[test]
     fn missing_file_has_unavailable_exit_code() {

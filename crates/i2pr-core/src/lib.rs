@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod router_readiness;
+
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::fmt;

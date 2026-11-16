@@ -927,17 +927,14 @@ mod tests {
         let signature_length = 256_usize;
         let mut signed = Vec::new();
         signed.extend_from_slice(b"I2Psu3");
-        signed.push(1);
-        signed.extend_from_slice(&[0; 3]);
-        signed.extend_from_slice(&6_u16.to_le_bytes());
-        signed.extend_from_slice(&(signature_length as u16).to_le_bytes());
-        signed.extend_from_slice(&(content.len() as u32).to_le_bytes());
-        signed.push(file_type);
-        signed.push(content_type);
-        signed.extend_from_slice(&[0; 3]);
-        signed.extend_from_slice(&1_u16.to_le_bytes());
-        signed.push(b'1');
-        signed.extend_from_slice(&(signer_id.len() as u16).to_le_bytes());
+        signed.extend_from_slice(&[0, 0]); // unused byte, format version
+        signed.extend_from_slice(&6_u16.to_be_bytes());
+        signed.extend_from_slice(&(signature_length as u16).to_be_bytes());
+        signed.extend_from_slice(&[0, 16, 0, signer_id.len() as u8]);
+        signed.extend_from_slice(&(content.len() as u64).to_be_bytes());
+        signed.extend_from_slice(&[0, file_type, 0, content_type]);
+        signed.extend_from_slice(&[0; 12]);
+        signed.extend_from_slice(b"20261004\0\0\0\0\0\0\0\0");
         signed.extend_from_slice(signer_id.as_bytes());
         signed.extend_from_slice(content);
         let signature = signing_key.sign(&signed);

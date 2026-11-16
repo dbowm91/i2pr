@@ -21,10 +21,10 @@ fails. The two rows that can be inflated by build artifacts — the
 
 | Surface | Count | Where |
 | --- | --- | --- |
-| Top-level `scripts/` files | 62 | 60 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh` |
+| Top-level `scripts/` files | 66 | 63 `check-*`, `fuzz-smoke.sh`, `run-java-source-lock-tests.sh`, `trace-java-sam-source.py` |
 | `scripts/interop/` files | 69 | 30 top level, 33 `multipass/`, plus `anonymity/`, `lib/`, `ubuntu/` |
-| `check-*` on disk (all classes) | 63 | 60 top level + 3 under `scripts/interop/` |
-| Checker invocations in `ci.yml` | 40 | 38 `check-*` + 2 `python3` test discoveries |
+| `check-*` on disk (all classes) | 66 | 63 top level + 3 under `scripts/interop/` |
+| Checker invocations in `ci.yml` | 41 | 39 `check-*` + 2 `python3` test discoveries |
 | Integration lane directories | 10 | under `tests/integration/` |
 | Fixture corpora | 4 | `tests/fixtures/{i2np,ntcp2,ssu2,i2cp}` |
 | Fuzz targets | 25 | `[[bin]]` entries in `fuzz/Cargo.toml` (+1 shared `support.rs`) |
@@ -41,7 +41,7 @@ from this document's roster.
 
 ## `scripts/` — guardrail shells
 
-60 `check-*` files exist on disk in `scripts/` (63 counting `scripts/interop/`),
+63 `check-*` files exist on disk in `scripts/` (66 counting `scripts/interop/`),
 grouped below by what they catch. The
 `Floor` and `CI` columns say whether the script appears in the
 [`AGENTS.md` routine floor](../../AGENTS.md) and in
@@ -53,6 +53,7 @@ counting method both numbers come from.
 
 | Script | What it catches | Floor | CI |
 | --- | --- | --- | --- |
+| `scripts/check-current-pin-ntcp2-runner.py` | Fail-closed source guard for the network-ID-2 loopback profile, pristine current-pin library build, post-baseline stage allowlist, and sanitized helper evidence. `--self-test` mutation-checks profile, network-ID, observer, baseline, and identity-hash rules. | no | no |
 | `scripts/check-dependency-direction.sh` | Crate-layer DAG violations, including the runtime-neutral SU3 verifier layer and its NetDB consumer. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. | yes | yes |
 | `scripts/check-managed-app-gateway-boundary.py` | Plan 355 static guard for trusted-only authorization, exact private SAM/I2CP seam use, canonical SAM address-book injection, disabled listener fallback, and daemon-only app-proto ownership. | yes | yes |
 | `scripts/check-managed-app-manager-boundary.py` | Plan 368 static guard for one-way protocol ownership (daemon-only consumer), contract-crate runtime/OS purity, no host socket/listener/loopback path in the bridge, no admin/package/config/process vocabulary, unrepresentable `control_scoped`, no application-declaration authority input, bounded accounting, and session-local stream isolation. Normalises `use` trees so grouped imports cannot evade it. | yes | yes |
@@ -75,7 +76,10 @@ counting method both numbers come from.
 | `scripts/check-outproxy-wire-lane-evidence.py` | Implementation of `check-outproxy-wire-lane-evidence.sh`. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
 | `scripts/check-els2-live-lane-evidence.sh` | Plan 381 evidence-integrity check for the live ELS2 external driver lane. Wrapper; execs the `.py` beside it. | yes | **no** |
 | `scripts/check-els2-live-lane-evidence.py` | Implementation of `check-els2-live-lane-evidence.sh`. A distinct tracked script, so it carries its own row; invoked only through the wrapper. | **no** | **no** |
+| `scripts/check-java-sam-diagnostic.py` | Plan 411 evidence-integrity guard for the one-attempt, loopback-only Java SAM/I2CP diagnosis. Checks the exact Java pin, closed stage/result vocabulary, one-request budget, response/source digests, secret-field exclusion, and full source-path facts; `--self-test` mutation-tests the rules. | no | no |
+| `scripts/trace-java-sam-source.py` | Plan 411 exact-pin source tracer for the stock Java SAM DATAGRAM bind path and its IOException-to-SESSION-STATUS mapping. Emits source names, method labels, line numbers, and token digests only. | no | no |
 | `scripts/check-managed-app-private-client-seams.py` | Plan 354 guard for the listener-independent SAM/I2CP connection seams: managed-profile host-target denial, and that both loopback listeners and trusted private connections drive one protocol driver. | yes | yes |
+| `scripts/check-router-readiness-contract.py` | Plan 430 fail-closed source guard for profile, network-readiness, service-health, reachability, independent protocol, operator-consent and generation evidence; `--self-test` mutation-checks each gate. | yes | yes |
 | `scripts/check-floodfill-type5-serve.sh` | Plan 350 guard for the floodfill's servable record types. The bug it prevents is silent and data-only: `database_store_for_answer` and `lookup_body` each need a type-5 arm, and omitting either stores records nobody can fetch. | yes | **no** |
 | `scripts/check-ntcp2-interoperability.sh` | Plan 099 NTCP2 interoperability static boundary check, enforcing the durable invariants the retained development interop surface relies on. It enforces **no** behaviour and does not make NTCP2 an advertised transport. | yes | yes |
 | `scripts/check-tooling-inventory.py` | **Plan 372.** Derives every published inventory figure in this document from the tree — floor-step counts, `check-*` files, `ci.yml` invocations, workspace members, `rust-version`, the MSRV toolchain, fuzz targets, and the root `tests/` `.rs` count — and **fails closed** when one stops matching. Rule 3 requires every `check-*` script to have a row here, so adding a guard without documenting it is a failure. `--self-test` proves each rule rejects the violation it claims to detect. | yes | yes |
@@ -276,15 +280,14 @@ Count the rows in *Boundary checkers*, *Fixture and vector checkers*,
 whose `Floor` / `CI` column reads `yes`. This is the convention the
 **gap lists** below use.
 
-Recomputed 2026-10-07 (Plan 372; Plan 367's figures were already stale
-by one commit):
+Recomputed 2026-10-10 (Plans 410/411 added two tracked scripts, one a checker):
 
 | Figure | Method A | Method B |
 | --- | ---: | ---: |
-| Floor steps invoking a checker | 50 | 49 rows marked `Floor: yes` |
-| Total routine-floor steps | 60 | — |
-| Checkers executed by `ci.yml` | 38 | 41 rows marked `CI: yes` |
-| `check-*` files on disk | 60 (63 with `scripts/interop/`) | 62 checker rows |
+| Floor steps invoking a checker | 52 | 50 rows marked `Floor: yes` |
+| Total routine-floor steps | 62 | — |
+| Checkers executed by `ci.yml` | 39 | 42 rows marked `CI: yes` |
+| `check-*` files on disk | 63 (66 with `scripts/interop/`) | 66 checker rows |
 
 Method B counts the `tests/planning/` rows too, because those are floor
 steps in their own right.
@@ -457,6 +460,18 @@ secrets, tokens, or operational keys.
 
 ## Integration and interop lanes
 
+The current-pin NTCP2 loopback tooling under
+`tools/i2pr-interop/reference/i2pd-current/` includes the pristine-library
+driver and the bounded `run_plan414.py` runner and
+`observe_decoded_delivery_status.py` adapter. Plan 417 extends the adapter with
+fixed-name NTCP2 handshake-stage counts read only after an owned log baseline.
+The private helper enables the pinned logger's existing debug level before
+startup; no reference source or binary is patched. The runner permits one attempt
+per direction, captures peer hashes only as ephemeral inputs, and deletes each
+owned attempt tree. The adapter consumes an owned ephemeral i2pd log, emits
+bounded sanitized counts without raw lines or log digests, consumes the raw log
+after classification, and has a no-process `--self-test`.
+
 Ten lane directories live under `tests/integration/`. Each lists its
 real driver scripts and its matching evidence checker.
 
@@ -465,7 +480,7 @@ real driver scripts and its matching evidence checker.
 | `tests/integration/anonymity/` | `run-plan312-streaming.sh`, plus `test_streaming_fingerprint.py`, `test_http_capture.py`, `canonicalize_http_capture.py` (unittest), data files `http-corpus.toml`, `streaming-scenarios.toml`, `topology.toml`, `references.lock.toml`, `reference-diversity-matrix.md`, `README.md` | `check-http-anonymity-evidence.sh` / `.py`, `check-streaming-fingerprint-evidence.sh`, `check-service-anonymity-boundaries.sh` | none |
 | `tests/integration/floodfill/` | `run-i2pd.sh`, `run-java-floodfill.sh` | `check-m12-floodfill-qualification-evidence.sh`, `check-m12-floodfill-boundaries.sh` | none |
 | `tests/integration/i2cp/` | `run-independent.sh` (plus `external/`) | `check-i2cp-acceptance-evidence.sh` | `i2cp-external.yml` |
-| `tests/integration/i2pcontrol/` | `run-differential.sh` (plus `evidence/`) | `check-i2pcontrol-acceptance-evidence.sh` | none |
+| `tests/integration/i2pcontrol/` | `run-differential.sh` (plus `evidence/`); Proposal-170 ELS2 helpers are under `tests/integration/els2/`, including Plan 411's diagnostic runner and Plan 412's stock Java B33 STREAM client | `check-i2pcontrol-acceptance-evidence.sh`, `check-java-sam-diagnostic.py` | none |
 | `tests/integration/m11-transit/` | `run-i2pd.sh` | `check-m11-transit-boundaries.sh`, `check-m11-transit-qualification-evidence.sh`, `check-m11-per-epoch-composition.sh` | `m11-transit-external.yml` |
 | `tests/integration/m6-interop/` | `run-preflight.sh`, `run-tunnels.sh`, `run-netdb.sh`, `run-destination.sh`, `run-streaming.sh`, `run-java.sh`, `run-m6-mixed-router.sh` (plus `java/`) | `check-m6-mixed-router-acceptance-evidence.sh`, `check-exploratory-tunnel-evidence.sh`, `check-netdb-tunnel-evidence.sh`, `check-destination-tunnel-evidence.sh`, `check-streaming-tunnel-evidence.sh`, `check-m6-final-closure-evidence.sh`, `interop/check-m6-java-response-source-lock.sh`, `interop/check-p243-host-qualified.sh` | `m6-mixed-router-external.yml` |
 | `tests/integration/ntcp2/` | `manifest.toml` + Python `harness/` (23 modules, incl. `test_execution_lane.py`); subtrees `config/`, `evidence/`, `evidence-receipts/`, `mixed-scenarios/`, `qualification/`, `reference-drivers/`, `reference-observation-qualification/`, `reference-scenarios/`, `scenarios/` | `check-ntcp2-interoperability.sh`, `check-constrained-host-lane-boundary.sh`, `check-rootless-interop-boundary.sh`, `check-multipass-interop-boundary.sh`, `interop/check-p243-host-qualified.sh` | `ntcp2-interop-ubuntu.yml`, `ntcp2-interop-rootless.yml`, `ntcp2-interop-host-loopback-development.yml` |

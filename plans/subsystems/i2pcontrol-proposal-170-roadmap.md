@@ -717,7 +717,7 @@ Forward dependency graph:
 ```text
 373 passed  planning/support truth reconciliation
   -> 374 blocked  stock i2pd bidirectional ELS2 lane (driver exists; i2pr authority/reverse remain open)
-  -> 375 active  stock Java I2P bidirectional ELS2 lane (source proof complete; Java driver/matrix open)
+  -> 375 blocked  stock Java I2P bidirectional ELS2 lane (source proof complete; new bounded SAM diagnostic and Java driver/matrix required)
   -> 376 passed  live outproxy failover + restart
        |
        +-> 380 passed  i2pr authorized (PSK/DH) consumer production path
@@ -747,11 +747,13 @@ Plans 374, 375, and 376 are intentionally independent after 373 and may execute 
 **Plan 373 passed**, so all three became `ready`: it was their only unmet hard dependency — each
 of 374/375 also requires passed 346/350/351, and 376 requires passed 341/343 plus 342-passed-scoped.
 
-**376 has passed; Plan 406 delivered Plan 374's i2pd scope; Plan 375 is active.** The
+**376 has passed; Plan 406 delivered Plan 374's i2pd scope; Plan 375 is blocked.** The
 Java source proof has been completed against the exact 2.13.0 pin: NONE/DH/PSK and the
 blinded lookup path are implemented, and the unmodified stock build succeeds with JDK 21.
 No Java ELS2 direction has run. Plan 279's Java controlled-floodfill topology is available
-as a substrate, but the stock Java type-5 publisher/client driver and live application
+as a substrate, but its spent runner stopped at SAM session creation and the retained
+evidence does not attribute the failure. A fresh Plan-375-specific diagnostic and live
+driver are required; the stock Java type-5 publisher/client driver and live application
 matrix are not yet implemented. The freeze record lives in
 `tests/integration/els2/reference-freeze.md`.
 
@@ -877,7 +879,7 @@ the only plan in this phase allowed to set `full-proposal-conformant`.
 | 373 | **passed** | planning/support corrective | plans/closure/i2pcontrol-proposal-170/373-status.md (`passed-authority-support-and-successor-state-reconciled-without-capability-promotion`) |
 | 373 (plan) | — | — | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md | plans/implementation/i2pcontrol-proposal-170/373-prop170-authority-support-reconciliation.md |
 | 374 | **blocked** | external interoperability | plans/closure/i2pcontrol-proposal-170/374-status.md. Plan 385 fixed ordinary lookup and passed post-start authority; Plans 386/387 localized reverse publication to a control-created server with zero pool registrations and no LS2. Plan 388 owns the pool transition corrective. | plans/implementation/i2pcontrol-proposal-170/374-i2pd-live-els2-qualification.md |
-| 375 | **active** | external interoperability | Exact-pinned Java publisher/consumer/auth source proof and stock build are complete. Plan-279 F/JC/JD1/JD2 topology rerun stopped at stock SAM session creation (`Address already in use`) before any ELS2 row; setup diagnosis, Java driver, and matrix remain open. | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
+| 375 | **blocked** | external interoperability | Exact-pinned Java publisher/consumer/auth source proof and stock build are complete. Plan-279 F/JC/JD1/JD2 topology rerun stopped at stock SAM session creation (`Address already in use`) before any ELS2 row; its attempt budget is spent, and the retained evidence/source review does not attribute the failure. Resume with a separately bounded Plan-375 diagnostic, then implement the Java driver and matrix. | plans/implementation/i2pcontrol-proposal-170/375-java-live-els2-qualification.md |
 | 376 | **passed** | capability/resilience closure | plans/closure/i2pcontrol-proposal-170/376-status.md (`passed-live-multi-endpoint-failover-and-product-restart-proven-plan327-remainder-closed`) | plans/implementation/i2pcontrol-proposal-170/376-outproxy-live-failover-restart-closure.md |
 | 377 | blocked on 374 + 375 | ELS2 external convergence. Closure: `plans/closure/i2pcontrol-proposal-170/377-status.md`. Did not pass and cannot: both inputs absent, so all four directions have no executed row. | plans/implementation/i2pcontrol-proposal-170/377-els2-external-evidence-convergence.md |
 | 380 | **passed** | capability | plans/closure/i2pcontrol-proposal-170/380-status.md (`passed-authorized-consumer-production-path-closed-with-two-defects-found-and-fixed`) | Closed the Plan 351 deferral: the authorized consumer (`begin_authorized`) now has a production caller and a typed `CustomOptions` credential seam; also fixed a pre-existing Plan 342 double-seal defect. Deliberately local-only. |

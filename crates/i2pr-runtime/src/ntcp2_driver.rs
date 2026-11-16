@@ -104,9 +104,21 @@ pub enum HandshakeDriverError {
         /// The redacted phase label observed when the terminal failure
         /// was produced. Always present; never peer-controlled.
         phase_label: &'static str,
+        /// Exact bounded I/O operation for the responder's ambiguous
+        /// `await_confirmed` stage, when action counters identify it.
+        io_operation: Option<ResponderHandshakeIoOperation>,
         /// The underlying bounded protocol or driver failure.
         inner: Box<HandshakeDriverError>,
     },
+}
+
+/// Closed responder handshake I/O operations used for diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResponderHandshakeIoOperation {
+    /// Writing the responder's SessionCreated message.
+    SessionCreatedWrite,
+    /// Reading the initiator's SessionConfirmed message.
+    SessionConfirmedRead,
 }
 
 impl fmt::Display for HandshakeDriverError {
@@ -121,7 +133,9 @@ impl fmt::Display for HandshakeDriverError {
             Self::RouterInfoTooLarge => {
                 formatter.write_str("local NTCP2 RouterInfo exceeded its bound")
             }
-            Self::ResponderStage { phase_label, inner } => formatter.write_fmt(format_args!(
+            Self::ResponderStage {
+                phase_label, inner, ..
+            } => formatter.write_fmt(format_args!(
                 "NTCP2 responder stage {phase_label} failed: {inner}"
             )),
         }
@@ -411,6 +425,7 @@ where
             if let Some(phase_label) = last_responder_label {
                 Err(HandshakeDriverError::ResponderStage {
                     phase_label,
+                    io_operation: None,
                     inner: Box::new(inner),
                 })
             } else {
@@ -492,6 +507,7 @@ where
             if let Some(phase_label) = last_responder_label {
                 Err(HandshakeDriverError::ResponderStage {
                     phase_label,
+                    io_operation: responder_io_operation(phase_label, &inner, snapshot),
                     inner: Box::new(inner),
                 })
             } else {
@@ -502,6 +518,21 @@ where
     HandshakeRunOutcome {
         result,
         counters: snapshot,
+    }
+}
+
+fn responder_io_operation(
+    phase_label: &'static str,
+    error: &HandshakeDriverError,
+    counters: HandshakeCounterSnapshot,
+) -> Option<ResponderHandshakeIoOperation> {
+    if phase_label != "await_confirmed" || !matches!(error, HandshakeDriverError::Io(_)) {
+        return None;
+    }
+    match counters.write_count {
+        0 => Some(ResponderHandshakeIoOperation::SessionCreatedWrite),
+        1 => Some(ResponderHandshakeIoOperation::SessionConfirmedRead),
+        _ => None,
     }
 }
 
@@ -929,6 +960,43 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn responder_await_confirmed_io_operation_uses_completed_write_count() {
+        let io = HandshakeDriverError::Io(ExactIoError {
+            kind: crate::IoErrorKind::Closed,
+        });
+        assert_eq!(
+            responder_io_operation("await_confirmed", &io, HandshakeCounterSnapshot::default()),
+            Some(ResponderHandshakeIoOperation::SessionCreatedWrite)
+        );
+        assert_eq!(
+            responder_io_operation(
+                "await_confirmed",
+                &io,
+                HandshakeCounterSnapshot {
+                    write_count: 1,
+                    ..HandshakeCounterSnapshot::default()
+                }
+            ),
+            Some(ResponderHandshakeIoOperation::SessionConfirmedRead)
+        );
+        assert_eq!(
+            responder_io_operation(
+                "await_confirmed",
+                &io,
+                HandshakeCounterSnapshot {
+                    write_count: 2,
+                    ..HandshakeCounterSnapshot::default()
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            responder_io_operation("need_request", &io, HandshakeCounterSnapshot::default()),
+            None
+        );
+    }
     use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
     use i2pr_proto::{Date, Mapping, RouterAddress};
     use i2pr_transport_ntcp2::crypto::PublicKeyBytes;
@@ -1156,8 +1224,13 @@ mod tests {
         )
         .await;
         match result {
-            Err(HandshakeDriverError::ResponderStage { phase_label, inner }) => {
+            Err(HandshakeDriverError::ResponderStage {
+                phase_label,
+                inner,
+                io_operation,
+            }) => {
                 assert_eq!(phase_label, "need_request");
+                assert_eq!(io_operation, None);
                 assert!(matches!(*inner, HandshakeDriverError::Io(_)));
             }
             Err(other) => panic!("expected ResponderStage, got {other:?}"),

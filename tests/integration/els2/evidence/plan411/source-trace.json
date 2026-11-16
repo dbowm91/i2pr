@@ -1,0 +1,54 @@
+{
+  "facts": [
+    {
+      "fact": "8b9b5585f1d39878",
+      "line": 107,
+      "method": "SAMBridge.DEFAULT_DATAGRAM_HOST",
+      "source": "SAMBridge.java"
+    },
+    {
+      "fact": "5b26091fb5cf9ba4",
+      "line": 108,
+      "method": "SAMBridge.DEFAULT_DATAGRAM_PORT_INT",
+      "source": "SAMBridge.java"
+    },
+    {
+      "fact": "946ed148d23cbb14",
+      "line": 431,
+      "method": "SAMBridge.getV3DatagramServer",
+      "source": "SAMBridge.java"
+    },
+    {
+      "fact": "1232dd09e20818a8",
+      "line": 56,
+      "method": "SAMv3DatagramServer.constructor.bind",
+      "source": "SAMv3DatagramServer.java"
+    },
+    {
+      "fact": "e4b0f38f58ae7276",
+      "line": 502,
+      "method": "SAMv3Handler.execSessionMessage.DATAGRAM",
+      "source": "SAMv3Handler.java"
+    },
+    {
+      "fact": "5ecaca82d0921e95",
+      "line": 506,
+      "method": "SAMv3Handler.execSessionMessage.getV3DatagramServer",
+      "source": "SAMv3Handler.java"
+    },
+    {
+      "fact": "042ee86a14e43064",
+      "line": 582,
+      "method": "SAMv3Handler.execSessionMessage.IOException",
+      "source": "SAMv3Handler.java"
+    },
+    {
+      "fact": "bab6847b4c8381c2",
+      "line": 584,
+      "method": "SAMv3Handler.execSessionMessage.error-reply",
+      "source": "SAMv3Handler.java"
+    }
+  ],
+  "java_pin": "9134f808337b401e8e53c73734c81fab04280c9d",
+  "schema": "i2pr-java-sam-source-trace-v1"
+}

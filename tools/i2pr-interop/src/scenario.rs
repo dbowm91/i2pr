@@ -22,6 +22,9 @@ pub const SCENARIO_SCHEMA_VERSION: u16 = 2;
 pub const MAX_SCENARIO_BYTES: u64 = 64 * 1024;
 pub const MAX_SCENARIO_ID_BYTES: usize = 64;
 pub const PRIVATE_NETWORK_ID: u16 = 99;
+/// Current I2P network ID, accepted only by the explicit loopback
+/// profile used for a pinned stock reference.
+pub const CURRENT_NETWORK_ID: u16 = 2;
 pub const MAX_DEADLINE_MILLIS: u64 = 3_600_000;
 
 /// Plan 086: the bounded topology kinds that the strict scenario parser
@@ -30,6 +33,8 @@ pub const MAX_DEADLINE_MILLIS: u64 = 3_600_000;
 /// carry literal IPv4 loopback addresses. Any other topology value
 /// is refused by the strict parser.
 pub const HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND: &str = "host-loopback-development";
+/// Plan 410: current network ID is permitted only in this loopback profile.
+pub const CURRENT_NETWORK_LOOPBACK_TOPOLOGY_KIND: &str = "current-network-loopback";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TopologyKind {
@@ -41,6 +46,10 @@ pub enum TopologyKind {
     /// accepted only in this topology; the lane is never release or
     /// isolation qualified.
     HostLoopbackDevelopment,
+    /// Plan 410 current-pin profile. Like the historical development
+    /// topology it is restricted to IPv4 loopback, but it is bound to
+    /// the current I2P network ID instead of synthetic ID 99.
+    CurrentNetworkLoopback,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -312,6 +321,7 @@ impl Scenario {
         let topology_kind = match raw.topology_kind.as_deref() {
             None => TopologyKind::Synthetic,
             Some(HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND) => TopologyKind::HostLoopbackDevelopment,
+            Some(CURRENT_NETWORK_LOOPBACK_TOPOLOGY_KIND) => TopologyKind::CurrentNetworkLoopback,
             Some(_) => return Err(ScenarioError::InvalidTopologyKind),
         };
         let local_address =
@@ -336,7 +346,13 @@ impl Scenario {
             Role::Responder if peer_address.is_some() => return Err(ScenarioError::UnexpectedPeer),
             _ => {}
         }
-        if raw.network_id != PRIVATE_NETWORK_ID {
+        let network_matches_topology = match topology_kind {
+            TopologyKind::CurrentNetworkLoopback => raw.network_id == CURRENT_NETWORK_ID,
+            TopologyKind::Synthetic | TopologyKind::HostLoopbackDevelopment => {
+                raw.network_id == PRIVATE_NETWORK_ID
+            }
+        };
+        if !network_matches_topology {
             return Err(ScenarioError::UnsupportedNetworkId);
         }
 
@@ -607,6 +623,10 @@ fn parse_endpoint_address(
                 IpAddr::V6(_) => Err(ScenarioError::AddressOutsideSyntheticRange),
             }
         }
+        TopologyKind::CurrentNetworkLoopback => match address {
+            IpAddr::V4(value) if value == Ipv4Addr::LOCALHOST => Ok(address),
+            IpAddr::V4(_) | IpAddr::V6(_) => Err(ScenarioError::AddressOutsideSyntheticRange),
+        },
     }
 }
 
@@ -990,6 +1010,97 @@ topology_kind = "host-loopback-development"
         assert_eq!(
             scenario.peer_address.expect("peer").to_string(),
             "127.0.0.1"
+        );
+    }
+
+    /// Plan 410 binds the current network ID to a distinct topology
+    /// selector whose endpoints are still strictly IPv4 loopback.
+    #[test]
+    fn accepts_current_network_id_only_in_current_loopback_topology() {
+        let input = r#"
+[scenario]
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-i2pd-ipv4"
+run_id = "test-run-id"
+role = "initiator"
+address_family = "ipv4"
+local_address = "127.0.0.1"
+local_port = 45680
+peer_address = "127.0.0.1"
+peer_port = 45678
+network_id = 2
+state_dir = "secrets"
+peer_router_info = "exchange/peer.info"
+handshake_deadline_ms = 30000
+read_deadline_ms = 1000
+write_deadline_ms = 1000
+queue_deadline_ms = 1000
+drain_deadline_ms = 1000
+padding_profile = "representative"
+smoke_message_profile = "delivery-status"
+deterministic_seed = 1
+expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
+status_path = "status.jsonl"
+delivery_status_message_id = 12345
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "i2pd-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+topology_kind = "current-network-loopback"
+"#;
+        let scenario = Scenario::parse_str(input, &std::env::temp_dir())
+            .expect("current-network loopback scenario");
+        assert_eq!(scenario.network_id, CURRENT_NETWORK_ID as u8);
+        assert_eq!(scenario.topology_kind, TopologyKind::CurrentNetworkLoopback);
+    }
+
+    #[test]
+    fn rejects_current_network_id_without_current_loopback_topology() {
+        let input = VALID.replace("network_id = 99", "network_id = 2");
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::UnsupportedNetworkId)
+        );
+    }
+
+    #[test]
+    fn current_network_loopback_topology_rejects_non_loopback_addresses() {
+        let input = r#"
+[scenario]
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-i2pd-ipv4"
+run_id = "test-run-id"
+role = "initiator"
+address_family = "ipv4"
+local_address = "192.0.2.1"
+local_port = 45680
+peer_address = "127.0.0.1"
+peer_port = 45678
+network_id = 2
+state_dir = "secrets"
+peer_router_info = "exchange/peer.info"
+handshake_deadline_ms = 30000
+read_deadline_ms = 1000
+write_deadline_ms = 1000
+queue_deadline_ms = 1000
+drain_deadline_ms = 1000
+padding_profile = "representative"
+smoke_message_profile = "delivery-status"
+deterministic_seed = 1
+expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
+status_path = "status.jsonl"
+delivery_status_message_id = 12345
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "i2pd-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+topology_kind = "current-network-loopback"
+"#;
+        assert_eq!(
+            Scenario::parse_str(input, &std::env::temp_dir()),
+            Err(ScenarioError::AddressOutsideSyntheticRange)
         );
     }
 

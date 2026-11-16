@@ -2,6 +2,8 @@
 
 Status: closed
 
+**Recovery continuation (2026-10-10):** [Plan 432](../implementation/core-router-recovery/432-verified-https-reseed-and-cold-start.md) adds consented HTTPS/SU3 acquisition to the existing offline-verifying bootstrap, gated by Plan 430; [Plan 433](../implementation/core-router-recovery/433-live-router-netdb-tunnel-client-composition.md) binds live transport, iterative NetDB, multihop and destination product, gated by Plans 431/432. Historical M4 closure remains unchanged; remote fetch and full network readiness are not implemented by registration. See [core-router recovery](core-router-recovery-roadmap.md).
+
 Long-term references:
 
 - `GUARDRAILS.md` (non-negotiable security/architecture constraints)
