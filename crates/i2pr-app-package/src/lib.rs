@@ -527,7 +527,10 @@ fn verify_archive<R: Read + io::Seek>(
         let file = archive
             .by_index(index)
             .map_err(|_| PackageError::InvalidArchive)?;
-        let name = file.name().to_owned();
+        let name = file
+            .name()
+            .map_err(|_| PackageError::InvalidArchive)?
+            .into_owned();
         if !names.insert(name.clone())
             || file.is_dir()
             || file.compression() != CompressionMethod::Stored
