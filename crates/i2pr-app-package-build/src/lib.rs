@@ -201,10 +201,11 @@ fn verify_generated(
     let mut names = BTreeSet::new();
     for index in 0..archive.len() {
         let file = archive.by_index(index)?;
-        if file.is_dir()
-            || file.compression() != CompressionMethod::Stored
-            || !names.insert(file.name().to_owned())
-        {
+        let name = file
+            .name()
+            .map_err(|_| BuildError::Verification)?
+            .into_owned();
+        if file.is_dir() || file.compression() != CompressionMethod::Stored || !names.insert(name) {
             return Err(BuildError::Verification);
         }
     }

@@ -970,7 +970,10 @@ pub fn verify_su3_archive(
         let mut file = zip
             .by_index(index)
             .map_err(|_| ReseedParseError::ZipDecode)?;
-        let raw_name = file.name().to_owned();
+        let raw_name = file
+            .name()
+            .map_err(|_| ReseedParseError::ZipDecode)?
+            .into_owned();
         if raw_name.contains('/') || raw_name.contains('\\') || raw_name.contains(':') {
             return Err(ReseedParseError::InvalidPath { name: raw_name });
         }
@@ -1227,7 +1230,7 @@ mod tests {
         {
             let cursor = std::io::Cursor::new(&mut buf);
             let mut zip = zip::ZipWriter::new(cursor);
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             for (name, payload) in records {
                 zip.start_file(*name, opts).expect("start file");
