@@ -216,10 +216,16 @@ async fn run_exchange(fixture: &AliceFixture) -> ControlledPeerTestOutcome {
 async fn controlled_exchange_promotes_loopback_to_reachable_with_direct_material() {
     let fixture = start_alice(controlled_config()).await;
 
-    // Floor: no evidence, no material.
+    // Floor: no material.
+    //
+    // Plan 530: an opted-in service records the router's **own** bound socket
+    // as the explicit-bind corroboration class at bind time, so it holds
+    // **one** class from the start instead of none. One class is far below
+    // the floor -- the corroboration floor stays at two and `Reachable`
+    // still needs three distinct classes -- so the material is still refused.
     assert_eq!(
         fixture.service.snapshot().reachability,
-        ReachabilityState::Unknown
+        ReachabilityState::ObservedUnconfirmed
     );
     assert!(
         fixture
@@ -251,6 +257,17 @@ async fn controlled_exchange_promotes_loopback_to_reachable_with_direct_material
         } => {
             assert_eq!(observed, fixture.addr);
             assert_eq!(evidence_peers, 2);
+        }
+        // Plan 528: the verdict enum grew the verdicts the tree used to
+        // throw away. The controlled exchange still confirms here, so
+        // any other variant is a failure of this fixture -- and it is
+        // reported without printing an address.
+        ControlledPeerTestOutcome::ObservedElsewhere { .. }
+        | ControlledPeerTestOutcome::ObservationsDisagree { .. }
+        | ControlledPeerTestOutcome::FirewalledLikely { .. }
+        | ControlledPeerTestOutcome::Inconclusive { .. }
+        | ControlledPeerTestOutcome::Rejected { .. } => {
+            panic!("the controlled exchange did not confirm")
         }
     }
     assert_eq!(

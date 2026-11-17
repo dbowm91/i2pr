@@ -137,6 +137,7 @@ async fn normal_opt_in_on_loopback_stays_disabled_without_f() {
     let mut state =
         FloodfillServiceState::new(hash, config.floodfill.enabled).expect("service state");
     let readiness = NormalReadiness {
+        bound_address_publishable: false,
         material: None,
         wall_now_ms: wall,
         netdb_ready: true,
@@ -179,6 +180,7 @@ async fn normal_opt_in_on_loopback_stays_disabled_without_f() {
         bundle: &bundle,
         intent: true,
         readiness: NormalReadiness {
+            bound_address_publishable: false,
             material: None,
             wall_now_ms: wall,
             netdb_ready: true,

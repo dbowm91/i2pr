@@ -28,8 +28,8 @@ use std::path::Path;
 
 use i2pr_netdb::{
     LocalRouterInfo, LocalRouterInfoBuilder, ReseedSignatureType, ReseedSignerId,
-    ReseedSignerTrustSet, RouterHash, RouterInfoStore, RouterInfoStoreConfig, TrustedSigner,
-    UnsolicitedStoreOutcome, UnsolicitedStorePolicy, ValidationContext,
+    ReseedSignerTrustSet, RouterHash, RouterInfoStore, RouterInfoStoreConfig, RouterInfoStoreStats,
+    TrustedSigner, UnsolicitedStoreOutcome, UnsolicitedStorePolicy, ValidationContext,
     handle_unsolicited_databasestore, trust_signer_from_certificate,
 };
 use i2pr_netdb_persist::{
@@ -262,6 +262,59 @@ impl Bootstrap {
         &self.store
     }
 
+    /// Borrows the bounded NetDB mutably.
+    ///
+    /// Plan 513: the live NetDB discovery spine's RouterInfo-kind lookup
+    /// inserts the signed record it resolved into this store, so the peer
+    /// the exploration named becomes a peer the router can ask. The caller
+    /// holds the bootstrap lock, so the store is never mutated concurrently.
+    pub fn store_mut(&mut self) -> &mut RouterInfoStore {
+        &mut self.store
+    }
+
+    /// Prunes the store with the supplied retention window and returns the
+    /// number of records removed.
+    ///
+    /// Plan 507: the bootstrap's store is the router's NetDB. It is fed by
+    /// every accepted unsolicited `DatabaseStore` and by the reseed
+    /// pipeline, and `RouterInfoStore::insert` **refuses** at the quota and
+    /// never evicts -- so a NetDB that filled up would refuse every new
+    /// peer, permanently, and would keep a record the router's own
+    /// validation policy would refuse to accept today.
+    ///
+    /// The prune is the tree's own explicit-prune operation (Plan 103 §3.4:
+    /// *explicit prune over silent eviction*), and the reported snapshot is
+    /// refreshed so the router's own counts stay true. The window is
+    /// supplied by the caller so the daemon has exactly one retention
+    /// policy, derived from its own acceptance window. The operation is
+    /// deterministic: the caller supplies `now`.
+    pub fn prune(&mut self, now_ms: u64, window_ms: u64) -> usize {
+        let removed = self.store.prune(Date::from_millis(now_ms), window_ms);
+        let stats = self.store.stats();
+        self.refresh_snapshot(stats);
+        removed
+    }
+
+    /// Returns one peer's signing key from its **validated** RouterInfo.
+    ///
+    /// Plan 498: the SSU2 introducer (Bob) role owner must never trust a key
+    /// that arrived on the wire. The key comes from a RouterInfo this NetDB
+    /// already validated — `RouterInfoStore` admits only
+    /// `ValidatedRouterInfo`, and there is no unchecked insert path.
+    ///
+    /// The answer is `None` for a peer this NetDB does not hold, so the
+    /// role owner refuses the block rather than guessing. The critical
+    /// section is one map lookup; the caller must not await while holding
+    /// the bootstrap's lock.
+    pub fn validated_signing_key(
+        &self,
+        peer_hash: &RouterHash,
+    ) -> Option<i2pr_proto::SigningPublicKey> {
+        self.store
+            .get(peer_hash)
+            .map(|record| record.router_info().router_identity().signing_key().clone())
+    }
+
     /// Validates and applies an authenticated unsolicited RouterInfo store to
     /// the same bounded NetDB used by bootstrap. LeaseSet payloads are refused
     /// by the existing unsolicited-store policy.
@@ -276,7 +329,8 @@ impl Bootstrap {
             UnsolicitedStorePolicy::Accept,
             ValidationContext::new(Date::from_millis(now_ms)),
         )?;
-        self.refresh_snapshot();
+        let stats = self.store.stats();
+        self.refresh_snapshot(stats);
         Ok(outcome)
     }
 
@@ -290,6 +344,17 @@ impl Bootstrap {
             .take(MAX_GROUP_PROVIDER_ROUTER_INFOS)
             .map(|(_, record)| record.clone())
             .collect()
+    }
+
+    /// Returns the floodfill advertisers the NetDB holds.
+    ///
+    /// Plan 541: the group provider's bounded snapshot is a **different**
+    /// set -- the first records in router-hash order -- and the router's
+    /// floodfill selection needs the **advertisers** themselves. A bound that
+    /// is right for one consumer must not silently narrow another's
+    /// authority.
+    pub fn floodfill_advertiser_snapshot(&self) -> Vec<i2pr_netdb::ValidatedRouterInfo> {
+        self.store.floodfill_advertiser_snapshot()
     }
 
     /// Returns the current local RouterInfo snapshot, if any.
@@ -364,7 +429,8 @@ impl Bootstrap {
         let report = loader
             .load_into(&mut self.store, context)
             .map_err(|error| BootstrapError::PrepareDataDir(error.to_string()))?;
-        self.refresh_snapshot();
+        let stats = self.store.stats();
+        self.refresh_snapshot(stats);
         self.cache_report =
             if report.entries_inspected == 0 && report.invalid == 0 && report.unreadable == 0 {
                 None
@@ -388,8 +454,11 @@ impl Bootstrap {
     }
 
     fn compute_state(&mut self, policy: BootstrapPolicy) -> BootstrapState {
-        self.refresh_snapshot();
+        // Plan 538: the statistics are computed **once**. The snapshot
+        // carries the same numbers, so the decision below and the snapshot
+        // can never disagree.
         let stats = self.store.stats();
+        self.refresh_snapshot(stats);
         if stats.record_count == 0 {
             return BootstrapState::Empty;
         }
@@ -468,7 +537,8 @@ impl Bootstrap {
                     rejected_validation: summary.rejected_validation,
                 });
                 self.snapshot.reseed_attempts = self.reseed_attempts.len();
-                self.refresh_snapshot();
+                let stats = self.store.stats();
+                self.refresh_snapshot(stats);
                 Ok(self.compute_state(policy))
             }
             Err(error) => {
@@ -498,8 +568,12 @@ impl Bootstrap {
         }
     }
 
-    fn refresh_snapshot(&mut self) {
-        let stats = self.store.stats();
+    /// Refreshes the snapshot from the statistics the caller computed.
+    ///
+    /// Plan 538: the caller computes the statistics **once** and passes them
+    /// in, so the snapshot's counts and the caller's counts are the same
+    /// numbers by construction and no operation computes them twice.
+    fn refresh_snapshot(&mut self, stats: RouterInfoStoreStats) {
         self.snapshot.record_count = stats.record_count;
         self.snapshot.encoded_bytes = stats.total_encoded_bytes;
         self.snapshot.floodfill_advertisers = stats.floodfill_advertiser_count;
@@ -701,6 +775,54 @@ mod tests {
         let bootstrap = Bootstrap::new(RouterInfoStoreConfig::default(), config);
         assert_eq!(bootstrap.snapshot().state, BootstrapState::Empty);
         assert_eq!(bootstrap.snapshot().record_count, 0);
+    }
+
+    /// Plan 498: the introducer role owner's resolver answers **only**
+    /// from the NetDB's validated store.
+    #[test]
+    fn a_validated_peer_yields_its_signing_key_and_an_unknown_peer_yields_none() {
+        let config = ReseedConfig {
+            enabled: false,
+            max_sources: 4,
+            max_su3_bytes: 1024,
+            sources: Vec::new(),
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4981);
+        let bundle = RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(1),
+                Vec::new(),
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("signed RouterInfo");
+        let validated = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            ValidationContext::new(Date::from_millis(1)),
+        )
+        .expect("validated RouterInfo");
+        let key = validated.key();
+        let expected = validated
+            .router_info()
+            .router_identity()
+            .signing_key()
+            .clone();
+
+        let mut bootstrap = Bootstrap::new(RouterInfoStoreConfig::default(), config);
+        bootstrap.store.insert(validated);
+
+        assert_eq!(
+            bootstrap.validated_signing_key(&key),
+            Some(expected),
+            "a validated peer must yield its own signing key"
+        );
+        assert_eq!(
+            bootstrap.validated_signing_key(&RouterHash::from_bytes([0x77; 32])),
+            None,
+            "an unknown peer must yield no key, so the role owner refuses it"
+        );
     }
 
     #[test]

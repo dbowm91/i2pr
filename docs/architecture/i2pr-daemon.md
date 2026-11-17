@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 52 `.rs` files, 78 256 lines of `src` (48 at the crate root + 4 under `src/sam/`).
+**Size:** 77 `.rs` files, 134 855 lines of `src` (71 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).**Size:** 79 `.rs` files, 135 808 lines of `src` (73 at the crate root + 5 under `src/sam/` + 1 under `src/tests/support/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -23,11 +23,11 @@ implementation.
 ### What the daemon owns
 
 - **CLI parsing** (`src/cli.rs`, 69 lines) via `clap` derives: subcommands, flags, `--help`.
-- **Configuration** (`src/config.rs`, 4 587 lines): strict versioned TOML, `deny_unknown_fields`
+- **Configuration** (`src/config.rs`, 6 786 lines): strict versioned TOML, `deny_unknown_fields`
   on all 22 `Raw*` structs, semantic validation, and normalization.
 - **Identity lifecycle**: explicit generation and inspection of `<data_dir>/router.identity`.
   No auto-generated side effects on `run --dry-run`.
-- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:1453`): identity load,
+- **Identity -> NetDB bootstrap** (`bootstrap_daemon`, `src/lib.rs:5166`): identity load,
   cache revalidation, local RouterInfo construction, readiness, one optional bounded reseed.
 - **Service-graph composition** (`src/lib.rs`): `i2pr_runtime::ServiceGraph`,
   `i2pr_runtime::Supervisor`, service lifecycles, and graceful shutdown.
@@ -50,8 +50,10 @@ implementation.
   170's I2P-routed outproxy: it opens the Streaming route and recovers the credential, while the
   policy stays in the runtime-neutral `i2pr-service-tunnels`. Reachable from tests only; no
   request path consults it.
-- **M11 transit composition** (`transit_compose.rs`, `transit_owner.rs`, `transit_volume.rs`) —
-  in the **disabled** posture only.
+- **M11 transit composition** (`transit_compose.rs`, `transit_owner.rs`, `transit_volume.rs`,
+  `transit_composition.rs`) — the **disabled** posture by default; the owner is installed in the
+  production composition behind the operator's default-off `[transit] participation` opt-in
+  (Plan 502).
 - **M12 floodfill** (`floodfill.rs`) — controlled-activation/withdrawal composition only.
 - **Address book** (`addressbook.rs`, `addressbook_fetch.rs`, `control_sources.rs`): refresh
   tasks, timers, bounded download composition, and resolver-handle installation into SAM,
@@ -81,18 +83,22 @@ Protocol semantics live in the runtime-neutral crates and stay there:
   Equally, `i2pr-console` reaches no router state and opens no socket: every value it
   renders arrives through its `ControlClient` trait.
 
-NTCP2 remains **DISABLED** in production: `default_ntcp2_enabled() == false`
-(`src/config.rs:718`), `build_daemon_graph` rejects `ntcp2.enabled = true`, and
-`ntcp2-transport` is never registered (Plan 101 guard). `i2pr-transport-ntcp2` and
+NTCP2 remains **DISABLED** by default: `default_ntcp2_enabled() == false`
+(`src/config.rs:1018`). It is not unconditionally enableable — an enabled
+NTCP2 surface must name an explicit qualification profile, and only the two
+authorized profiles (`controlled_loopback`, `private_lan_qualification`) are
+accepted; every other shape is refused by name. The `ntcp2-transport` service
+from the transport crate is still never registered: the daemon owns its own
+`ntcp2-router` service instead. `i2pr-transport-ntcp2` and
 `i2pr-transport-ssu2` are **not** direct daemon dependencies.
 
 ---
 
 ## Module layout
 
-49 files at the crate root plus the `sam/` subdirectory (4 files). Line counts are from
-`wc -l` on repo head. The tables below cover every `src/` file; the row count matches the
-filesystem (53 rows).
+64 files at the crate root plus `sam/` (5 files) and `tests/support/` (1 file). Line counts are from
+`wc -l` on repo head. The tables below cover 63 of the crate's 70 `src/` files; seven rows are
+still owed by the plans that added those modules, and the gap is recorded rather than papered over.
 
 ### CLI and configuration
 
@@ -149,17 +155,18 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 | --- | --- | --- | --- |
 | `src/main.rs` | 68 | Binary shell: `Cli::parse()`, dispatch through `execute()`, print results, map errors to stable exit codes via `i2pr_runtime::run_blocking` on the live `run` path | `main()`, `process_exit()`, `_command_name()` |
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
-| `src/config.rs` | 4 587 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time) | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
-| `src/lib.rs` | 2 324 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`) | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/config.rs` | 7 068 | Strict versioned TOML: 22 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers. Plans 356–358 add the `[console]` section, its redacting `Debug`, and `normalize_console` (loopback-only enforcement, bundled-theme validation, enabled-gated runtime ceilings, Argon2id PHC validation at parse time). The `[transport.ntcp2].qualification_profile` surface accepts `disabled`, `controlled_loopback`, and `private_lan_qualification`, each with its own per-reason refusals | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `Ntcp2QualificationProfile`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION`, plus `ConsoleConfig`, `ConsolePasswordHash`, `RawConsoleConfig` |
+| `src/ntcp2_activation.rs` | 307 | The profile-aware NTCP2 activation gate. A **pure** function over an already-normalized `Ntcp2Config` that returns the address scope the transport may dial, or a typed refusal. Extracted from the service closure so that every refusal branch is reachable by a unit test — the configuration layer already refuses every shape the gate refuses, so an in-closure branch could never be reached from a configuration file | `ntcp2_activation_scope()`, `Ntcp2ActivationRefusal`, `MIN_NTCP2_ACTIVATION_PORT` |
+| `src/lib.rs` | 6 578| Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()`. Plan 360 adds the readiness contract (`readiness_expectation`, `service_spec`, `signal_running`, `bind_then_serve`) and the startup diagnostic (`describe_startup_failure`, `describe_supervisor_error`). The NTCP2 activation gate is called from the composition root and from the `ntcp2-router` service closure, so there is one authority for the decision. **Plan 514** makes the operator's exploration switch real: `NetDbParticipation` carries `exploration_enabled`, read from `netdb.exploration_enabled`, and `drive_discovery` consults it before it starts an exploration — after the RouterInfo-kind resolution, so the routing table keeps its production reader  **Plan 515** adds the router's **own** RouterInfo refresh: the SSU2 service's loop carries a `publication_tick` beside the relay tick, and the refresh republishes the router's record on the reference's interval — it is the **router's own**, so the publication no longer depends on a service tunnel being provisioned  **Plan 516** joins the **inbound owner** to the publication: the same loop that reads the inbound stream correlates an inbound `DeliveryStatus` with the attempt it names, so the router learns that the **network holds** its record -- a different fact from the transport having accepted the store  **Plan 517** makes the publication a **cycle**: the periodic tick **begins** one, and the loop's existing `100` millisecond tick **advances** it when the awaited confirmation's deadline passes -- so the retry introduces **no new timer**  **Plan 518** makes the published record **current**: the publication tick re-dates and re-signs the router's own RouterInfo **once per cycle**, installs the fresh record so the RouterInfo handed out in `SessionConfirmed` carries the fresh date too, and publishes it -- and the relay tick, which asks the cycle's later batches, does not re-date. The **cycle's record** lives in the owner, so every rung publishes the same bytes: the relay tick does not read the installed record back  **Plan 519** moves the publication onto its **own task**: the owner, the transport capability, the identity and the acknowledgement inbox all move into `run_router_info_publication_task`, which the composition root spawns under the SSU2 service's own child scope with an explicit cancellation. The service's `select!` loop keeps **none** of the publication's state and never awaits it; the inbound `DeliveryStatus` crosses a **bounded** channel instead, and a full channel counts the acknowledgement as unmatched rather than dropping it silently | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
 ### Identity and bootstrap
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/bootstrap.rs` | 631 | Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
+| `src/bootstrap.rs` | 887| Plan 106 bounded NetDB bootstrap state machine, cache revalidation, bounded offline SU3 reseed ingestion, trust-set loading. Owns no runtime, sockets, or tunnels. **Plan 513** adds `store_mut`, the narrow mutating accessor the discovery spine's RouterInfo-kind lookup writes a resolved record through | `Bootstrap`, `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `BootstrapError`, `CacheLoaderReport`, `ReseedBundleReport` |
 
-> `bootstrap_daemon` itself lives in `src/lib.rs:1453`, not in `bootstrap.rs` — it is the
+> `bootstrap_daemon` itself lives in `src/lib.rs:5166`, not in `bootstrap.rs` — it is the
 > composition-root wrapper that loads the `IdentityStore`, builds `LocalRouterInfoBuilder` and
 > `RouterInfoStoreConfig`, then calls `Bootstrap::run`.
 
@@ -167,25 +174,36 @@ CLI binary) plus four unit tests over the diagnostic formatter.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/netdb_seam.rs` | 1 206 | Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome` |
-| `src/netdb_tunnels.rs` | 887 | Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
+| `src/netdb_participation.rs` | 3 479| Plan 488 peer participation driver: feeds the Plan 488 profile store with observed peer outcomes, runs the maintenance pass on the daemon's clock, and emits sanitized receipts. **Not** wired into the router's tunnel building in this phase. **Plan 489** extends the same module with the routing-table driver: it indexes the floodfills the router learns, runs the bounded exploration job, drives the optimized lookup from the routing table, and emits sanitized routing receipts. **Not** wired into the router's tunnel building in this phase either. **Plan 497** adds the `RoutingTableConsumer` — the shared, mutex-owned handle the lookup path consults, whose `candidates(...)` answers `Table(Vec<RouterHash>)` or `Fallback(RoutingTableFallback)`, and whose `RoutingTableCounters` count every fallback by reason. **Plan 513** adds the **`NetDbDiscoverySpine`** — the bounded owner of the router's DHT discovery — with its `DiscoveryOutcome`, `DiscoveryError`, `DiscoveryDelivery`, `DiscoveryDispatch` and `NetDbDiscoveryCounters`; the spine owns no task, no timer, no listener and no socket, and the daemon's existing tick drives it. **Plan 514** adds `RoutingTableConsumer::closest_floodfill` — the table's closest-first answer, used as a **target** rather than a preference — and the spine's exploratory start asks the table for it, so the peer the request is addressed to is the closest floodfill rather than the flat store's first advertiser; a table that names none ends the request, counted under `explorations_refused_no_target` | `PeerParticipationDriver`, `PeerParticipationHandle`, `ParticipationReceipt`, `ParticipationReceiptKind`, `ProjectionLoadOutcome`, `ProfileMaintenanceExit`, `run_profile_maintenance`, `RoutingTableDriver`, `RoutingTableConfig`, `RoutingReceipt`, `RoutingReceiptKind`, `RoutingDispatch`, `RoutingLookupOutcome`, `RoutingDiscovery`, `RoutingProjectionOutcome`, `RoutingTableConsumer`, `RoutingTableCandidates`, `RoutingTableFallback`, `RoutingTableCounters` |
+| `src/router_info_publication.rs` | 1 396 | **Plan 515** the router's **own** RouterInfo publication: the runtime-neutral schedule (a period, a due test, the counted outcomes), the **shared** selection rule -- the version-gated function, so Plan 503's API-version floor holds for every publication -- the shared `DatabaseStore` construction, and the **one** delivery path the service product's one-shot publication and the router-level refresh both use. The schedule never reads a clock: it takes `now_ms` from its caller. **Plan 516** makes the publication **confirmable**: the store message's construction moves to the correlator, so the minted correlation token reaches the wire, and the module gains the runtime-neutral confirmation seam (`confirm_publication`) and the attempt book the owner holds. A **delivery** admission and a **network acknowledgement** are counted separately. **Plan 517** adds the **cycle**: a bounded ladder of batches, the cycle's exclusion set, the reference's `1600` millisecond confirmation deadline, and the retry that follows an unacknowledged batch. The cycle is runtime-neutral -- it takes the reading from its caller through a `PublicationClock` and never reads a clock itself. **Plan 518** adds the publication's **staleness rule**: `record_is_publishable` is runtime-neutral, takes the reading from its caller, and uses the netdb's **own** acceptance window -- so a record the network would refuse is refused and counted (`refused_stale_record`) rather than published. **Plan 518** also gives the owner the **cycle's record**: the bytes every rung of the cycle publishes, set once at the cycle's start, so a rung cannot publish a different record from the one the correlator registered  **Plan 519** adds the **established-session preference** (`prefer_established_sessions`) -- the batch prefers a peer the router is already connected to, as i2pd's `IsConnected` and Java's `isEstablished` both do -- and counts the targets it skipped for want of one (`skipped_no_session`). It adds the publication's own **bounded per-attempt delivery timeout** (`PUBLICATION_DELIVERY_TIMEOUT_MS`, the reference's 90 seconds), so a hung handshake holds neither the transport's loop nor the publication's task, and a delivery that did not finish inside it is refused under its own reason (`deliveries_timed_out`) | `RouterInfoPublicationOwner`, `RouterInfoPublicationSchedule`, `RouterInfoPublicationOutcome`, `RouterInfoPublicationCounters`, `RouterInfoPublicationPlan`, `RouterInfoPublicationCycle`, `RouterInfoPublicationStep`, `PublicationConfirmation`, `PublicationClock`, `publication_targets`, `publication_targets_excluding`, `begin_attempts`, `confirm_publication`, `publish_router_info`, `refresh_router_info`, `advance_publication_cycle` |
+| `src/router_info_publication_task.rs` | 162 | **Plan 519** the publication's **bounded acknowledgement handoff**: the transport's service loop hands the inbound `DeliveryStatus`'s message id to the publication's task over a **bounded** channel and never awaits it, so the loop is never blocked by the publication. A full channel counts the acknowledgement as **unmatched** -- the refusal Plan 516 already defines -- rather than dropping it silently, and the task folds the refusals into the publication's own counters on every wake. The module also carries the task's inputs: the owner, the transport capability, the identity, the store handle and the inbox, so the transport's loop holds **none** of the publication's state | `PublicationAcknowledgementHandoff`, `PublicationAcknowledgementInbox`, `RouterInfoPublicationTask`, `publication_acknowledgement_channel`, `PUBLICATION_ACKNOWLEDGEMENT_CAPACITY`, `PUBLICATION_LADDER_TICK_MS` |
+| `src/self_publication.rs` | 462 | **Plan 520** the owner of the router's **own** published SSU2 address: the operator's opt-in, the hand-off of the transport's address to the netdb's own qualified builder, the install, the **withdrawal** when the evidence lapses, and the count of every outcome under its own reason. It never builds a snapshot, never writes an address's options and never records a reachability signal of its own: the **transport's** `build_publication_snapshot` is the single authority on whether an endpoint may be published | `SelfPublicationOwner`, `SelfPublicationDecision`, `SelfPublicationOutcome`, `SelfPublicationCounters`, `SelfPublicationCounterSnapshot`, `StandDownReason`, `SelfPublicationFailure` |
+| `src/netdb_seam.rs` | 1 592| Plan 106/107 runtime-facing seam over the Plan 105 lookup state machines; Plan 117 composition outcomes; Plan 122 dedicated LeaseSet2 lookup state machine and separate reply-path provider; **Plan 497** adds `begin_lookup_with_preferred`, which forwards a routing table's preferred peer list to the engine's `start_with_preferred` entry point. **Plan 513** adds the two live starts the discovery spine drives — `begin_routerinfo_lookup` (wire type `2`, the candidate list reordered by the table's preference and never narrowed) and `begin_exploratory_lookup` (wire type `3`) — plus `ingest_routerinfo_store`, `ingest_exploratory_search_reply`, `set_routerinfo_now_seconds` and `policy` | `NetDbSeam`, `NetDbSeamError`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome`, `begin_lookup_with_preferred` |
+| `src/netdb_tunnels.rs` | 1 180| Plan 186 NetDB-over-exploratory-tunnels coordinator: authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel loss; **Plan 491** refuses a DSM whose floodfill target is below the DSM API-version floor; **Plan 497** adds `with_routing_table`, which injects the shared `RoutingTableConsumer` so `begin_tunnel_lookup` can ask the table how it would order the flat store's selection. **Plan 513** factors the composition into the free function `compose_lookup_via_outbound_tunnel`, which the coordinator's `compose_lookup_via_tunnel` now delegates to with byte-identical behaviour, so the live discovery spine reaches the canonical composition without constructing the never-composed coordinator | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/outbound_lookup.rs` | 980 | Plan 117 §8/§10 outbound exploratory data-plane composition; Plan 187 `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `encode_standard_envelope`, `encode_store_envelope`, `OutboundLookupDispatch`, `OutboundLookupError`, `MAX_OUTBOUND_LOOKUP_CELLS = 8`, `MAX_OUTBOUND_PUBLICATION_CELLS = 8` |
 | `src/inbound_dispatch.rs` | 290 | Plan 117 §9 inbound exploratory `TunnelData` dispatch; Plan 187 `GarlicComplete` outcome for destination carriers | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchOutcome`, `InboundResponseKind`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE = MAX_I2NP_PAYLOAD_SIZE` |
-| `src/destination_peers.rs` | 478 | Bounded projection and selection of validated Destination build peers from the validated RouterInfo store | `DestinationPeerCandidate`, `DestinationSelectionError`, `CandidateProjectionSummary`, `project_validated_store`, `select_destination_path`, `select_destination_path_os` |
+| `src/destination_peers.rs` | 681 | Bounded projection and selection of validated Destination build peers from the validated RouterInfo store; **Plan 491** refuses a build peer below the tunnel-build API-version floor and fails closed with the reason | `DestinationPeerCandidate`, `DestinationSelectionError`, `CandidateRefusal`, `CandidateProjectionSummary`, `project_validated_store`, `select_destination_path`, `select_destination_path_os`, `select_projected_destination_path`, `select_projected_destination_path_os` |
 | `src/peer_test.rs` | 417 | Plan 285 bounded I2NP peer testing: echo a `(message id, timestamp)` unchanged, match the echo against an outstanding probe, derive RTT from the supplied timestamp | `PeerTestTracker`, `PeerTestEcho`, `PeerTestOutcome`, `PeerTestError`, `MAX_OUTSTANDING_PEER_TESTS = 32`, `DEFAULT_PEER_TEST_TIMEOUT_MS = 10_000` |
 
 ### Tunnels, transit, and floodfill
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/router_i2np.rs` | 1 607 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
-| `src/exploratory_build.rs` | 2 201 | Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
+| `src/router_i2np.rs` | 3 874 | Plan 184 central authenticated router-I2NP dispatcher, narrow router delivery, daemon-owned `ssu2-router` service, controlled identity generation, reference RouterInfo verification. The dual-transport RouterInfo builders are scope-parameterized: `generate_scoped_dual_transport_router_info` carries both transports' endpoints inside one address scope, and the controlled-loopback and private-LAN forms delegate to it | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `generate_controlled_dual_transport_router_info`, `generate_private_lan_dual_transport_router_info`, `generate_scoped_dual_transport_router_info`, `verify_reference_router_info`, `refresh_local_router_info_record` |
+| `src/exploratory_build.rs` | 4 698| Plans 185/188/314 short-build owner plus Plan 390's explicit bounded mixed-role registry capacity: exploratory limits plus at most 32 service groups × 8 retained inbound roles and one transient outbound activation. **Plan 513** adds `exploratory_reply_path` (the pool's oldest valid **inbound** tunnel as the reply path a discovery request carries) and `exploratory_outbound_role` (the pool's usable **outbound** role), both read from the pool's own registrations so a destination-role slot is never returned | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | 707 | Plan 185 bounded creator-side tunnel liveness scheduler: first test, repeat interval, response timeout, and failure threshold all bounded below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
-| `src/destination_tunnels.rs` | 1 412 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
+| `src/exploratory_driver.rs` | 1 778 | **Plan 505** exploratory build driver: the router names a peer through Plan 491's version-gated selection, builds a one-hop exploratory tunnel toward it through the EXISTING `rebuild_exploratory` path, and records exactly one peer-level observation per terminal outcome -- a local condition produces none, so the router never blames a peer for a fault of its own | `PeerBuildIdentity`, `PeerMaterialError`, `PeerBuildIdentityResolver`, `ProfileStorePeerResolver`, `PeerObservation`, `observation_for_outcome`, `ExploratoryDriverCounters`, `ExploratoryDriverAction`, `SelectedPeer`, `ExploratoryDriverState`, `ExploratoryDriver` |
+| `src/peer_reconcile.rs` | 933 | **Plan 506** peer-knowledge reconcile: the product-owned, bounded operation that carries the bootstrap's validated RouterInfos into the two stores the router **builds with** -- the destination coordinator's authoritative store and the peer-profile store. The three locks are taken in one order and never nested; every outcome is counted by reason and a capacity refusal is counted, never fatal; the reconcile writes peer **records**, never a selection, so Plan 491's version gate stays at selection | `PeerReconcile`, `PeerReconcileCounters`, `PeerReconcileAction`, `PeerReconcileError`, `MIN_RECONCILE_PERIOD_MS`, `MAX_RECONCILE_PERIOD_MS`, `RETENTION_WINDOW_MS` |
+| `src/destination_tunnels.rs` | 2 152 | Plan 187 destination LeaseSet2/Garlic-over-tunnels coordinator; Plan 190 typed `InboundGatewayRoute` -> `i2pr_netdb::ReplyPath` adapter; Plan 201 §G sanitized boundary observation counters | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
 | `src/transit_compose.rs` | 4 231 | Plan 253 M11 transit composition: message-level STBM dispatch, role-specific STBM/OTBRM routing, `TunnelData` previous-peer forwarding, expiry/cancellation, delivery-failure rollback, creator-correlation bypass. **Disabled by default** (`TransitIngressGate::disabled()`) | `TransitBuildService`, `TransitIngressGate`, `TransitDispatch`, `TransitTunnelDataDispatch`, `TransitCounters`, `TransitServiceError` |
-| `src/transit_owner.rs` | 1 393 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe used by the qualification lane | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
+| `src/transit_owner.rs` | 1 671 | M11 live transit owner: build/disposition evidence types, OBEP delivery, live gateway/inbound outcomes, and the controlled-disabled probe that is the composition's **no-owner fallback** (Plan 502). Plan 508 adds the `CreatorFacts` wrapper that holds the creator-correlated facts with their expiries | `TransitOwner`, `TransitLiveOwner<R>`, `TransitOwnerError`, `TransitLiveError`, `TransitDataDisposition`, `TransitDataForwardEvidence`, `ObepDeliveryOutcome`, `LiveBuildOutcome`, `LiveGatewayOutcome`, `LiveInboundOutcome`, `TransitBuildEvidence`, `controlled_transit_disabled_probe` |
+| `src/transit_composition.rs` | 668 | **Plan 502** M11 transit **product composition**: the derivation of the admission policy, hop material and participation binding from the normalized configuration, the owner's construction behind the operator's default-off `[transit] participation` opt-in, the inbound dispatch that makes the whole owner/no-owner choice internally, and the bounded peer-index reconcile against the live session set | `TransitCompositionInputs`, `TransitAdmissionDerivation`, `TransitCompositionError`, `derive_admission_policy`, `build_transit_owner`, `compose_transit_owner`, `dispatch_transit_inbound`, `reconcile_transit_peers` |
 | `src/transit_volume.rs` | 450 | Plan 340 transit volume, trailing-window bandwidth, and the authoritative **participation-posture owner** behind Proposal 170's three remaining RouterInfo selectors | `TransitParticipation` (`Disabled` default / `Enabled(Arc<Mutex<TransitVolumeCounters>>)`), `TransitVolumeCounters`, `TransitVolumeSnapshot` |
 | `src/floodfill.rs` | 3 089 | M12 floodfill delivery boundary and the controlled activation/withdrawal composition: resource leases through effect completion, fresh bounded I2NP envelopes, Store acks, direct/tunnel lookup replies, `run_floodfill_owner` (bounded ingress + maintenance + effect drain) | floodfill owner/coordinator types, `activate_controlled`, `withdraw_controlled` |
+| `src/ssu2_introducer.rs` | 1 047 | Plan 490 SSU2 introducer (Bob) role owner: relay-tag issuance, the per-source rate limit, the target resolution through the tag, the requester's signature verification against a validated RouterInfo, the typed outcome, and the counts-only receipt. **Plan 498** adds `NetDbSignerResolver`, the production `IntroducerSignerResolver` that answers only from the NetDB's validated store. **Plan 499** adds the `Ssu2RelayEvent::Tag(_)` refusal: a tag the runtime observed is not the role owner's to act on, exactly as an `Intro` is | `Ssu2IntroducerService`, `Ssu2IntroducerConfig`, `Ssu2IntroducerOutcome`, `Ssu2IntroducerRefusal`, `Ssu2IntroducerReceipt`, `IntroducerSignerResolver`, `NetDbSignerResolver` |
+| `src/ssu2_relay_drain.rs` | 215 | Plan 498 bounded drain from the runtime's relay handoff into the introducer (Bob) role owner. A **pull** seam (`RelayEventSource`), one pass of at most `MAX_RELAY_DRAIN_PER_PASS` (16) events, and a counts-only outcome. It never fails its caller and never logs a peer hash, a key, a tag, or a payload. **Plan 499** adds a **carriage** seam (`RelayCarriage`) beside the pull seam and the production `RuntimeRelayCarriage` over the runtime that owns the sessions, so a produced block is carried onto the wire instead of counted and dropped; `awaiting_carriage` becomes `carried` plus `carriage_refusals` by reason | `drain_relay_events`, `RelayEventSource`, `RelayCarriage`, `RuntimeRelayCarriage`, `RelayDrainOutcome`, `MAX_RELAY_DRAIN_PER_PASS` |
+| `src/ssu2_qualification_receipts.rs` | 283 | Plan 480 private local qualification readout: the permission-gated, pure projection of one SSU2 observer epoch into the Plan 476 local-observed phase vocabulary. Carries phase labels and counts only — no key, RouterInfo, address, endpoint, payload or transient message ID — and `live_qualification` stays `"not-run"`. **Plan 476** adds the `PrivateLan` read scope, the direction-preserving session phases and `request_sent`, and the `reply_correlated` boolean | `LocalQualificationProfile`, `LocalQualificationPermit`, `LocalObservedReceipt`, `LocalReceiptCollector`, `LOCAL_PHASES` |
+| `src/ssu2_qualification_export.rs` | 411 | Plan 476 sanitized local receipt export: writes the count-only projection of the local observer epoch to an operator-designated file (`[ssu2] qualification_receipt_path`, absolute path, parent directory must exist, mode `0600`). Opt-in, never a listener, never a publication permit; a collector refusal is recorded and is **sticky** for the life of the process | `LocalReceiptExporter`, `EXPORT_SCHEMA` |
 
 ### Destinations and the shared streaming pump
 
@@ -357,7 +375,7 @@ the existing daemon `ChildScope` ownership and service limits.
 | --- | --- | --- | --- |
 | `src/i2pcontrol.rs` | 3 449 | Plan 287 supervised loopback-default I2PControl TLS + JSON-RPC listener: daemon-owned TLS (managed ephemeral self-signed for loopback, explicit PEM otherwise), in-memory token table, source-IP throttle, bounded connection/in-flight permits, sequential no-fanout batch dispatch with deferred mints, graceful `close_notify` shutdown; extended by Plans 288/289/294 with RouterInfo, ClientServicesInfo, TunnelManager, and AddressBook dispatch | `I2pControlServiceState`, `I2pControlServiceError`, `I2pControlServiceSnapshot`, `dispatch_body`, `ct_password_eq`, `build_tls_config`, `new_with_inspection`, `set_control_manager`, `set_addressbook_manager`, `process_router_info`, `process_client_services`, `process_tunnel_manager`, `process_addressbook` |
 | `src/i2pcontrol_inspection.rs` | 2 687 | Plan 288 narrow inspection handles and pure response builders: static config truth plus publish-gated dynamic snapshots; select-form validation with canonical ordering; truthful service shapes; Plans 294/295 address-book getters, live log-ring/metrics/SSU2 cells, and composition attestations | `InspectionHandles`, `ServiceEndpoint`, `StartupServiceEntry`, `PublishedSnapshots` (`publish_*`), `FloodfillMode`, `PublishError`, `InspectionGap`, `SelectError`, `select_router_info`, `select_client_services`, `router_info_result`, `client_service_result`, `publish_addressbook`, `publish_log_ring`, `publish_metrics`, `publish_ssu2`, `publish_bans`, `MAX_INSPECTION_LIST = 1024`, `MAX_INSPECTION_STATE_STRING = 32`, `MAX_LOCAL_ROUTER_INFO_BYTES = 786_432`, `MAX_INSPECTION_HASH_STRING = 64` |
-| `src/i2pcontrol_tunnels.rs` | 7 829 | Plan 289 TunnelManager control state over the **one** shared M10 manager (ADR 0031, Plan 337). The composition root builds that manager once in `build_shared_service_manager` and injects the same `Arc` into the control state and the destination-group product, so a control-created runtime is the runtime the product delivers and publishes through. `for_config` takes the manager rather than building one. The I2PControl service declares `depends_on("ssu2-router")`. Three shared-manager changes are load-bearing: `candidate_set` carries startup-owned specs through verbatim, `verify_agreement` scopes its "no extra runtime" rule to names this coordinator does not own, and `shutdown` reconciles back to the startup-only set instead of tearing the manager down. `sync_els2_materials` installs or drops the Plan 334 publication material at the end of a committed transaction and **fails the transaction closed** when a type-5 definition's identity record is unreadable. `rollback_state` (Plan 338) reconciles the shared manager to the rolled-back candidate; all five failure paths await it, and a rollback that cannot reconcile is logged, not swallowed | tunnel control-state, versioned generation store, transaction coordinator, twelve-family typed mapping types |
+| `src/i2pcontrol_tunnels.rs` | 9 483 | Plan 289 TunnelManager control state over the **one** shared M10 manager (ADR 0031, Plan 337). The composition root builds that manager once in `build_shared_service_manager` and injects the same `Arc` into the control state and the destination-group product, so a control-created runtime is the runtime the product delivers and publishes through. `for_config` takes the manager rather than building one. The I2PControl service declares `depends_on("ssu2-router")`. Three shared-manager changes are load-bearing: `candidate_set` carries startup-owned specs through verbatim, `verify_agreement` scopes its "no extra runtime" rule to names this coordinator does not own, and `shutdown` reconciles back to the startup-only set instead of tearing the manager down. `sync_els2_materials` installs or drops the Plan 334 publication material at the end of a committed transaction and **fails the transaction closed** when a type-5 definition's identity record is unreadable. `rollback_state` (Plan 338) reconciles the shared manager to the rolled-back candidate; all five failure paths await it, and a rollback that cannot reconcile is logged, not swallowed | tunnel control-state, versioned generation store, transaction coordinator, twelve-family typed mapping types |
 | `src/outbound_secret.rs` | 467 | **Plan 341** restart-safe outbound proxy secret owner. HKDF-SHA256 derives a ChaCha20-Poly1305 key from the router signing seed; the proxy credential is sealed under a random nonce with an associated-data frame | `OutboundSecretKey`, `RouterBoundOutboundSecrets`, `OUTBOUND_SECRET_KEY_INFO`, `OUTBOUND_SECRET_KEY_LEN = 32`, `OUTBOUND_SECRET_NONCE_LEN = 12`, `OUTBOUND_SECRET_TAG_LEN = 16` |
 
 ### Router console (Plans 356–358)
@@ -388,7 +406,7 @@ under Key contracts for the lifecycle detail.
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/service_tunnels.rs` | 9 342 | The M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle. 103 public methods, including `new`, `set_addressbook_handle`, `prepare`, `reconcile`, `start_supervisors`, `shutdown`, `install_router_delivery` / `uninstall_router_delivery`, `router_service_candidates`, `routing_decision_for`, `co_owned_destination_hashes`, `reap_expired_drains`, and `generation_snapshot`. Plans 289/309/290/292/294/296/297 add generation cancellation separation, shared-group identity, composed-family dispatch, the pre-SYN access gate + idle sweeper, address-book resolution, multihoming, reply bundling, and TLS dial | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceTunnelSnapshot`, `DestinationGroupRuntime`, `ServiceRuntime`, `register_service_tunnel_manager` |
-| `src/service_product.rs` | 5 186 | Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:895`) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
+| `src/service_product.rs` | 10 264| Plan 209 production composition helper wiring SSU2 + tunnels + LeaseSet2 + delivery backend; Plan 294 address-book install; Plan 318 normal-daemon adapter with bounded validated-RouterInfo handoff, bounded startup inbound replay, exact-three first-hop resolution, readiness gated on usable group pools; Plans 388–389 interleave bounded post-start builds and retain current-generation per-Destination stage counts; Plan 390 provisions aggregate role capacity; Plan 392 initializes identity-bound staged bridge state on committed router-backed generations. **Plan 513** adds the tick step `drive_netdb_discovery` and its two deliveries — `deliver_discovery_direct` for the exploratory kind and `deliver_discovery_via_outbound_tunnel` for the RouterInfo kind — plus the two ingestion helpers `ingest_discovery_search_reply` and `ingest_discovery_routerinfo_store`  **Plan 515** moves the creator RouterInfo publication onto the **shared** path — the same selection, the same store and the same delivery the router-level refresh uses — so the two cannot drift apart. **Plan 516** puts the one-shot publication on the **correlator**, so it begins a tracked attempt with the minted token on the wire and shares the attempt book with the router-level refresh | `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`; entry points `ServiceProduct::start` (`pub async`, `src/service_product.rs:2407``) and `ServiceProduct::start_over_existing_daemon` (`pub(crate) async`) |
 | `src/service_els2.rs` | 868 | Plan 334 daemon-owned ELS2 publication owner for a control-owned service. Builds the `BlindingSchedule` in owner mode from the service's own Ed25519 signing seed, constructs `Els2AuthorizationServerConfig` (PSK or DH) from the bounded durable client list, and produces the real type-5 `DatabaseStore` at the day's **blinded storage key** with the correctly flagged `.b32.i2p` address. Adds no new file format and no new at-rest secret. Resolved by `ServiceTunnelManager::service_identity_record`, not by a re-derived store path (Plan 338) | `ServiceEls2Material`, `build_service_els2_material`, `load_service_els2_material`, `ServiceEls2Error` |
 | `src/encrypted_target_credential.rs` | 452 | Plan 380 the ELS2 **consumer client credential**: an owned, zeroizing, non-`Clone`, non-`Debug`, non-`Display` credential holding a `PskClientKey` or an X25519 key pair whose public half is derived from the private one, plus the sealed stored form the manager holds (`SealedEncryptedTargetCredential`: ciphertext + the `Arc` that opens it). A closed grammar of `psk:<64 lowercase hex>` / `dh:<64 lowercase hex>` with no leniency, and an error enum whose every reason is a `&'static str` so no malformed value can reach a client reply or a log line | `EncryptedTargetCredential`, `SealedEncryptedTargetCredential`, `EncryptedTargetCredentialError`, `ELS2_CREDENTIAL_OPTION` |
 | `src/service_generation.rs` | 205 | Plan 180 §3 committed-generation bookkeeping for `ServiceTunnelGeneration` | `ServiceGeneration`, generation diff types |
@@ -408,35 +426,50 @@ under Key contracts for the lifecycle detail.
 
 ## Public surface
 
-### The actual `pub mod` / `mod` declarations (`src/lib.rs:9–62`)
+### The actual `pub mod` / `mod` declarations (`src/lib.rs:9`–70`)
 
-50 `pub mod` + 4 private modules + 4 `sam/` submodules:
+57 `pub mod` + 6 private modules + 5 `sam/` submodules:
 
 `pub mod` — `addressbook`, `app_gateway`, `app_manager_bridge`, `app_runtime`,
 `bootstrap`, `cli`, `config`, `console`, `control_sources`,
 `destination_peers`, `destination_streaming`, `destination_tunnels`,
-`encrypted_service_resolver`, `error`, `exploratory_build`, `floodfill`,
+`encrypted_service_resolver`, `encrypted_target_credential`, `error`,
+`exploratory_build`, `floodfill`,
 `i2cp`, `i2pcontrol`, `i2pcontrol_dispatch`,
 `i2pcontrol_inspection`,
-`i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_seam`, `netdb_tunnels`,
+`i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_participation`,
+`netdb_seam`, `netdb_tunnels`, `ntcp2_activation`,
 `outbound_lookup`, `outbound_secret`, `outproxy_options`, `outproxy_route`,
 `peer_test`, `router_i2np`,
 `sam`, `service_delivery`, `service_els2`, `service_generation`, `service_product`,
 `service_tunnels`, `service_tunnels_http`, `service_tunnels_http_bidir`,
 `service_tunnels_http_server`, `service_tunnels_irc_client`,
 `service_tunnels_irc_server`, `service_tunnels_socks5`, `service_tunnels_socks_irc`,
-`service_tunnels_streamr`, `service_tunnels_tls`, `transit_compose`, `transit_owner`,
-`transit_volume`, `tunnel_liveness`.
+`service_tunnels_streamr`, `service_tunnels_tls`, `ssu2_introducer`,
+`ssu2_qualification_export`, `ssu2_qualification_receipts`, `ssu2_relay_drain`,
+`transit_compose`,
+`transit_composition`,
+`transit_owner`, `transit_participation`, `transit_volume`,
+`tunnel_liveness`, `version_eligibility`.
 
 `console` and `i2pcontrol_dispatch` were added by Plans 356–358;
 `app_gateway`, `app_manager_bridge` by Plan 368 and `app_runtime` by Plan 369.
+`netdb_participation` was added by Plan 488 and extended in place by Plans 489
+(routing-table driver) and 497 (`RoutingTableConsumer`).
+`ntcp2_activation` holds the profile-aware NTCP2 activation gate; it is a
+public module so that the gate's refusal vocabulary is nameable from outside
+the crate, and it holds **no** authority of its own.
+`ssu2_relay_drain` was added by Plan 498; it holds the bounded drain from the
+runtime's relay handoff into the introducer role owner and no authority of its
+own.
 
-Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`,
+Private — `mod addressbook_fetch`, `mod bandwidth_eligibility`, `mod news`,
+`mod service_lifecycle`,
 `mod app_runtime_qualification` (the Plan 369 WP5 `#[cfg(test)]` black-box
 module; it compiles out of every real build, which is why it may name the
 fixture binaries freely), and `mod tests` (in-crate test module).
 
-### The actual `pub use` re-exports (`src/lib.rs:57–65`)
+### The actual `pub use` re-exports (`src/lib.rs:74`–79`)
 
 ```rust
 pub use error::DaemonError;
@@ -476,6 +509,7 @@ pub use sam::{SamServiceError, SamServiceState, StreamingPools};
 - **Tunnels/transit/floodfill** — `ExploratoryBuildCoordinator`, `TunnelLivenessScheduler`,
   `DestinationTunnelCoordinator`, `TransitOwner`, `TransitLiveOwner<R>`,
   `TransitParticipation`, `controlled_transit_disabled_probe`,
+  `TransitCompositionInputs`, `TransitCompositionError`,
   `Ssu2DaemonService`, `Ssu2DaemonHandle`, `RouterDeliveryService`, `RouterI2npOutcome`.
 - **SAM** — `SamServiceState`, `SamServiceError`, `StreamingPools` (re-exported).
 - **I2CP** — `I2cpServiceState`, `I2cpServiceError`, `I2cpServiceSnapshot` (re-exported).
@@ -573,6 +607,13 @@ path** — operator intent is always explicit.
 | `netdb.max_encoded_bytes` | `4 MiB` | (770) |
 | `netdb.min_router_infos` | `50` | (774) |
 | `netdb.min_floodfill_advertisers` | `5` | (778) |
+| `netdb.routing_table_enabled` | `false` | Plan 489; `default_netdb_routing_table_enabled` |
+| `netdb.routing_table_max_entries` | `1_024` | Plan 489; `default_netdb_routing_table_max_entries` |
+| `netdb.routing_table_max_bucket_size` | `8` | Plan 489; `default_netdb_routing_table_max_bucket_size` |
+| `netdb.exploration_enabled` | `false` | Plan 489; `default_netdb_exploration_enabled` |
+| `netdb.exploration_max_peers` | `8` | Plan 489; `default_netdb_exploration_max_peers` |
+| `netdb.exploration_deadline_ms` | `30_000` | Plan 489; `default_netdb_exploration_deadline_ms` |
+| `netdb.participation_maintenance_period_ms` | `60_000` | Plan 497; `default_netdb_participation_maintenance_period_ms` |
 | `reseed.enabled` | `false` | `default_reseed_enabled` (782) |
 | `reseed.max_sources` | `4` | (786) |
 | `reseed.max_su3_bytes` | `8 MiB` | (790) |
@@ -594,6 +635,7 @@ path** — operator intent is always explicit.
 | `ssu2.enabled` | `false` | (941) |
 | `ssu2.bind_ipv4` | `"127.0.0.1"` | (955) |
 | `ssu2.bind_ipv6` | `""` (unset) | (961) |
+| `ssu2.introducer_service` | `false` | (961) |
 | `i2cp.enabled` | `false` | (874) |
 | `i2cp.bind_address` | `"127.0.0.1"` | (876) |
 | `i2pcontrol.enabled` | `false` | (916) |
@@ -618,7 +660,12 @@ non-loopback bind is rejected fail-closed.
 `MAX_ALLOWED_DURATION_SECS = 3_600`, `MAX_ALLOWED_PREFIX_IPV4 = 32`,
 `MAX_ALLOWED_PREFIX_IPV6 = 128`, `MAX_ALLOWED_NETDB_RECORDS = 65_536`,
 `MAX_ALLOWED_NETDB_ENCODED_BYTES = 64 MiB`, `MAX_ALLOWED_RESEED_SOURCES = 16`,
-`MAX_ALLOWED_RESEED_BYTES = 16 MiB`, `MAX_ALLOWED_BOOTSTRAP_RECORDS = 65_536`.
+`MAX_ALLOWED_RESEED_BYTES = 16 MiB`, `MAX_ALLOWED_BOOTSTRAP_RECORDS = 65_536`,
+`MAX_ALLOWED_ROUTING_TABLE_ENTRIES = 16_384`,
+`MAX_ALLOWED_ROUTING_TABLE_BUCKET_SIZE = 64`,
+`MAX_ALLOWED_EXPLORATION_PEERS = 64`,
+`MAX_ALLOWED_EXPLORATION_DEADLINE_MS = 3_600_000`,
+`MIN_EXPLORATION_DEADLINE_MS = 1_000` (Plan 489).
 
 ### Stable exit codes (`src/error.rs`)
 
@@ -650,7 +697,347 @@ non-loopback bind is rejected fail-closed.
 `Internal`. `ConfigError` variants: `Parse(toml::de::Error)`,
 `UnsupportedSchemaVersion { actual }`, `Semantic { .. }`.
 
-### `bootstrap_daemon` (`src/lib.rs:1453`) — ordered startup
+### The router republishes its own RouterInfo (Plan 515)
+
+Until Plan 515 the router published its **own** RouterInfo once, from the
+service-tunnel provisioning path, and never again. The local record was read
+in exactly two places in the whole tree: that publication, and the SSU2
+service installing the record for handshakes. A record that is never
+refreshed ages out of the network's view, so no peer could find the router
+however long it ran — and because the publication was a side effect of
+building service tunnels, a router with **no** service tunnels never
+published at all.
+
+**What the module owns** (`src/router_info_publication.rs`):
+
+- the **schedule** — a period, a due test, and the counted outcomes. It
+  takes `now_ms` from its caller and never reads a clock, which is what
+  makes the cadence provable without a wall clock, a socket, or a sleep;
+- the **selection** — `publication_targets`, the version-gated function the
+  destination coordinator already applies, so Plan 503's API-version floor
+  holds for every publication and the two paths cannot drift apart;
+- the **delivery** — `publish_router_info`, the one path that puts the
+  store on the wire. The service product's one-shot publication and the
+  router-level refresh both come through it.
+
+**Where the refresh lives.** The transport is router-wide: the service
+product attaches to the router's *existing* SSU2 daemon
+(`ServiceProduct::start_over_existing_daemon`), and the router's own owner
+reads the installed record from that daemon. The selection's store is the
+router-wide **bootstrap's** store — the store the live discovery spine
+already selects from — so the refresh is a router-level periodic owner and
+does not depend on a service tunnel existing. The SSU2 service's loop
+carries the tick; the records are read under the bootstrap's lock and the
+lock is released before anything is sent.
+
+**What is not claimed.** The reference's resend burst is not adopted, and
+the divergence is recorded rather than papered over.
+
+### The publication's acknowledgement (Plan 516)
+
+Plan 515 made the publication **repeatable**. Plan 516 makes it
+**observable**.
+
+The correlator already minted a reply token for every attempt, recorded it
+in its bounded token map, and documented that the peer would correlate the
+acknowledgement with it — and then wrote `reply_token: 0` into the store
+message. A zero token asks a peer for **no** acknowledgement, so the
+floodfill never answered, the correlator's `correlate_delivery_status` could
+never match, and the `acknowledged` counter was structurally always zero.
+The tree's own live test said so in a comment: the "protocol-derived
+acknowledgement" it correlated was **manufactured in-process**.
+
+The other half of the mechanism was already here. This router's **own**
+floodfill service answers a direct-peer store that carries a nonzero reply
+token, and the `DeliveryStatus`'s message id **is** that token — so the
+router's floodfill service was answering an acknowledgement the router's
+publication never asked for.
+
+**What changed.**
+
+- The store message carries the correlator's **minted** token, in the
+  reference's **direct-reply** form: a nonzero token, a **zero** reply
+  tunnel id (the reference's *"zero tunnelID means direct reply"*), and the
+  local hash as the reply gateway.
+- The correlator publishes an **explicitly registered record**, so the
+  store message's key, its reply gateway and its payload are provably
+  **one** record. A publication can no longer store a record under the
+  wrong key.
+- The daemon composes **no** store message of its own any more. The
+  one-shot publication and the router-level refresh share the
+  correlator's builder and its attempt book, so there is one rule and one
+  book rather than two.
+- The **inbound owner** — the SSU2 service's own loop — joins the
+  publication: an inbound `DeliveryStatus` is correlated with the attempt
+  it names. The controlled NTCP2 probe path keeps its own table and its
+  own behaviour; the publication's correlation is a separate match, scoped
+  to the transport the publication uses.
+- A **delivery** admission and a **network acknowledgement** are counted
+  separately. A store the transport accepted is not a record the network
+  holds, and neither is allowed to stand in for the other.
+- An acknowledgement that matches **no** live attempt is **refused** and
+  counted under its own reason. It never confirms anything and is never
+  dropped silently.
+
+**What is not claimed.** That a **stock** floodfill answers is still
+blocked on Plan 493's authorized two-host topology, and no live claim is
+made. Plan 515's finding **F1** — the reference's resend burst — stays
+open: the reference retries on a drop and stops on a confirmation, so a
+faithful burst needs this confirmation and is a successor's subject.
+
+### The publication's retry (Plan 517)
+
+Plan 515 made the publication **repeatable**. Plan 516 made it **observable**.
+Plan 517 makes it **retry**.
+
+The reference does not publish once and wait 39 minutes. It publishes, and while
+the answer has not arrived it asks the **next closest** floodfill
+(`libi2pd/RouterContext.cpp:1492`, `:1502`), excluding the ones it has already
+asked (`:1540`), repeating every `ROUTER_INFO_CONFIRMATION_TIMEOUT` milliseconds
+(`:37`, `:1560`) until one acknowledges (`:1321-1328`) or the exclusion set
+reaches its bound of fifteen (`:38`).
+
+**What the module owns** (`src/router_info_publication.rs`):
+
+- the **cycle** — a bounded ladder of **batches**. A batch is the closest
+  eligible targets the cycle has not already asked, so the **exclusion set**
+  means a target is never asked twice in one cycle;
+- the **deadline** — the reference's `1600` milliseconds, measured from the
+  moment the batch went **out**. The module takes the reading from its caller
+  through a `PublicationClock` and never reads a clock itself, so the whole
+  ladder is provable without a wall clock, a socket, or a sleep;
+- the **retry** — `advance_publication_cycle`, which abandons the awaited batch
+  and asks the next one.
+
+**Where the retry lives.** The periodic tick **begins** a cycle, and the
+loop's existing `100` millisecond relay tick **advances** it when the deadline
+passes. No new timer is introduced and the loop's wake-up cadence does not
+change. A **confirmation** ends the cycle — the reference clears its exclusion
+set and schedules the next publish at the full interval — and a delivery
+**refusal** advances at once rather than waiting out the timeout.
+
+**The cycle cannot get stuck.** The publication decides what the outcome means
+for the cycle in **one** place: a batch that went out is awaited, a refused
+delivery is abandoned at once, and anything else **halts** the cycle. A cycle
+that is running with nothing to await would never advance, and it would hold
+the next period's cycle out.
+
+**Two divergences are recorded rather than imitated.** The tree's batch is
+Plan 515's fan-out of **three** rather than the reference's one target at a
+time, and a cycle that reaches the reference's bound of fifteen **ends** and
+lets the next period start a fresh one, where the reference clears its
+exclusion set and publishes again inside the same period.
+
+**What is not claimed.** That a **stock** floodfill answers, and that the
+retry therefore reaches one, is still blocked on Plan 493's authorized
+two-host topology. The retry shares the SSU2 service's loop with the
+publication's own delivery, so a slow dial delays the loop's other work; that
+is the same characteristic Plan 515's refresh already has, and separating the
+publication onto its own task is a successor's subject.
+
+### The publication's freshness (Plan 518)
+
+Plan 515 made the publication periodic. Plan 516 made it confirmable. Plan 517
+made it retry. All three re-send the **same bytes** — and those bytes carry the
+publication date the router signed at **startup**, so the record ages out of the
+network's view.
+
+The netdb's acceptance window is `DEFAULT_MAX_AGE`, 24 hours
+(`crates/i2pr-netdb/src/router_info.rs:20`), and the reference's own netdb
+expires routers between one and a half and twenty-seven hours
+(`libi2pd/NetDb.hpp:49-51`). After a day of uptime the router keeps
+republishing a record the network will not accept.
+
+**The reference re-dates and re-signs its record before each publish**
+(`libi2pd/RouterInfo.cpp:1218`, `libi2pd/RouterContext.cpp:1474`,
+`libi2pd/RouterContext.h:33`). This tree now does the same:
+
+- `src/router_i2np.rs` — `refresh_local_router_info_record` re-dates and
+  re-signs the installed record with the router's own key, **once per cycle**,
+  and installs the fresh record so the RouterInfo the router hands out in
+  `SessionConfirmed` carries the fresh date too;
+- `src/router_info_publication.rs` — `record_is_publishable` is the
+  publication's **staleness rule**. It is runtime-neutral, it takes the reading
+  from its caller, and it uses the netdb's **own** window. A record the network
+  would refuse is refused and counted (`refused_stale_record`), never published;
+- `src/lib.rs` — the publication tick re-dates the cycle's record and hands
+  it to the owner; the relay tick, which asks the cycle's later batches, does
+  not re-date and does not re-read the installed copy.
+
+**One record per cycle.** The cycle's record lives in the owner, and the
+owner is the only source of it. The first batch and every rung therefore
+publish the same bytes — not because the runtime's installed copy happens to
+agree, but because the record is decided once, at the cycle's start, and
+nothing can change it under the cycle.
+
+**Only the date and the signature change.** The signed region is re-encoded
+from the record's own decoded parts, so the addresses, the peers and the options
+are preserved, and the router's **hash** does not change: a RouterInfo's key is
+derived from the router identity, not from the signed bytes.
+
+**What is not claimed.** That a **stock** floodfill accepts the re-dated record
+in the live network is still blocked on Plan 493's authorized two-host topology.
+
+### The publication's own task (Plan 519)
+
+Plan 515 made the publication periodic. Plan 516 made it confirmable. Plan 517
+made it retry. Plan 518 made the record current. All four ran the publication
+**inside** the SSU2 service's `select!` loop.
+
+That loop's publication arm awaited a session establishment. While that await
+was pending the loop could not run its other arms: the relay drain and the
+inbound acknowledgement owner both waited. The transport's **socket** I/O was
+not the victim — `i2pr-runtime` owns the sockets, the timers and the handshake
+machinery, so a handshake completed while the daemon's service loop was
+stalled. What was lost was the **service layer's** other work. This was the
+**Medium** finding `M1` that Plan 517's and Plan 518's closure records both
+carry open.
+
+**Neither reference blocks its transport's loop on a handshake.** i2pd 2.61.0's
+`Transports::SendMessage` posts the send and the publisher **ignores** the
+returned future (`libi2pd/Transports.cpp:483-496`). Java I2P 2.13.0 runs the
+publication as a **job on its own pool** (`PublishLocalRouterInfoJob`,
+`JobQueue.java:163`), hands the store to a `FloodfillStoreJob` with its own
+`PUBLISH_TIMEOUT = 90 s` (`FloodfillNetworkDatabaseFacade.java:174`,
+`:246-257`), and delivers it through `commSystem().processMessage(m)`, so the
+transport owns the dial (`StoreJob.java:415-441`).
+
+**What changed:**
+
+- `src/lib.rs` — `run_router_info_publication_task` holds the owner (the
+  schedule, the cycle, the correlator and the cycle's record), the transport
+  capability, the identity, the store handle and the acknowledgement inbox.
+  The composition root spawns it under the SSU2 service's own **child scope**
+  with an explicit cancellation, so it is owned, cancelled and joined with the
+  service: no ownerless task and no detached one. The service's `select!` loop
+  keeps **none** of the publication's state and never awaits it;
+- `src/router_info_publication_task.rs` — the **bounded** acknowledgement
+  handoff. The loop's hand-over never waits for room; a full channel counts the
+  acknowledgement as **unmatched** and the task folds the refusals into the
+  publication's own counters;
+- `src/router_info_publication.rs` — the **established-session preference**
+  and the publication's own **bounded delivery timeout**;
+- `src/router_i2np.rs` — `Ssu2PublicationHandle`, the narrow cloneable
+  capability the task holds. The service's own handle owns the runtime's
+  inbound handoff and is not cloneable; the capability carries the same shared
+  runtime state and grants nothing the daemon did not already hold.
+
+**The ticks moved with the publication.** The `39`-minute period tick and the
+ladder's `100`-millisecond tick belong to the publication's task, so the
+transport's service loop gains **no** timer and its own wake-up cadence does
+not change.
+
+**The preference is a preference, not a gate.** The batch prefers a peer the
+router is already connected to, because that is the peer whose send needs no
+handshake, and the targets it drops for want of one are counted. When the
+batch holds **no** session, it is asked anyway and the **direct route**
+establishes the session under the publication's own timeout — i2pr installs no
+exploratory tunnel, so the direct route is the only one it has.
+
+**What is not claimed.** That a **stock** floodfill accepts the router's record
+in the live network is still blocked on Plan 493's authorized two-host topology.
+The **live-dial** half is not re-measured either: the lane drives the
+publication's public behaviour without a socket, so what stands between the
+publication and the transport's loop is the structural guard, which reads the
+production files.
+
+### The router's own published address (Plan 520)
+
+The router publishes its own RouterInfo, and that record has carried one SSU2
+address since the tree began: `generate_identity_with_keys` builds it from the
+**bound** endpoint with the options `host`, `port`, `v`, `s` and `i`. The
+address was **unqualified** — it omitted the `caps` and `mtu` options the
+specification's SSU2 form carries and the netdb's own
+`is_qualified_ssu2_address` demands — so the record named an endpoint no
+peer could qualify. The reference publishes both
+(`libi2pd/RouterInfo.cpp:1434-1449`, `:281`).
+
+**What changed:**
+
+- `src/self_publication.rs` — the owner. It asks the runtime for the
+  material, hands the transport's address to the netdb's own qualified
+  builder, installs the record, withdraws it when the evidence lapses, and
+  counts every outcome under its own reason. It starts no task, no timer and
+  no listener, and it records **no** reachability signal of its own;
+- `crates/i2pr-netdb/src/local.rs` —
+  `LocalRouterInfoBuilder::build_with_ssu2_address`, the **non-floodfill**
+  addressed builder. It validates the address with the netdb's own
+  `is_qualified_ssu2_address`, takes **no** floodfill permit, and therefore
+  cannot mint `caps=f`;
+- `src/config.rs` — `ssu2.advertise` stops being a parse-time error and
+  becomes an explicit opt-in that is **off** by default, refused unless the
+  SSU2 service itself runs and refused outside the controlled loopback
+  profile;
+- `src/router_i2np.rs` — the socket and the service boundaries refuse the
+  opt-in by **profile** rather than refusing it outright;
+- `src/lib.rs` — the composition root builds the owner from the operator's
+  opt-in and refreshes the record inside the publication's cycle, **before**
+  the cycle re-dates and publishes it;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the install gate no longer
+  *requires* an SSU2 address. It still binds every address the record carries
+  to the router's own bound endpoint with the router's own keys, and still
+  refuses two conflicting ones, but the transport's **endpoint-less** form is
+  now installable — which is what makes the withdrawal possible.
+
+**The decision has one owner.** The transport's `build_publication_snapshot`
+renders the direct form — host, port, the family capability and the
+transport's MTU — only when the router's own reachability evidence is
+`Reachable`. The daemon never re-implements that rule: the owner asks the
+runtime for the material and takes the transport's answer, and the guard
+proves the daemon's own copy of the rule does not exist.
+
+**The withdrawal is the expiry.** When the evidence lapses the published
+record returns to the netdb's ordinary **zero-address** form, so the router
+does not keep publishing an endpoint it can no longer justify. The withdrawal
+is counted under its own reason, exactly like every other refusal.
+
+### The router's own peer test (Plan 521)
+
+Plan 520 made the published SSU2 address **qualified** and gated its
+publication on the router's own reachability evidence, and it closed with
+the finding that the ordinary record could not be earned in production: the
+direct form needs **three** distinct corroboration classes, and the third —
+a confirmed peer test — was recorded in production only by the controlled
+floodfill activation. Plan 521 closes that gap at its source.
+
+**What changed:**
+
+- `src/peer_test.rs` — the bounded owner. The outstanding-probe table is
+  keyed by the probed identifier **and** the probed timestamp, so an echo
+  matches the probe that produced it, and a probe completes only when the
+  answer came from the peer the probe was sent to. One probe at a time per
+  peer; a second attempt is refused, not queued. The table is a ceiling that
+  refuses rather than evicts. A second bounded table remembers the keys the
+  router has already **answered**, so the reply traffic a peer can provoke
+  is bounded by the router's own table and not by the peer's patience;
+- `src/service_product.rs` — the responder sits on the **live inbound path**
+  and reads the dispatcher's **classified** outcome, so the inbound message
+  is decoded exactly once and the responder runs no decoder of its own. An
+  echo of the router's own probe completes the probe and is owed no answer;
+  anything else is owed an answer that repeats the probed fields unchanged.
+  The owner is driven by the product's **existing** tick: it starts no task,
+  no timer and no listener;
+- `src/config.rs` — `ssu2.peer_test` is an explicit opt-in, **off** by
+  default, and refused unless the SSU2 service itself runs;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the production recorder. It is
+  distinct from the controlled mirror, it records only a confirmed outcome,
+  and it is refused after shutdown. The caller names the **link** the
+  exchange travelled on and the runtime derives the address family from
+  that session's own address, so the daemon can neither assert a family nor
+  record an unmatched exchange;
+- `crates/i2pr-transport/src/reachability.rs` — `ConfirmedPeerTest`, a
+  **sealed** proof of a matched round trip. It has no constructor that takes
+  a boolean or a claim, so the unmatched and timed-out paths cannot mint
+  one.
+
+**The transport's tracker remains the single authority.** The daemon never
+computes a reachability state, never reads one, and never writes a state into
+a published record; the transport's corroboration policy is untouched.
+
+**The signal is about this router.** The recorded evidence belongs to the
+router's **own** reachability and is never written into a peer's profile.
+
+### `bootstrap_daemon` (`src/lib.rs:5166`) — ordered startup
 
 ```
 bootstrap_daemon(&Config, now_seconds, offline_reseed_path)
@@ -685,7 +1072,7 @@ side effects); `Identity::Generate` -> `OsRng` -> `RouterIdentityBundle::generat
 `store.save_new` (atomic); `Identity::Inspect` -> `store.load` -> `IdentityInspected` (no
 secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }`).
 
-`run_daemon(config)` (`src/lib.rs:1482`) is the real daemon path:
+`run_daemon(config)` (`src/lib.rs:5345`) is the real daemon path:
 
 1. Compute wall-clock seconds.
 2. Run `bootstrap_daemon(&config, now_seconds, None)`.
@@ -693,7 +1080,10 @@ secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }
 4. Build the service graph via `build_daemon_graph_inner` (Plan 288 shares one
    `InspectionHandles` across the SAM/I2CP/I2PControl factories; Plan 295 installs the log
    ring, metrics, ban ledger, and static attestations; the SSU2 factory publishes its runtime
-   service).
+   service). **Plan 497** registers the `netdb-participation` service in the same graph
+   (`src/lib.rs:958``). It is `Optional` in **both** `ServiceClassification` and
+   `StartupRequirement`, so a broken participation owner degrades that one feature and
+   nothing else, and it does not gate router readiness.
 5. Publish the local RouterInfo base64 through `MAX_LOCAL_ROUTER_INFO_BYTES`.
 6. Create the `Supervisor` with the graph, run it alongside the signal owner, then keep the
    normal SSU2 owner active through the bounded service-group drain before cancelling the
@@ -704,10 +1094,119 @@ secrets); `Run` -> `Config::load` -> `RunReady` (or `Validated { dry_run: true }
 **not** synchronous; it hands an `async fn` to the runtime owner.
 
 `ServiceProduct` has exactly **one** `pub` entry point, `ServiceProduct::start`
-(`src/service_product.rs:895`); `ServiceProduct::start_over_existing_daemon` is
+(`src/service_product.rs:2407``); `ServiceProduct::start_over_existing_daemon` is
 `pub(crate)`, the normal-daemon adapter that reuses an already-running SSU2 owner. Build the
 one shared `ServiceTunnelManager` with `build_shared_service_manager` (Plan 337) and inject
 the same `Arc` into both the control state and the destination-group product.
+
+### NTCP2 qualification profiles and the activation gate
+
+`[transport.ntcp2].qualification_profile` selects one of three values. The
+key has no default that silently activates anything: the default profile is
+`disabled`, and an **enabled** NTCP2 surface must name a profile explicitly.
+
+| `enabled` | `qualification_profile` | Outcome |
+| --- | --- | --- |
+| `false` | `"disabled"` | accepted; the transport stays off |
+| `false` | `"controlled_loopback"` | refused — `controlled_loopback requires enabled = true` |
+| `false` | `"private_lan_qualification"` | refused — `private_lan_qualification requires enabled = true` |
+| `true` | `"disabled"` | refused — `enabled NTCP2 requires the explicit controlled_loopback or private_lan_qualification profile` |
+| `true` | `"controlled_loopback"` | accepted; the bind must be loopback |
+| `true` | `"private_lan_qualification"` | accepted; the bind must be an RFC1918 IPv4 literal |
+| `true` | any other value | refused — `enabled NTCP2 requires the explicit controlled_loopback or private_lan_qualification profile` |
+
+**The private-LAN profile is the operator's, and it is narrow.** It requires
+all of: `enabled = true`; exactly one RFC1918 IPv4 `bind_address` literal
+(`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`); an explicit nonzero
+`listen_port` of at least 1024; a network id representable by the handshake
+width; and **family coherence with SSU2** — the `[ssu2]` surface must itself
+be in `private_lan_qualification` mode and bind an RFC1918 IPv4 address,
+because one RouterInfo carries both transports' endpoints.
+
+Every refusal is a `ConfigError::Semantic` that names the offending field and
+states the requirement. The bind-address shapes are refused separately:
+
+| Field | Reason |
+| --- | --- |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an explicit RFC1918 IPv4 address literal; an empty bind address is not a private-LAN endpoint` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an explicit RFC1918 IPv4 address literal` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an RFC1918 IPv4 address; loopback is not a private-LAN address` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an RFC1918 IPv4 address; the unspecified address is not a private-LAN address` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)` |
+| `transport.ntcp2.bind_address` | `private_lan_qualification requires an RFC1918 IPv4 address; IPv6 literals are not supported` |
+| `transport.ntcp2.listen_port` | `private_lan_qualification requires an explicit nonzero port` |
+| `transport.ntcp2.listen_port` | `private_lan_qualification requires a port of at least 1024` |
+| `network.network_id` | `private_lan_qualification requires a network ID representable by the handshake` |
+| `transport.ntcp2.qualification_profile` | `private_lan_qualification requires the ssu2 surface to use the private_lan_qualification profile` |
+| `transport.ntcp2.qualification_profile` | `private_lan_qualification requires the ssu2 surface to bind an RFC1918 IPv4 address` |
+
+Note that a public IPv4 literal and TEST-NET `192.0.2.0/24` share the
+"requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or
+192.168.0.0/16)" reason, because both fail the same `is_private()` test; the
+loopback, unspecified, and IPv6 shapes each carry their own reason.
+
+#### The gate (`src/ntcp2_activation.rs`)
+
+`ntcp2_activation_scope(&Ntcp2Config) -> Result<Ntcp2DialScope, Ntcp2ActivationRefusal>`
+is **pure**. It takes an already-normalized configuration and returns either
+the address scope the transport may dial or a typed refusal. The purity is
+deliberate: the configuration layer already refuses every shape the gate
+refuses, so a gate branch inside the service closure could never be reached
+from a configuration file. Extracting it makes every branch reachable by a
+unit test.
+
+The refusal vocabulary is five variants, each with its own reason text:
+`Disabled` ("NTCP2 is disabled"), `NoExplicitProfile` ("NTCP2 requires an
+explicit qualification profile"), `NonLoopbackBind` ("the NTCP2
+controlled-loopback profile requires a fixed loopback bind address"),
+`NonPrivateLanBind` ("the NTCP2 private-LAN profile requires an RFC1918 IPv4
+bind address"), and `PrivilegedPort` ("NTCP2 requires an explicit
+non-privileged listen port").
+
+The gate is called from two places, so there is **one authority** for the
+decision:
+
+- the composition root in `src/lib.rs`, which fails daemon startup with the
+  refusal's reason; and
+- the `ntcp2-router` service closure, which applies the same gate as defense
+  in depth. That service is registered with
+  `StartupRequirement::Optional`, so a refusal there degrades that one
+  service and the rest of the router keeps running.
+
+The gate never widens a scope. `controlled_loopback` yields
+`Ntcp2DialScope::Loopback`; `private_lan_qualification` yields
+`Ntcp2DialScope::PrivateLan`. The scope is always the caller's and is never
+widened inside the runtime.
+
+#### What the profile does not do
+
+- **It publishes nothing.** The operator profile adds no publication path.
+  The NetDB publication path still requires an `Active` floodfill role
+  **and** an in-memory `FloodfillAdvertisementPermit`, and neither is
+  reachable from this profile. `[ssu2] advertise = true` remains refused at
+  parse time (`SSU2 address publication is unavailable in this milestone`).
+- **It advertises no capability.** The signed dual-transport record carries
+  **no capability letter** — no `caps=f`. The support inventory is unchanged.
+- **It mints no reachability permit.**
+- **It is not a public transport activation.** Public transport activation
+  remains unclaimed: it requires external two-family evidence, which needs an
+  authorized two-host topology this profile does not supply. What this profile
+  delivers is the source-side activation substrate, not an activation.
+- **The two families do not share one link registry.** SSU2 owns a private
+  `i2pr_transport::TransportManager`; NTCP2 owns its own admission
+  structures. What they share is one delivery registry
+  (`Ntcp2RouterDeliveryRegistry`), one bandwidth governor, one authenticated
+  I2NP dispatcher, and one local-RouterInfo channel.
+
+The dual-transport RouterInfo builders are scope-parameterized:
+`generate_scoped_dual_transport_router_info` copies both endpoints from the
+live owners' validated configuration and identity-bound stores and requires
+both to fall inside the scope, with matching address families and unprivileged
+ports. `generate_controlled_dual_transport_router_info` (loopback) and
+`generate_private_lan_dual_transport_router_info` (RFC1918) both delegate to
+it. The private-LAN record carries the operator's two socket-derived private
+endpoints and is **held locally only**: the operator hands it to the lab peer
+out of band.
 
 ### `NetDbSeam` and the reply-path flip (`src/netdb_seam.rs`)
 
@@ -729,6 +1228,557 @@ exploration is not consulted for destination lookups: `begin_lease_set2_lookup`,
 `advance_lease_set2_after_path`, `ingest_lease_set2_response`, `ingest_lease_set2_store`,
 `lease_set2_delivery_outcome`, `cancel_lease_set2_lookup`, `active_lease_set2_lookup`.
 
+### Peer participation driver (`src/netdb_participation.rs`)
+
+Plan 488's daemon-side owner of the `i2pr-netdb` peer profile store. It
+does three things and nothing else:
+
+- **feeds** the store with the outcomes the router observes — answered,
+  answered without the record, refused, a reply that does not match the
+  requested key, not answered, unreachable;
+- **runs the maintenance pass** on the daemon's clock, so an aged failure is
+  demoted and then dropped instead of lingering forever;
+- **emits receipts** that make the observed state visible without disclosing
+  anything about a peer.
+
+The driver keeps an **explicit clock**: `advance_time(now_ms)` and
+`tick(now_ms)` are the only ways time enters it, so every observation,
+maintenance pass and selection is reproducible. `run_profile_maintenance`
+is the owned periodic future the daemon's service graph runs under the
+runtime's child scope; it owns its cancellation, refuses a maintenance
+period outside `[1 ms, 1 h]`, and returns a typed exit reason. There is no
+ownerless spawn.
+
+`ParticipationReceipt` carries counts, stable tier and state labels, and a
+SHA-256 digest over those counts. It never carries a peer's hash, address,
+key material, session state, or payload — the private-mesh lane asserts
+that a receipt rendered in full carries no peer hash.
+
+`ProjectionLoadOutcome` is the persistence contract: a projection that
+round-trips is `Restored { restored, orphaned, fresh }`; a corrupt or
+oversized projection is `Discarded { reason }` and is **counted**, never a
+startup failure.
+
+**The selection policy is not wired into the router's tunnel building in
+this phase.** Plan 488 delivers the policy and its inputs; the wiring is the
+consumer's change and belongs to the participation phases that follow.
+
+### Routing table driver (Plan 489, `src/netdb_participation.rs`)
+
+Plan 489's daemon-side owner of the `i2pr-netdb` floodfill-indexed routing
+table. It extends the Plan 488 module rather than adding a second one, so the
+two drivers share one explicit-clock convention and one receipt discipline.
+
+It does four things and nothing else:
+
+- **indexes** the floodfills the router learns about. A peer whose own signed
+  `RouterInfo` does not advertise `f` is refused and counted;
+- **runs the exploration job**: it issues an exploratory `DatabaseLookup` —
+  wire lookup type `3` — with a random search key, and the peers the answer
+  names enter the table on a verified floodfill's evidence;
+- **drives the optimized lookup**: the candidates come from the routing table,
+  closest to the requested routing key first, split into the peers the router
+  may ask directly (*queryable*) and the peers whose `RouterInfo` must be
+  resolved first (*pending*);
+- **emits receipts** that make the table's state visible without disclosing
+  anything about a peer.
+
+The table is anchored at the router's own position in today's keyspace
+(`daily_routing_key(local_router_hash, date)`), so the partition rotates with
+the UTC day. The driver keeps an **explicit clock** like its Plan 488 sibling:
+`advance_time(now_ms)` is the only way time enters it, so every exploration,
+rotation and lookup is reproducible.
+
+A lookup without a reply path is **not dispatchable**: `begin_lookup` and
+`begin_exploration` return `NeedsReplyPath` until the runtime supplies a
+`ReplyPath`. A direct peer link is not a reply path, and the state machine
+refuses to emit a `DatabaseLookup` without one.
+
+A peer the table knows but whose `RouterInfo` is unresolved is **never asked**:
+`begin_lookup` returns `NeedsPeerResolution { pending }` instead, because a
+peer without an address cannot be reached.
+
+`RoutingReceipt` carries counts — the table size, the occupied buckets, the
+signed and suggested evidence counts, the queryable/pending/refused split — and
+a SHA-256 digest over them. It never carries a peer's hash, address, key
+material, session state, or payload; the private-mesh lane asserts that a
+receipt rendered in full carries no peer hash.
+
+**Plan 500 adds the terminal-state counts.** A `RoutingReceipt` now also
+carries `terminal_counts`: the number of lookups that terminated in each
+final state, keyed by the state's stable label. The labels come from
+`i2pr_netdb::LookupFinalState::label()`, so the same final state always lands
+in the same bucket — and, in particular, a lookup that spent its per-lookup
+peer budget (`peer-budget-exhausted`) is counted **separately** from a lookup
+that ran out of candidates (`peer-exhausted`). The two are different events
+with different causes and different remedies, and folding them into one
+bucket would make the peer budget invisible in the diagnostics. The counts
+are cumulative over the driver's lifetime and carry no peer identity.
+
+`RoutingProjectionOutcome` is the persistence contract: a projection that
+round-trips is `Restored { peers }`; a corrupt, oversized or expired
+projection is `Discarded { reason }` and is **counted**, never a startup
+failure.
+
+**The routing table and the optimized lookup are not wired into the router's
+tunnel building in this phase.** Plan 489 delivers the table and the policy
+that draws from it; the wiring is the consumer's change and belongs to the
+participation phases that follow. The `[netdb]` configuration section exposes
+the routing-table and exploration keys, and **both default to off**; the
+exploration cannot be enabled while the routing table is off, because an
+exploration with nowhere to put the peers it discovers is refused at parse
+time. Plan 497 consumes the table's *ordering* — see the next section — but
+the table still never answers a lookup on its own.
+
+### The routing-table consumer and the `netdb-participation` service (Plan 497)
+
+Plan 497 turns the Plan 489 routing table from a driver with no production
+caller into a consumer seam the daemon owns.
+
+**`RoutingTableConsumer`** (`src/netdb_participation.rs:652``) is that seam. It
+owns an `Arc<Mutex<RoutingTableConsumerState>>` holding the Plan 489 driver and the
+operator's `enabled` switch, plus four counters held **outside** the lock.
+`candidates(store, routing_key, excluded)` (`src/netdb_participation.rs:818``)
+returns either `RoutingTableCandidates::Table(Vec<RouterHash>)` — the table's
+closest-first verified floodfills for the key — or
+`RoutingTableCandidates::Fallback(RoutingTableFallback)`, where the reason is
+`Disabled` (the table is off), `NoCandidate` (the table holds no queryable
+candidate for the key), or `Unavailable` (the table's lock is poisoned, so the
+table cannot be reached at all). **Every fallback is counted by reason**:
+`RoutingTableCounters { answered, fell_back_disabled, fell_back_no_candidate,
+fell_back_unavailable }` (`src/netdb_participation.rs:680`), with `fell_back()` the
+saturating sum of the three fallback counters
+(`src/netdb_participation.rs:695``).
+
+The counters live outside the lock on purpose. A poisoned table cannot answer, and
+that fallback must still be counted: a fallback that is not counted is a **silent**
+fallback, which is exactly what the plan forbids. `Unavailable` is a distinct
+reason so an operator can tell "the table had no peer for this key" apart from
+"the table is broken".
+
+The table is a **cache of derived state**; the flat peer map stays the
+**authority**. A table that cannot answer a key never fails the lookup — the
+caller falls back to the flat store's selection, and the reason is counted
+either way.
+
+**The daemon service.** `NetDbParticipation` (`src/lib.rs:1864`) is registered in
+the service graph under the name `netdb-participation`
+(`NETDB_PARTICIPATION_SERVICE_NAME`, `src/lib.rs:1546``) with
+`ServiceClassification::Optional` (`src/lib.rs:2365``) **and**
+`.startup_requirement(i2pr_core::StartupRequirement::Optional)`
+(`src/lib.rs:2398``). It owns the peer-profile driver and the shared
+`RoutingTableConsumer`, runs `run_profile_maintenance` on a bounded cadence, and
+owns a routing-table owner that populates the table from the daemon's own NetDB
+floodfill advertisers and persists the projection.
+
+**The startup sequence** (`src/lib.rs:1897``). When the service starts it loads
+the projection, advances the routing table's clock so today's date is used, and
+populates the table from the daemon's own NetDB. Two owned tasks then run on the
+configured cadence under the service's child scope: the profile maintenance
+owner (`run_profile_maintenance`) and the routing-table owner, which advances the
+clock, refreshes the table, and persists the projection. Every peer the table
+holds is indexed with its **own signed evidence** (`src/netdb_participation.rs:2344``); a peer's
+*suggested* evidence now has a source, because **Plan 513** composes Plan 489's
+exploration into the service graph: the live discovery spine names peers and
+the table accepts them as suggestions.
+
+**Inert by default.** `netdb.routing_table_enabled` defaults to `false`
+(`default_netdb_routing_table_enabled`, `src/config.rs:1119`). When it is false the
+service is **inert**: no population, no tick, no persistence — the service body
+only signals readiness and then awaits cancellation (`src/lib.rs:2393``). Readiness
+means "this service is running" under Plan 360's contract; it deliberately does
+**not** wait for the first maintenance pass, the first table population, or the
+projection load, because each is bounded, local and failure-tolerant.
+
+**The additive configuration key.** `netdb.participation_maintenance_period_ms`
+defaults to `60_000` ms (`default_netdb_participation_maintenance_period_ms`,
+`src/config.rs:1148`) and is bounded on both sides:
+`MIN_PARTICIPATION_MAINTENANCE_PERIOD_MS = 1_000` (`src/config.rs:53`) and
+`MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS = 3_600_000`
+(`src/config.rs:46`). A value outside that range is refused at parse time with
+`ConfigError::Semantic` naming the field (`src/config.rs:3830`,
+`src/config.rs:3836`). The key is **additive** — it lives inside the existing
+`deny_unknown_fields` `[netdb]` section and changes no other key's meaning.
+
+**The startup projection** — this discharges Plan 488's finding F4 ("the
+projection is not written to disk"). The daemon reads one persisted peer-profile
+projection from `<data_dir>/peer-profiles/` at startup. The directory name is
+`PROFILE_PROJECTION_DIRECTORY` (`src/lib.rs:1809`); the file name is
+`profile-projection-<yyyyMMdd>.txt` (`PROFILE_PROJECTION_FILE_PREFIX` and
+`PROFILE_PROJECTION_FILE_SUFFIX`, `src/lib.rs:1812`, `src/lib.rs:1815`); and the
+startup scan examines at most `PROFILE_PROJECTION_SCAN_LIMIT = 64` directory
+entries (`src/lib.rs:1822`), so a hostile or accidental directory cannot turn the
+router's startup into an unbounded walk.
+
+**"Current" is carried by the file name, not by the format.** `ProfileProjection`
+carries **no UTC-day field**, so a projection from another UTC day is discarded,
+counted, and removed (`src/lib.rs:2217``). The projection **bytes** are unchanged
+from Plan 488's format: the daemon reads them with the Plan 488 loader
+(`PeerParticipationDriver::load_projection`, `src/netdb_participation.rs:455`),
+whose `ProjectionLoadOutcome::Restored` / `Discarded { reason }` contract already
+makes a discarded projection a counted outcome rather than a startup failure.
+
+**The table-driven lookup selection.** `begin_tunnel_lookup`
+(`src/netdb_tunnels.rs:503``) always computes the flat store's selection first —
+that selection is the authority — and only then asks the routing table how it
+would order it (`src/netdb_tunnels.rs:533``). The table's answer may only
+**reorder** that selection: it can never remove a candidate the flat store could
+serve, and it can never add one the flat store would not have served. A table
+that cannot answer falls back to the flat store's selection, and the consumer
+counts the fallback by reason. The preferred list reaches the engine through
+`NetDbSeam::begin_lookup_with_preferred` (`src/netdb_seam.rs:674``).
+
+**The coordinator is not composed into the daemon.** `NetDbTunnelCoordinator` is
+**not** created by the daemon today: every `NetDbTunnelCoordinator::new` call in
+the tree is in test code — the module's own `#[cfg(test)] mod tests`
+(`src/netdb_tunnels.rs:996``) and the integration suites. Plan 433 owns that
+composition and is registered `blocked` on Plans 431/432. Plan 497 delivers the
+**seam** and the coordinator-level integration
+(`NetDbTunnelCoordinator::with_routing_table`, `src/netdb_tunnels.rs:377``); the
+daemon-level service composition remains Plan 433's open work. Until Plan 433
+lands, the shared consumer is reachable only from this crate.
+
+**No advertisement and no capability change.** The routing table is **internal
+state**. `specs/support.toml` is unchanged by this plan — 98 surfaces (92
+experimental, 5 deferred, 1 ready), 0 advertised — the published RouterInfo and
+its `caps` are unchanged, and `router.version` stays `0.9.62`. The evidence for
+this phase is a **private controlled mesh**, not a public-network measurement:
+Plan 489 §11.1's stock-peer NetDB exploration lane and Plan 494's `caps=f`
+advertisement remain unlanded, and Plan 494 stays gated on Plan 493's authorized
+two-host topology.
+
+### The live DSM version gate and the live peer-eligibility receipt (Plan 503, `src/version_eligibility.rs`)
+
+Plan 491 attached two duties to the API version this router declares: minimum
+peers a tunnel may be built through, and minimum floodfill peers a DSM may be
+sent to. The **first** was enforced on the live path. The **second** was
+enforced **nowhere in production**.
+
+The router's two live `DatabaseStore` sends selected floodfills by XOR distance
+alone and never consulted `dsm_target_eligibility`:
+
+- the **creator RouterInfo** publication (`src/service_product.rs:7910``,
+  reached from the live composition through the product's own tick,
+  `src/service_product.rs:8082``) sorted the
+  floodfill advertisers itself and truncated to three;
+- the **service LeaseSet2** publication (`src/service_product.rs:9631``,
+  reached from `src/service_product.rs:3486`/`:4960`/`:9035`) went through
+  `DestinationTunnelCoordinator::candidate_hashes` →
+  `i2pr_netdb::lookup_policy::select_floodfill_candidates`, a selection that
+  filters on nothing but distance and exclusion.
+
+The typed, counted DSM refusal Plan 491 built
+(`src/netdb_tunnels.rs:835`` `begin_publication`) has **zero production
+callers**, because `NetDbTunnelCoordinator` is never composed — see the
+section above. The router therefore published its RouterInfo and its LeaseSet2
+to floodfills that publish no version, an uncomparable version, or a version
+below `0.9.62`: the exact under-compliance Plan 491 exists to prevent.
+
+**Both live paths now consult the shared, version-gated selection** in
+`i2pr-netdb` (`lookup_policy::select_version_gated_floodfills`), through two
+coordinator methods:
+
+- `DestinationTunnelCoordinator::version_gated_candidate_hashes` — the
+  LeaseSet2 publication's selection, with the same routing key, the same
+  target exclusion and the same three-floodfill bound as before, with the
+  floor applied;
+- `DestinationTunnelCoordinator::version_gated_publication_floodfills` — the
+  creator RouterInfo publication's selection, with our own router hash as both
+  the routing key and the exclusion.
+
+The candidates are now considered within the policy's ceiling and the
+**eligible** ones are kept, so a below-floor floodfill can no longer consume
+one of the three publication slots. An empty eligible set fails closed through
+the paths that already existed: the creator publication is skipped with a
+debug transition, and the LeaseSet2 publication releases its reserved intent
+and returns the existing typed request-construction failure. A refused
+floodfill is a **refusal**, not a delivery failure, and it is counted by
+reason.
+
+**The receipt is now a live product.** `src/version_eligibility.rs` owns the
+peer-eligibility decision surface: `VersionDecisionKind`,
+`VersionEligibilityReceipt`, the digest, the two constructors, and
+`VersionEligibilityOwner` — a bounded log (`VecDeque`, an explicit cap, the
+oldest entry evicted at the cap) behind an internal `std::sync::Mutex`, so
+the shared handle is a plain `Arc`. The receipt carries **counts and stable
+reason labels only**: no peer hash, no address, no key, no version string, no
+payload.
+
+The coordinator records one receipt per live decision — the tunnel-build gate
+(`destination_peer_candidates`) and the two DSM gates. A coordinator without an
+owner records nothing, so the controlled helper and the integration lanes are
+unaffected. The owner reaches the coordinator without a signature change: the
+service product creates it, hands it to the coordinator, keeps it, and exposes
+it through `ServiceProduct::version_eligibility`; the composition publishes it
+into `InspectionHandles` (`publish_version_eligibility` /
+`version_eligibility`), so the running router's decisions are observable
+through the plane that already publishes the transit posture.
+
+**The identity `examined == accepted + refused` is exact for the DSM gate**,
+whose only two outcomes are eligible and refused-by-version-reason. It does
+**not** hold for the build gate, whose `examined` is the whole scanned
+population: the build projection has two further refusal reasons —
+`unqualified` (the record lacks build metadata) and `capped_participation`
+(the peer reached its participation cap) — and **neither is a version
+refusal**, so neither appears in the receipt. They stay counted in
+`CandidateProjectionSummary`.
+
+**The lookup-target selection is deliberately not gated.** A `DatabaseLookup`
+is not a DSM and is not one of Plan 491's two obligations; extending the floor
+to the lookup path would change which floodfills the router can ask at all,
+which is a product decision beyond this plan. That gap is recorded as an open
+finding, not silently taken.
+
+**No advertisement and no capability change.** `router.version` stays
+`0.9.62`, `caps` and the published RouterInfo are unchanged, the support
+inventory's advertised count stays **zero**, and `Cargo.toml` and
+`Cargo.lock` are byte-identical. Plan 503 is **not** a stock-peer
+qualification and claims no interop evidence.
+
+### The tunnel liveness scheduler in the product composition (Plan 504, `src/tunnel_liveness.rs`)
+
+Plan 185 delivered a tunnel-liveness scheduler for the creator side: pair
+each active **outbound** exploratory tunnel with an active **inbound**
+exploratory tunnel, probe through the outbound path, and correlate the
+answer that comes back. It is complete, bounded and unit-tested — and it
+had **never been constructed by the production daemon**. An exhaustive audit
+of every `pub mod` in `src/lib.rs` — in-crate production references against
+out-of-crate test references — returned exactly one module with no
+production consumer: `tunnel_liveness` (prod = 0, tests = 11). The live
+inbound path called the coordinator's dispatcher directly
+(`src/service_product.rs:5576``, `:7571`, `:8630`, `:8860`), never the
+existing `route_inbound_with_liveness` seam, so every inbound
+`DeliveryStatus` echo was **discarded**: nothing correlated it, because
+there was no pending test.
+
+Plan 185's closure record says the opposite —
+`plans/closure/mixed-router-interop/185-status.md:71-73` states that
+`route_inbound_with_liveness` is *the single helper the daemon pump calls*.
+That is false of the tree it describes. Plan 185's record is **not**
+rewritten; the correction lives in Plan 504's closure record and in the
+registry's row.
+
+**The feasibility question was answered by running code, not by prose.**
+Plan 504's first work package was an executable artefact that could stop
+the plan, and it drives the **real** composition: it installs a real
+outbound and inbound exploratory tunnel through the coordinator's own pool
+and registry, composes the probe through the coordinator's real
+`OutboundGatewayRole`, relays the resulting cell through the peer's real
+tunnel roles exactly as a peer's answer arrives, and hands it to the
+daemon's real inbound dispatch. The answer was **yes** on all three
+questions — and the third one changed the design: the answer arrives
+**tunneled**, through the inbound-tunnel path, not through the direct path.
+Correlating only the direct path would have meant the live router never saw
+its own answer, so the live correlation is wired at **both** seams.
+
+**The correlation is now authenticated.** The dispatcher used to keep the
+*transport* message id and discard `DeliveryStatusMessage::message_id` — the
+id of the message being acknowledged, which is the id that identifies the
+test — so the scheduler could only match "any `DeliveryStatus`, when
+exactly one test is pending", as its own doc comment said.
+`RouterI2npOutcome::RouterControl` now carries
+`acknowledged_message_id: Option<u32>` (`Some` for `DeliveryStatus`, `None`
+for the other three control bodies; the transport id is untouched and no
+decoder is weakened), and the scheduler matches on it.
+`record_authenticated_response` credits exactly the probe that carried the
+id; an id that matches nothing is counted as an **unauthenticated response**
+and credited to nothing.
+
+**The safety gate is the point of the whole plan.** A pair becomes
+**proven** only when it has produced an authenticated response, and only a
+proven pair may ever be marked unhealthy. Until the router has seen that
+peer answer, a missing response is indistinguishable from *this peer does
+not answer*, and the router must not act on a signal it cannot distinguish
+from its negation. A missing response for an unproven pair is still
+counted, the withheld teardown is counted once per pair, and both counters
+are published — so an operator sees that the liveness signal is not working
+rather than inferring it from silence. The threshold stays two consecutive
+failures, the response timeout stays 60 s (below the two-minute
+idle-deletion boundary), and only **exploratory** slots are ever removed: a
+destination tunnel is never removed by this plan.
+
+**The probe reuses the canonical path.** `compose_liveness_probe` calls the
+existing `compose_outbound_build_deliveries` — the same
+`registry.outbound(slot)` role, the same cell composition, the same
+`RouterDeliveryService` delivery as the build reply. The only change to
+that shared function is that the delivery instruction became a parameter;
+the build reply still passes `DeliveryInstruction::Router`. No private
+parallel pipeline. The probe's payload is a `DeliveryStatusMessage` whose
+acknowledged-message id **is** the probe id.
+
+**An identifier-space collision, found and avoided.**
+`DeliveryStatusMessage::message_id` is already the NetDB LS2 publication
+reply token (Plan 487) — a monotonic counter from 1. A liveness id from
+that space could be claimed by the publication path, so the liveness ids
+live in the **high half** of the `u32` range
+(`LIVENESS_PROBE_MESSAGE_ID_BASE`), disjoint from the publication token
+space.
+
+**The exploratory/destination distinction is structural, not inferred.**
+`exploratory_liveness_pairs` reads only the exploratory pool's own
+registration lists, so a destination-role slot — which lives in the shared
+`DataPlaneRegistry` but never in the pool's lists — cannot appear in it.
+No slot-number test, no heuristic.
+
+**The measured limitation, stated plainly.** The production daemon installs
+**no exploratory tunnels**: `ExploratoryBuildCoordinator::submit` is called
+only from the out-of-crate lanes, while the daemon submits only
+*destination* builds. So `exploratory_liveness_pairs()` returns empty in
+production today and the scheduler tracks zero pairs — it is **installed and
+inert**, not broken, and the invariant-9 gate is what makes that safe:
+nothing is torn down. Wiring an exploratory build driver into the product
+was a separate plan; **Plan 505 is that plan** (see below), and Plan 504
+adds no second build mechanism.
+
+**No advertisement and no capability change.** `router.version` stays
+`0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+inventory's advertised count stays **zero**; `Cargo.toml` and
+`Cargo.lock` are byte-identical. No new task, no new timer, no new
+listener, no new socket: the scheduler runs on the **existing** 250 ms
+product tick.
+
+### The exploratory build driver in the product composition (Plan 505, `src/exploratory_driver.rs`)
+
+Plan 504 installed the tunnel-liveness scheduler and left one thing open: the
+**population** the scheduler watches did not exist.
+`ExploratoryBuildCoordinator::submit` had **zero production callers** — every
+call site was an out-of-crate integration lane (`tests/exploratory_build_live.rs`,
+`tests/streaming_tunnel_external.rs`, `tests/netdb_tunnel_external.rs`,
+`tests/destination_tunnel_external.rs`,
+`tests/service_tunnels_application_genuine_remote_qualification.rs`) — so the
+daemon installed no exploratory tunnels, `exploratory_liveness_pairs()` returned
+empty, and the scheduler tracked **zero pairs**. The production rebuild path
+(`src/service_product.rs` → `coordinator.rebuild_exploratory(...)`) was complete
+but **unreachable**, because no pair existed to be removed.
+
+The peer-profile store was in the same state: constructed in production and
+**never fed**. `learn` (`src/netdb_participation.rs`) had one caller and it was
+inside `#[cfg(test)]`; `select_tunnel_build_peers` — Plan 491's version-gated
+selection — had no production caller at all; and the four `observe_*` calls had
+none either. The store was empty in a live router.
+
+**The mechanism was complete; only its inputs were missing.**
+`rebuild_exploratory` (`src/exploratory_build.rs`) is already a complete
+first-build driver with the peer-selection step removed — it allocates the three
+tunnel ids from the coordinator's monotonic pool, mints two distinct message
+ids, builds the `BridgeHeader::ShortTransport`, constructs the `BuildRequest`
+with the direction-appropriate role and identity, and submits. `install_established`
+already installs an exploratory build into the pool (`register_outbound_with_material`
+/ `register_inbound_with_material`), marks it established, and activates it in the
+`DataPlaneRegistry`. **One new thing was needed: a peer.**
+
+**The peer selection is Plan 491's version-gated selection.**
+`select_tunnel_build_peers` is called with `require_floodfill: false` — an
+exploratory tunnel is built toward an ordinary peer, not necessarily a
+floodfill — and the gate's refusals (unknown version, uncomparable version,
+below floor) are added to the driver's counters **by reason**. A below-floor
+peer is **refused**, never silently skipped.
+
+**The peer material is the identity key, not the SSU2 key.**
+`PeerBuildIdentityResolver` is the seam; the production resolver,
+`ProfileStorePeerResolver`, reads the peer-profile store's own validated
+records, so the selection and the resolver can never disagree about which peer
+exists. The static encryption key is
+`router_info().router_identity().public_key()` — the same derivation the
+production rebuild path uses — and **not** the SSU2 address `s` option that
+Plan 185's external lane found to be the wrong key.
+
+**There is exactly one exploratory build path.** The driver submits through the
+existing `rebuild_exploratory`, the same path the liveness rebuild uses, so the
+first build and the rebuild cannot drift apart. The driver module contains no
+second, private build path.
+
+**The outcome map is total over all fourteen `BuildCoordinatorOutcome`
+variants, and it separates a peer fault from a local condition.**
+
+| Outcome | Observation |
+| --- | --- |
+| `Installed` | answered |
+| `TimedOut` | unanswered |
+| `HopRejected` | refused |
+| `DeliveryFailed` | unreachable |
+| `InvalidReply` | misbehaving |
+| `Cancelled`, `PoolRejected`, `InvalidRegistration`, `InvalidPath`, `CoordinatorRejected` | **none** — this router's own condition |
+| the four destination-scoped variants | never attributed to the driver |
+
+The five local conditions are counted by the driver's own counters and produce
+**no** peer-profile write. Writing any of them into a peer's profile would
+blame the peer for a fault of ours and would degrade a good peer's profile
+score. The contrast — a local condition writes nothing, a genuine peer fault
+**does** — is asserted in one test, so the omission can never be a broken
+recorder. An outcome with no in-flight attempt, a wrong direction or a
+mismatched attempt id is an **orphan**: counted, and credited to nothing.
+
+**The peer-profile store is now fed in production.**
+`NetDbParticipation::learn_bootstrap_peers` learns the router's **real**
+validated peers from the bootstrap snapshot — the same population the routing
+table is populated from. The batch is the bootstrap's own bounded snapshot and
+is learned with **one** receipt, so a large NetDB cannot churn the bounded
+receipt log; the snapshot is taken under the bootstrap's lock while the batch is
+learned outside it, so the two locks are never held at once. A learned peer does
+**not** reset its restored observation state: `ProfileStore::insert` only
+re-derives the version, the capacity class and the floodfill flag for a peer it
+already knows.
+
+**The posture is off by default.** A new `[exploratory]` configuration section
+(`src/config.rs`) carries one switch, `builds`, following the `[transit]
+participation` precedent, and it is `deny_unknown_fields`, so a key that looks
+like an advertisement is refused rather than ignored. There is deliberately **no**
+count knob: the number of exploratory pairs is bounded by the coordinator's own
+pool and by Plan 504's `MAX_LIVENESS_PAIRS`, and a configuration key that could
+disagree with those ceilings would be a second source of truth.
+
+**Off by default for a concrete reason, not out of caution.** The daemon's
+transport can only dial a peer it may legally reach: `Ssu2DialTarget::new` is
+loopback-only and `Ssu2DialTarget::new_private_lan` accepts only RFC1918 IPv4.
+A public deployment's peer population is therefore **not dialable at all**, and a
+default-on driver would be a router that tries and fails. Enabling the posture
+is an explicit operator decision that this router should build exploratory
+tunnels inside the mesh it can actually reach.
+
+**No new task, no new timer, no new listener, no new socket.** The driver runs
+on the **existing** 250 ms group tick, beside Plan 504's liveness driver — the
+scheduler it feeds. The terminal outcomes reach it on **both** the expiry sweep
+and the inbound build-reply path. The counters are published through the
+existing inspection seam (`publish_exploratory_driver_counters`,
+`exploratory_driver_counters`, `exploratory_driver_counters_snapshot`); an
+unpublished or poisoned slot is a gap, never a fabricated zero. The counters
+carry counts and stable reason labels only: no peer, address, key or payload.
+
+**The feasibility artefact is not vacuous, and that is measured.** It drives a
+controlled mesh of two real SSU2 daemons against the real coordinator, profile
+store and delivery seam, and asserts that the tunnel is installed in the pool
+and the registry, that the liveness scheduler sees the pair, that the profile
+store received the observation, and that the counters moved. The negative
+control: the responder answers with the peer's **identity** encryption key,
+which is what the production derivation uses. Swapping that for the SSU2 static
+key — the shortcut the pre-existing `tests/exploratory_build_live.rs` harness
+uses on **both** sides — makes the build fail to install.
+
+**What Plan 505 does not close.** The validated store is still not refreshed
+from live NetDB lookups, so the driver's population is the bootstrap snapshot.
+Plan 497 limitation 5's **read** half stays open: the driver becomes a live
+reader of the profile store, but the routing table's only reader remains Plan
+433's never-constructed `NetDbTunnelCoordinator`. Plan 487 F3's
+destination-inbound half still needs tunnel rekeying, which the tree does not
+implement at all. **No stock-peer evidence is claimed**: whether an ordinary
+public router accepts a driver-initiated one-hop exploratory build, and whether
+it relays a liveness probe back, is **unproven**.
+
+**Superseded in part by Plan 506** (see below). The first sentence above is
+wrong in a way that mattered: the router does **not** learn peers from a NetDB
+lookup at all -- a `DatabaseSearchReply` carries peer **hashes only** and the
+production router runs **no** RouterInfo-kind lookup. The live-learned
+RouterInfos are exactly the unsolicited `DatabaseStore`s, and Plan 506
+installs the reconcile that carries them into the two stores the driver and
+the destination coordinator build with. The driver's population is therefore no
+longer the startup snapshot.
+
+**No advertisement and no capability change.** `router.version` stays
+`0.9.62`; `caps` and the published RouterInfo are unchanged; the support
+inventory's advertised count stays **zero**; `Cargo.toml` and `Cargo.lock` are
+byte-identical.
+
 ### Outbound/inbound composition roles
 
 `OutboundGatewayRole` and `LocalInboundEndpointRole` are **not** daemon types — they are
@@ -742,10 +1792,299 @@ standard I2NP envelope exactly once through `i2pr-proto`, and supports only `Dat
 `DatabaseSearchReply`, and `DeliveryStatus` bodies. Unknown tunnel ids fail closed without
 allocating role state.
 
+### SSU2 introducer role owner (Plan 490, `src/ssu2_introducer.rs`)
+
+Plan 490's daemon-side owner of the SSU2 **introducer (Bob) role**. The
+runtime owns the socket and the bounded tables; the daemon owns the policy
+and the receipts.
+
+The role is what the specification calls a NAT-traversal helper: a firewalled
+peer (Charlie) asks this router for a relay tag and publishes it, and a
+requester (Alice) that can reach this router presents that tag to name the
+target. The role owner:
+
+- **issues** the relay tag that identifies the target;
+- **admits** an inbound Relay Request: the per-source rate limit comes
+  first, then the tag is resolved to the target, then the requester's own
+  signing key (resolved from a *validated* RouterInfo through the
+  `IntroducerSignerResolver` trait) is used to verify the requester's
+  signature over the specification's preimage;
+- **answers** with a Relay Intro addressed to the target, and forwards the
+  target's Relay Response to the requester once the target's signature
+  verifies;
+- **refuses** every other path with a typed reason
+  (`Ssu2IntroducerRefusal`), counted in the receipt, leaving no state
+  behind.
+
+The dispatch order is **service first, transit second, unknown fail-closed**:
+the decoded block reaches the service owner through the daemon's live inbound
+loop (Plan 498 — see the next section); a Relay Intro belongs to the target
+(transit) role and is refused by the service owner; the runtime never surfaces
+a block it could not classify.
+
+`Ssu2DaemonHandle::next_relay_dispatched` still exists and keeps its contract,
+but it has **no production caller** in the tree. Plan 498 **supersedes** it as
+the delivery seam: the live loop reaches the role owner through
+`try_next_relay_event`. Do not read `next_relay_dispatched` as the live path.
+
+The receipt carries **counts only** — `requests_admitted`, `intros_produced`,
+`responses_forwarded`, `tags_issued`, and refusals by typed reason. It never
+carries a peer hash, an address, a tag value, a key, or a payload; the
+in-crate test asserts that.
+
+The role is **opt-in and non-advertised**: `ssu2.introducer_service` is
+available behind an explicit switch and defaults to off. When it is off the
+role does not start and the configuration status says so truthfully
+(`SSU2_INTRODUCER_DISABLED_REASON` — "available but not enabled", not the
+older and now false "unavailable in this milestone").
+
+### The relay handoff drain in the live inbound loop (Plan 498, `src/ssu2_relay_drain.rs`)
+
+Plan 490 built the role owner and the runtime's relay handoff, and recorded
+that the daemon's ordinary inbound pump never drained the handoff: a Relay
+Request that a peer really sent was decoded, authenticated, and then dropped.
+Plan 498 drains it **on the live path**, and it corrects Plan 490's
+prescription on the way.
+
+**The correction is the point.** Plan 490's finding prescribed adding the
+drain to `ServiceProduct::poll_inbound`. The daemon's own source says
+otherwise (`src/service_product.rs:5039`-5040`): *"advance runs via the daemon
+loop; poll_inbound is not on the live path"*. The live inbound pump is the
+daemon loop in `src/lib.rs`, whose `tokio::select!` awaits the SSU2 I2NP
+handoff and the NTCP2 ingress and arms the `group_tick` and `relay_tick`
+cadences. A fix confined to `poll_inbound` would have closed the finding on
+paper while a live router still dropped every relay block. **The drain is in
+the daemon loop**, in the `relay_tick` arm beside `group_tick`.
+
+**There is exactly one owner.** `NormalSsu2Owner` (`src/lib.rs:2494`-2484`) is
+either `Router(Ssu2DaemonHandle)` — no destination groups configured — or
+`Groups(Box<ServiceProduct>)`. The live loop drains through whichever holds
+the handle: `Ssu2DaemonHandle::try_next_relay_event`
+(`src/router_i2np.rs:2225`) or `ServiceProduct::try_next_relay_event`
+(`src/service_product.rs:3602``), and `NormalSsu2Owner` is itself the drain's
+`RelayEventSource` (`src/lib.rs:2581`-2567`). The product exposes the **pull
+only**; it does not own a role owner. Two owners would mean two sets of
+counters and an ambiguity about which one is authoritative.
+
+**The drain is bounded and never fails.** One pass pulls at most
+`MAX_RELAY_DRAIN_PER_PASS` (16) events — the runtime relay channel's own
+capacity (`max_inbound_relay_queue`, default 16, ceiling
+`MAX_SSU2_INBOUND_QUEUE_CEILING` = 1024) — and stops at the first empty pull.
+A refusal, a resolver miss, and a block that could not be carried are
+**counted outcomes, not errors**: `RelayDrainOutcome` carries `drained`,
+`admitted`, `refused`, `carried`, and `carriage_refusals` (a
+`BTreeMap<&'static str, u64>` keyed by the runtime's stable reason labels),
+and carries counts only. The drain never logs a peer hash, a key, a tag, or a
+payload.
+
+**The resolver answers only from the validated store.** `NetDbSignerResolver`
+(`src/ssu2_introducer.rs:246-265`) implements `IntroducerSignerResolver` over
+the shared `Arc<Mutex<Bootstrap>>` and answers through
+`Bootstrap::validated_signing_key` (`src/bootstrap.rs:308`-322`), a narrow
+read-only accessor over the NetDB's validated `RouterInfoStore`. A peer the
+NetDB does not hold yields `None`, and the role owner refuses the block with
+`UnknownRequester` rather than guessing; a poisoned bootstrap lock is
+fail-closed the same way. The bootstrap's lock is a `std::sync::Mutex` and the
+critical section is one map lookup that never awaits.
+
+**The role owner the live loop constructs is the one above.** It is built only
+when `ssu2.introducer_service` is on (`src/lib.rs:3965-4000`): the resolver
+first, then `Ssu2IntroducerService::new(...)` over the runtime service handle
+and the daemon's own router hash. The same key is **default off**
+(`src/config.rs:1402-1404`) and is refused at parse time unless
+`ssu2.enabled = true` (`src/config.rs:3353-3358`).
+
+**A produced block is carried, not counted (Plan 499).** Plan 498's drain could
+only *pull*: it received a relay block the role owner had produced and had no
+way to put it on a session, so it counted it as `awaiting_carriage` and
+dropped it. Plan 490's **Medium #2** — the runtime's missing outbound relay
+queueing API — is now **closed** on the runtime side
+(`crates/i2pr-runtime/src/ssu2_runtime.rs:2107`, `:2128`, `:2139`), and the
+daemon owns the matching seam.
+
+The drain now carries **two** seams:
+
+- `RelayEventSource` — the **pull** seam, unchanged: where the relay events
+  come from (`src/ssu2_relay_drain.rs:57-60`).
+- `RelayCarriage` — the seam that puts a **produced** block on the wire
+  (`src/ssu2_relay_drain.rs:74-89`). It is told **which peer** the block is
+  for, because the block itself carries no destination — the session is the
+  destination. It returns a typed refusal. The trait's own doc comment calls
+  it a "pull-shaped seam beside `RelayEventSource`": it exists so the drain's
+  behaviour can be exercised without binding a socket, and it cannot enqueue
+  into the runtime's relay channel or weaken the role owner's verification,
+  because it runs only after the role owner admitted and verified the block.
+
+`RuntimeRelayCarriage` (`src/ssu2_relay_drain.rs:95-130`) is the production
+implementation. It holds the **same runtime service handle** that owns the
+live sessions — the one the role owner already holds — and forwards to the
+runtime's four peer-facing carriage methods, which resolve the peer to
+**exactly one** live session and queue the block on that session's bounded
+control queue. The carriage adds **no** new send path, **no** new socket and
+**no** new authority: it is the runtime's own bounded control queue, reached
+through the runtime's own API.
+
+The live inbound loop constructs the carriage and hands it to the drain
+(`src/lib.rs:4419`-4377`), and the log line now reports `carried` and
+`carriage_refused` instead of `awaiting_carriage` (`src/lib.rs:5189`-5011`).
+
+**What the carriage does not do.** It does not publish anything. The
+transport's own documentation says the target "asks the introducer for a tag
+**and publishes it**" (`crates/i2pr-transport-ssu2/src/relay.rs:789-793`);
+**publishing the tag is a NetDB/RouterInfo mechanism, not an SSU2 relay-block
+mechanism**, and Plan 499 publishes nothing. The tag is asked for and
+answered over the wire; nothing about it reaches a RouterInfo.
+
+**The daemon's anti-amplification check never fires on this path.** The role
+owner passes the constant `MAX_INTRODUCER_REQUEST_BYTES` (128,
+`src/ssu2_introducer.rs:60`, `:390`) rather than the real request length, so
+the transport's `request_bytes * 3 < 128` test
+(`crates/i2pr-transport-ssu2/src/relay.rs:864`) is **always** satisfied —
+`128 * 3 = 384`. This is **pre-existing** behaviour, not something Plan 499
+added or fixed; it is recorded here as a **known limitation**, and the
+transport's amplification budget is therefore **not** enforced by the daemon
+path.
+
+**The role owner refuses the tag event.** `Ssu2RelayEvent::Tag(_)` reaches
+the role owner on the same handoff as an `Intro`, and the owner refuses it as
+`NotOurRole` (`src/ssu2_introducer.rs:346-349`) — a tag the runtime observed
+is not the role owner's to act on, exactly as an `Intro` is
+(`src/ssu2_introducer.rs:345`).
+
+**What the evidence proves, and what it does not.** The drain's *behaviour* is
+proved in-process and socket-free by
+`crates/i2pr-daemon/tests/ssu2_introducer_handoff.rs`: the **discriminator** (a
+relay block reaches the role owner and the receipt moves 0→1), the **control**
+(an empty handoff delivers nothing and counts nothing), the **refusal row**
+(an unresolvable requester is refused and counted by reason, and no tracked
+state is left behind), the **bound row** (one pass stops at the per-pass
+bound), and the two **Plan 499 carriage rows** (the drain carries the
+produced intro to the tag's target, and a carriage refusal is counted by
+reason). The *live wiring* is proved by a **static guard** in the same file:
+the daemon's live loop calls the drain, the live owner is the drain's event
+source, and the live role owner answers requester keys from the validated
+store.
+
+Plan 499 adds the first **live** evidence, in
+`crates/i2pr-daemon/tests/ssu2_introducer_live_mesh.rs` — but it is evidence
+about **this router against other live routers**, not about a stock peer. The
+role owner in that mesh is exercised against a **test signer resolver**
+(`MeshSigners`), **not** the production `NetDbSignerResolver`; the production
+resolver needs a `Bootstrap` holding validated RouterInfos and has its own
+unit rows in `src/ssu2_introducer.rs`. There is still **no** stock-peer or
+public-network evidence, and the mesh needed **no external environment**.
+
+The role stays **opt-in and non-advertised**: `ssu2.introducer_service`
+defaults to off, `ssu2.advertise` stays refused, `router.version` stays
+`0.9.62`, and `specs/support.toml` is unchanged.
+
+### The live three-party UDP mesh (Plan 499, `tests/ssu2_introducer_live_mesh.rs`)
+
+Plan 499's mesh is the first evidence that the introducer role **completes on
+the wire**. Three **live routers over real loopback UDP** — Alice (the
+requester), Bob (**this router**, acting as the introducer) and Charlie (the
+target):
+
+1. **Charlie asks Bob for a tag.** Charlie sends a `RelayTagRequest` on the
+   live Bob↔Charlie session. Bob's runtime observes it, checks the
+   introducer gate, mints a nonzero tag from the OS CSPRNG, and binds it to
+   **Charlie's** router hash — the hash of the session peer, not anything
+   Charlie supplied. Bob answers with a `RelayTag` **on the same session**.
+2. **Alice presents the tag.** Alice sends a `RelayRequest` carrying the tag.
+   Bob's role owner resolves the tag to its owner (Charlie), verifies
+   **Alice's** signature against the resolver's key, and produces a Relay
+   Intro.
+3. **Bob carries the intro to Charlie.** The daemon's drain now *carries* the
+   produced block instead of counting it, and the runtime queues it on the
+   live Bob↔Charlie session. Charlie receives it, checks the nonce against
+   the request it made, and signs a Relay Response.
+4. **Bob carries the response to Alice.** Bob verifies the response — the
+   **nonce must equal the request's nonce** and the **sender must be the
+   target** — and the drain carries it onto the live Bob↔Alice session.
+5. **Alice verifies the response** under **Charlie's public key** over the
+   transport's exact preimage.
+
+Two further rows pin the boundaries. With the introducer **off**, Bob
+observes the request, issues **no** tag, and the requester observes none. And
+with **two peers each asking Bob for a tag** (the test names them Charlie and
+Dave), each issued tag resolves to **that peer's own** router hash and to
+**no other**, and an unknown tag resolves to nothing at all.
+
+**What the mesh does not prove.** It is three instances of this router. It is
+**not** a stock-peer lane: a lane against the pinned i2pd needs the Plan 493
+topology, which does not exist yet. It exercises the role owner against a
+**test** signer resolver, not the production `NetDbSignerResolver`. It
+publishes **nothing**: the transport's documentation says the target "asks
+the introducer for a tag **and publishes it**"
+(`crates/i2pr-transport-ssu2/src/relay.rs:789-793`), and publishing a tag in
+the target's RouterInfo is a **NetDB/RouterInfo mechanism**, not an SSU2
+relay-block mechanism — Plan 499 delivers the ask and the answer and
+publishes **nothing**.
+
+**The protocol facts, stated precisely.** The relay tag names the
+**target**, not the requester. The requester's own router hash is **not** in
+the request's signature preimage — `relay_request_preimage` binds **Bob's**
+and **Charlie's** hashes
+(`crates/i2pr-transport-ssu2/src/relay.rs:144-166`), and the requester's
+identity comes from the session and only selects **which key verifies** the
+signature. (The *Intro* block does carry the requester's hash —
+`intro.alice_hash()` is Alice's — but that is Bob's **output**, not a field
+Alice signed.) The transport's own parameter is *named* `alice_hash` while
+carrying the **tag owner's** hash in this path; the comment above the
+binding check (`crates/i2pr-transport-ssu2/src/relay.rs:877`) describes the
+parameter's **name**, not its
+binding, and is misleading here. See
+[i2pr-transport-ssu2](i2pr-transport-ssu2.md) for the full reading.
+
+### API-version floors and peer eligibility (Plan 491)
+
+Plan 491 gives the daemon two **typed refusal** points and the receipts that
+record them.
+
+**The tunnel-build enforcement point** (`src/destination_peers.rs`).
+`DestinationPeerCandidate::from_validated` now returns
+`Result<Self, CandidateRefusal>` instead of an `Option`. The refusal
+vocabulary is closed: `UnknownVersion` (the peer published no API version),
+`UncomparableVersion` (it published one that cannot be compared),
+`BelowVersionFloor` (it published one below the tunnel-build floor), and
+`Unqualified` (it lacks the build metadata this profile requires). The
+version decision is taken **before** any other fact about the record, so a
+peer that cannot be compared is refused without being inspected further.
+
+`CandidateProjectionSummary` counts each refusal by reason.
+`select_projected_destination_path` turns an empty projection into the
+*reason* it is empty: when the floor refused every scanned record the
+terminal is `DestinationSelectionError::NoEligibleVersionPeers`, not a bare
+`NoCandidates`. The build fails closed either way — the selector never loops
+looking for a peer that is not allowed.
+
+**The DSM enforcement point** (`src/netdb_tunnels.rs`).
+`NetDbTunnelCoordinator::begin_publication` refuses a floodfill that does
+not satisfy the DSM minimum-version floor, with
+`NetDbTunnelError::FloodfillRefusedByVersionFloor(reason)`; the reason is
+one of the stable labels `unknown-version`, `uncomparable-version`, or
+`below-floor`. The refusal is counted in
+`NetDbTunnelCounters::publications_refused_by_version_floor`, and the
+publication *target* selection (`nearest_eligible_floodfills`) excludes the
+same peers and reports the same counts.
+
+**The receipts** (`src/netdb_participation.rs`).
+`VersionEligibilityReceipt` is a separate, bounded log from the Plan 488
+participation receipts, because it describes a *decision* rather than the
+store's observed state. It carries the gate, the examined population, the
+accepted count, the refusal counts by reason, and a digest over those
+counts — and **no peer identity of any kind**. The two driver methods
+`select_tunnel_build_peers` and `select_dsm_targets` make the decisions and
+record them, so a refusal is never a silent skip.
+
+The driver is still **not** wired into the router's tunnel-building loop;
+Plan 488's gap is unchanged. The live product path reaches the same floors
+through the two enforcement points above, which refuse at the point of use.
+
 ### `router_i2np.rs` — the controlled `ssu2-router` service
 
 `Ssu2DaemonService` runs under `SSU2_SERVICE_NAME = "ssu2-router"` supervision
-(`src/lib.rs:597`) and is the **only** inbound entry point for authenticated router I2NP.
+(`src/lib.rs:1506``) and is the **only** inbound entry point for authenticated router I2NP.
 `dispatch_router_i2np(inbound: &i2pr_runtime::Ssu2InboundI2np, now_ms: u64)`
 (`src/router_i2np.rs:354`) is the single dispatch seam; it takes its input from the runtime
 SSU2 session owner, so an inbound body only reaches it after the runtime has authenticated
@@ -754,12 +2093,15 @@ the peer session. The dispatcher returns one of exactly four `RouterI2npOutcome`
 `RouterControl { .. }` — or `Unsupported { .. }` for a body kind it will not touch, and
 fails closed on `RouterI2npError::Empty` / `TooLarge` before any decode
 (`src/router_i2np.rs:471`, `474`). `dispatch_router_i2np_with_transit_bodies` (387) is the
-same seam plus the bounded `TransitInboundBodies` extraction, and
-`controlled_transit_disabled_probe` gates the transit-shaped path. `RouterDeliveryService`
+same seam plus the bounded `TransitInboundBodies` extraction.
+`controlled_transit_disabled_probe` is the no-owner fallback the composition's
+`dispatch_transit_inbound` uses when the operator did not opt in; the
+installed owner is consulted first, and the two can never run beside each
+other (Plan 502). `RouterDeliveryService`
 is the narrow outbound seam over the existing `send_i2np` path.
 
-The service **is** registered in the production graph: `src/lib.rs:1104` constructs
-`Ssu2DaemonService::new(&ssu2_config, identity)` when `[ssu2] enabled = true`, and the whole
+The service **is** registered in the production graph: `src/lib.rs:3905` constructs
+`Ssu2DaemonService::new_with_bandwidth(&ssu2_config, identity, bandwidth)` when `[ssu2] enabled = true`, and the whole
 block fails closed (`ServiceResult::Failed` with `InvalidState`) when the SSU2 service has no
 loopback bind. Activation is therefore opt-in through configuration, **default off**
 (`default_ssu2_enabled() == false`), and publication stays pq-free and non-advertised.
@@ -778,6 +2120,515 @@ controlled qualification lane. The honest product baseline for the three Proposa
 transit selectors is `0` / `0` / `0.0`. Plan 340 closed ownership of
 `total.transit.bytes`, `bw.transit.15s`, and `tunnels.shareratio` as a
 participation-posture change, not as missing snapshots.
+
+### Exploratory build posture (Plan 505, `src/config.rs`)
+
+Plan 505 added the **operator-opted posture** that says whether this router
+builds its own exploratory tunnels. It is one configuration section and one
+switch:
+
+```text
+[exploratory]
+builds = false                 # the single switch; OFF by default
+```
+
+`config.rs` owns the surface (`ExploratoryConfig`, `RawExploratoryConfig` with
+`deny_unknown_fields`). The section is strict, so a key that looks like an
+advertisement — `advertise = true` — is **refused** at parse time rather than
+ignored.
+
+**There is deliberately no count knob.** The number of exploratory pairs the
+router maintains is bounded by the coordinator's own pool and by Plan 504's
+`MAX_LIVENESS_PAIRS`. A configuration key that could disagree with those
+ceilings would be a second source of truth rather than a limit, so a
+`max_pairs` key is refused by the parser and a test asserts that refusal.
+
+**Off by default for a concrete reason, not out of caution.** The daemon's
+transport can only dial a peer it may legally reach: `Ssu2DialTarget::new` is
+loopback-only and `Ssu2DialTarget::new_private_lan` accepts only RFC1918 IPv4.
+A public deployment's peer population is therefore **not dialable at all**, and
+a default-on driver would be a router that tries and fails. Enabling the
+posture is an explicit operator decision that this router should build
+exploratory tunnels inside the mesh it can actually reach.
+
+When the posture is off, the composition builds **no** driver at all, the
+product owns none, and the tick's exploratory step costs nothing — a router that
+has never set the key behaves exactly as it does today.
+
+### The peer-knowledge reconcile (Plan 506, `src/peer_reconcile.rs`)
+
+Plan 505 closed the exploratory build driver and left the **population** it
+draws from open. Plan 506 closes it.
+
+The router accepts a peer's RouterInfo on a **live** session — three
+production sites ingest an authenticated unsolicited `DatabaseStore` into the
+bootstrap NetDB — but the two stores the router actually **builds with** were
+seeded **once at startup** and never again. `insert_validated_router_info` had
+exactly one production caller, the startup seed at
+`crates/i2pr-daemon/src/service_product.rs`, and `learn_bootstrap_peers` had
+exactly one production caller, also at startup. A peer learned after startup
+was invisible to both, so the population never grew.
+
+**The framing is narrower than it looks, and Plan 506 corrected it.** The
+router does **not** learn peers from a NetDB lookup: a `DatabaseStore` carries
+exactly one record, a `DatabaseSearchReply` carries peer **hashes only**, and
+the production router runs **no** RouterInfo-kind lookup — the only
+`begin_lookup` caller is Plan 433's never-constructed `NetDbTunnelCoordinator`.
+The live-learned RouterInfos are exactly the unsolicited `DatabaseStore`s, so
+this surface is the path that carries them into the build-with stores. Adding a
+RouterInfo-kind lookup would be a protocol-composition change with its own
+plan-of-record.
+
+**One bounded operation, owned by the product.** `PeerReconcile::run` is a
+**step**, not a task: it holds no timer, owns no cancellation, and is driven
+by the product's existing tick beside Plan 505's exploratory driver.
+
+1. **Snapshot** the bootstrap's validated RouterInfos under the bootstrap's
+   lock, and **release** that lock.
+2. **Insert** each record into the destination store through the canonical
+   `insert_validated_router_info`.
+3. **Learn** the same records into the peer-profile store through the
+   canonical `learn_all`.
+
+One snapshot, one cadence, no skew between the two stores.
+
+**The three locks are taken in one order and are never nested.** The
+bootstrap's lock is released before the destination coordinator's lock is
+taken, and the destination coordinator's lock is released before the
+peer-profile store's lock is taken. The peer-profile closure never awaits, so
+no lock is held across an await. `crates/i2pr-daemon/tests/peer_reconcile_boundary.rs`
+asserts this **structurally**: the source order of the three steps is the
+release order, and each step's body may not name another step's lock.
+
+**Every outcome is counted by reason, and a refusal is never fatal.** A
+capacity refusal, a conflict and a stale replacement are counted and the batch
+continues — deliberately unlike the startup seed, which treats a capacity
+refusal as fatal. One bad record never aborts the reconcile.
+
+**The reconcile writes peer records, never a selection.** Plan 491's version
+gate stays at **selection**, so a refreshed peer below the floor is still
+refused there and counted. The reconcile feeds the gate; it does not weaken it.
+
+**The cadence is the existing NetDB participation maintenance period.** The
+composition root copies `config.netdb.participation_maintenance_period_ms` out
+of the configuration and hands it to the product. There is **no second
+configuration knob**: `config.rs` is untouched and no new key is added. The
+reconcile's own bound is the same range the configuration parser already
+enforces, so the reconcile's refusal cannot fire on a configured router.
+
+**A real defect was fixed, not just recorded.** The unsolicited store was
+ingested **twice** for every message the router did not serve as a floodfill:
+the second site's condition — a `DatabaseStore` body with a bootstrap store —
+was a strict **subset** of the first site's, so the second write re-validated
+and re-applied the record and produced `InsertOutcome::Idempotent`. The two
+remaining ingest sites sit in **mutually exclusive** branches — the
+`!ssu2_config.enabled` branch and the SSU2-enabled path — so exactly one can
+run for any message. The static guard asserts that structurally: one ingest
+inside the branch, one outside it, and no more.
+
+**The counters are published through the inspection seam.** The product
+refreshes a counter cell on its tick and the composition root publishes the
+same `Arc`. The counters carry counts and stable reason labels only — no peer,
+address, key or payload — and an unpublished or poisoned slot is a **gap**,
+never a fabricated zero.
+
+**The feasibility artefact is not vacuous, and that is measured.** It drives
+the **real** `Bootstrap`, the **real** `DestinationTunnelCoordinator` and the
+**real** `PeerParticipationDriver`, and the peer arrives through the production
+unsolicited-store path. Removing the `learn_all` call fails four tests, the
+first with "the peer must be selectable after the reconcile"; removing the
+`insert_validated_router_info` call fails five, the first with "the peer must
+be insertable into the destination store by the reconcile"; raising the
+below-floor peer's published version to the floor fails the refusal assertion.
+
+**The selection set is recorded as a finding.** The destination projection is
+a hash-ordered **256-prefix**
+(`crates/i2pr-daemon/src/destination_peers.rs`), so adding peers does not
+merely add candidates — it can change **which** peers the build path sees.
+Changing the ordering is out of scope; recording the behaviour is not.
+
+**What Plan 506 does not close.** A RouterInfo-kind NetDB lookup — the router
+performs none in production. Plan 497 limitation 5's **read** half: the
+routing table's only reader remains Plan 433's never-constructed
+`NetDbTunnelCoordinator`. The destination store's **capacity policy** — it
+refuses at capacity, and this plan adds no eviction. Plan 487 F3's
+destination-inbound half still needs tunnel rekeying, which the tree does not
+implement at all. Plan 491 F2 and F4, Plan 490 Medium #3, Plan 502 M1 and
+Plan 503's lookup-target API-version gate all stay open. **No stock-peer
+evidence is claimed**: whether an ordinary public router sends unsolicited
+stores this router will accept is **unproven**.
+
+### The lookup path's API-version posture (Plan 509, `src/destination_tunnels.rs`)
+
+**The decision: the lookup target is NOT version-gated.** The router asks
+the floodfills its own routing policy selects, and every answer is validated
+by the router before it is trusted.
+
+The decision is a **product decision**, and Plan 503 recorded it as an open
+finding because it changes which floodfills the router can ask at all. The
+reasons it is the right decision:
+
+- **No floor is derivable.** The specification's API-version table attaches
+  exactly two duties to the `0.9.62` row — *minimum peers will build tunnels
+  through* and *minimum floodfill peers will send DSM to*. A `DatabaseLookup`
+  is neither. `i2pr_proto::MinimumPeerObligation` carries only
+  `constrains_tunnel_peers` and `constrains_dsm_targets`, and
+  `i2pr_proto::VersionFloors` carries only `min_peer_for_tunnel_build` and
+  `min_floodfill_for_dsm`. A lookup floor would have to be **invented**, and
+  a floor is derived, never hand-maintained.
+- **The gate vocabulary already says so.** `i2pr_netdb::VersionGate` has
+  exactly two variants — `TunnelBuildPeer` and `DsmTarget` — because the
+  specification imposes exactly two duties. A lookup gate cannot be expressed
+  in the tree's own vocabulary without a third duty that does not exist.
+- **The two floors encode peer-side duties that do not transfer.** Each floor
+  says a peer **will not** do something, so the router's refusal is exactly
+  *do not ask a peer for something it will not do*. The specification imposes
+  no such duty for a lookup.
+- **The responder's version buys no safety.** The answer is a `DatabaseStore`
+  the router validates itself (`handle_database_store_lease_set2` runs it
+  through `ValidatedLeaseSet2::from_lease_set2`), so a below-floor peer that
+  answers correctly is answered to and one that answers incorrectly is
+  refused by the validation.
+- **The rotation absorbs an unhelpful candidate.** The state machine excludes
+  already-queried peers and re-selects from the store, so a silent candidate
+  costs one round trip and the lookup moves on.
+- **The two references disagree.** i2pd refuses to *file* a floodfill below
+  `0.9.62`; Java's `0.9.62` is a peer-exclusion floor and its floodfill
+  predicate has no version floor at all. Neither gates a lookup, so the
+  router does not pick a side.
+
+**The selection sites.** The lookup path's selections are the **ungated**
+nearest-floodfill selection: `src/destination_tunnels.rs`'s
+`begin_lease_lookup_inner`, and the state machine's `start`,
+`start_with_preferred` and `advance_active` in `i2pr-netdb`'s
+`lookup_engine.rs`. The version-gated selection appears only on the two DSM
+paths, which Plan 503 put there.
+
+**The guard.** `crates/i2pr-daemon/tests/lookup_target_version_boundary.rs`
+makes the decision structural, and
+`crates/i2pr-netdb/tests/lookup_target_version_decision.rs` proves it.
+
+### The comparator's component ceiling (Plan 511)
+
+The I2PControl and NetDb eligibility gates refuse a peer whose published
+`router.version` cannot be compared. The comparator's component bound is
+**derived** from the specification's API-version table's widest row, which
+`i2pr-proto` holds as data (`SPECIFICATION_WIDEST_VERSION_ROW`), so a wider
+row in the specification's table widens the comparator by construction rather
+than leaving a version uncomparable behind a literal. The comparator's
+ordering stays **exact** — a version it accepts is stored in full — and the
+refusal stays **typed** (`UncomparableVersion`), **counted** by reason
+(`uncomparable-version`), and **fail-closed**: it can only exclude a peer
+that both pinned references would admit, never admit one below a floor. The
+references' own component handling, derived from their pinned source, is in
+`specs/QUALIFICATION-GATES.md` §10.
+
+### The managed-tunnel staging path's reason classification (Plan 510, `src/i2pcontrol_tunnels.rs`)
+
+Plan 491's F4 was an intermittent managed-tunnel staging failure that
+never reproduced again, and it was undiagnosable: `static_manager_reason`
+collapsed **every** `ServiceTunnelError::InvalidConfig` into the single
+label *"manager configuration rejected"*. Plan 510 makes the rejection
+name its class and puts the path under a load-sensitive lane.
+
+**The classification.** The daemon's `InvalidConfig` detail is mapped to a
+**value-free class** through `MANAGER_CONFIG_CLASSES`, a pinned list of
+forty (marker, class) pairs.
+
+- The **marker** is a stable phrase that appears *inside* the detail. The
+  service id is embedded at the front of most messages — *"canonical
+  use_ssl requires a daemon TLS policy"* — so a prefix match would have to
+  know the id, and a class that depends on the id is not a class. The
+  marker carries no value: it is a constant phrase in the daemon's own
+  error construction.
+- The **class** is a short label of letters and spaces: *"server TLS policy
+  missing"*, *"candidate bind collision"*, *"destination registry
+  poisoned"*. It never names an id, a socket, a port, a key or a payload.
+- The order matters: a longer marker that *contains* a shorter one comes
+  first, so the more specific class wins. The guard asserts that no marker
+  is shadowed by an earlier one.
+- The mapping is **total**. A detail that matches no marker keeps
+  `MANAGER_CONFIG_GENERIC` — today's label, unchanged — so a new rejection
+  can never make the operator's view worse, and a new marker can be added
+  deliberately with its own guard entry.
+- **No value can reach the wire.** `manager_config_class` and
+  `static_manager_reason` both return `&'static str`, so the type system
+  forbids a detail from escaping. The reason template is fixed:
+  `runtime transition failed: {reason}` — a class plus a prefix, nothing
+  else.
+
+**The load lane.** `crates/i2pr-daemon/tests/i2pcontrol_tunnels_load.rs`
+drives eight **concurrent** managed-tunnel creates against one real daemon,
+each with its own name, loopback port and target destination, and each
+generating a destination identity, building a lease set and binding a
+listener. The load is real work, never a sleep, and every wait is an
+explicit bounded deadline. The same lane exercises the **reject** path — a
+server kind with `UseSSL` and no daemon TLS policy, refused while the
+shared manager stages the runtime — and asserts that the reason names a
+class and carries no value, and that the shared manager still stages a
+runtime afterwards.
+
+**The guard.** `crates/i2pr-daemon/tests/managed_tunnel_reason_boundary.rs`
+pins the table, the classification's totality, the agreement between the
+pinned table and the production function, the value-freeness of every
+class, the liveness of every marker in `src/service_tunnels.rs`, the
+`&'static str` signatures, the fixed reason template, and the lane's
+boundedness, concurrency and freedom from sleeps. Every rule carries an
+inverted probe.
+
+### The transit creator-correlation retention window (Plan 508, `src/transit_owner.rs`)
+
+Plan 502 closed the **population** the transit owner must bypass; Plan 508
+closes its **shelf life**.
+
+**The gap.** The transit owner's `creator_builds`, `creator_data` and
+`creator_gateways` facts were `BTreeSet`s with only `insert`, and the
+production wiring installs them on **every** pump tick, so each build the
+router performs left one entry behind for ever. The code's own comment
+said so: *the number of facts is bounded by the coordinator's
+pending-build and tunnel-retention ceilings times the number of builds
+the router performs* — a bound **per build**, not over time. Plan 502
+recorded it as Finding M1 and deferred the fix as *a protocol decision*.
+
+**The decision, made on the record.** A creator-correlated fact is
+installed while the coordinator's build is **pending**; the coordinator's
+own memory of that build's identifiers starts when the build is
+**retired**. The window is therefore the build deadline plus the
+coordinator's own longest identifier retention —
+`BUILD_DEADLINE_MS + BUILD_TUNNEL_ID_RETENTION_MS`, 46 minutes — derived
+through a constant from bounds the tree already enforces. There is **one**
+source of truth and **no new configuration key**.
+
+**The expiry is checked at use time.** That is the **safe** direction: an
+expired fact is declined, and a live one never is, so the router's own
+traffic is never claimed as transit work — the invariant the facts exist
+for. The **sweep** rides the pump tick that already installs the facts,
+so the owner gains no second timer and no second task.
+
+**Every comparison rounds in the safe direction.** Two of the four use
+sites (`dispatch_router_garlic` and `dispatch_build_body`) carry seconds
+and two (`handle_tunnel_data_inner` and `handle_gateway_inner`) carry
+milliseconds. The window is stored in seconds with a **ceiling** at
+install time and a **floor** at comparison time, so a fact is never
+declined before it has expired.
+
+**The expiry is owned by one wrapper.** The three fact sets are held by
+a `CreatorFacts<K>` wrapper whose membership test is **clock-aware**, so a
+use site cannot reach a fact without reaching its expiry: the comparison
+lives in exactly one place, and the use sites call `contains` or
+`contains_ms` rather than re-implementing the test. The wrapper also owns
+the millisecond-to-second floor, so the two use sites that hold
+milliseconds cannot round in the unsafe direction by accident.
+
+**The wrapper is spelled `contains` for a reason.** Plan 492's
+dispatch-order guard anchors on the literal `creator_builds.contains`
+inside `fn dispatch_build_body`, so that guard and the shape of the
+creator-correlation check are coupled in the source. The first Plan 508
+implementation replaced the check with a raw map lookup and broke that
+anchor; the wrapper keeps the literal, so **Plan 492's guard is left
+byte-identical** and stays green. Plan 508's own guard asserts the same
+anchor (rule 11), so a change that would break Plan 492's guard is
+reported by Plan 508's guard first, with the reason named.
+
+**The coordinator's own fact set is untouched.** It was already bounded
+and already expired; only the owner's **copy** was unbounded.
+
+**The controls are not vacuous, and that is measured.** Four mutations of
+the real tree, each applied, run against the real lanes, and reverted: a
+use site that stops consulting the expiry, a sweep that compares against
+nothing, a window that collapses to zero, and an install that drops the
+expiry. They fail six, eleven, eleven and eight tests respectively, and
+the tree was restored byte-for-byte after each. Two of them were found
+to be weaker than they looked and were fixed — see the closure record.
+
+**The closing floor found a real regression, and it was fixed in the
+design rather than in another plan's guard.** The first implementation
+replaced the creator-correlation check with a raw map lookup, which
+removed the literal Plan 492's dispatch-order guard anchors on, and the
+floor failed on Plan 492's guard. Two fixes were available: rewrite
+Plan 492's anchor, or make the replacement keep the anchor. The second
+was chosen, because another plan's guard is not this plan's to edit.
+
+**A documentation drift is recorded, not fixed.** The module table's
+per-file line counts above are stale for **33** of the 63 rows that carry
+one. Plan 508 measured 36, corrected the three it changed, and left the
+rest alone.
+
+### The NetDB retention policy (Plan 507, `src/peer_reconcile.rs`)
+
+Plan 506 closed the **population** the router learns. Plan 507 closes the
+**shelf life** of what it learned.
+
+**The gap.** `RouterInfoStore::prune(now, max_age_ms)` -- the tree's own
+explicit prune, the one Plan 103 §3.4 preferred over silent eviction -- had
+**exactly one caller**: its own unit test at
+`crates/i2pr-netdb/src/store.rs`. No production path pruned. The store
+**refuses** at its quota and **never evicts**, so a NetDB that filled up
+refused every new peer, permanently, and kept records the router's own
+validator would refuse to accept today: the router refused a RouterInfo
+older than `DEFAULT_MAX_AGE` (24 h) at validation and then retained one
+indefinitely. The acceptance rule and the retention rule disagreed.
+
+**The retention window is the router's own acceptance window.**
+`peer_reconcile::RETENTION_WINDOW_MS` is derived from
+`i2pr_netdb::ValidationPolicy::default_const().max_age` through a `const
+fn`, so the router retains exactly what it accepts and the constant cannot
+drift from the policy without a compile error. A second value would be a
+second source of truth, which is the defect this plan removes. There is
+**no new configuration key**: `config.rs` is untouched, and the static guard
+refuses a `retention` or `max_age` key there.
+
+**The prune rides the reconcile's existing cadence.** It is folded into
+Plan 506's `PeerReconcile::run`, so the prune and the reconcile can never
+drift apart in time. The router gains no second knob, no second task and no
+second timer.
+
+**The order is prune the bootstrap, prune the destination store, snapshot,
+insert, learn.** The prune runs **before** the reconcile's snapshot, so a
+record the prune removed is never carried into the destination store. The
+prune calls the tree's own `RouterInfoStore::prune` through a bounded
+method on `Bootstrap` and on `DestinationTunnelCoordinator`;
+**`i2pr-netdb` is not changed** -- the plan adds a *caller*, not a
+mechanism.
+
+**The locks are one at a time and never nested.** The bootstrap's lock is
+taken and released, then the destination coordinator's lock is tried and
+released, and the step takes **no await at all**, so no lock is ever held
+across an await. The destination store's lock is **tried, never waited
+for**: a store another task is using is left alone for that pass, the
+condition is **counted** under the stable reason label `prune-unavailable`,
+and the reconcile still runs. The store turns over on the next pass.
+
+**Every prune is counted.** `pruned-bootstrap`, `pruned-destination` and
+`prune-unavailable` carry counts and stable reason labels only -- no peer,
+address, key or payload -- and they ride the **same** inspection seam Plan
+506 established, so an unpublished or poisoned slot stays a **gap**, never a
+fabricated zero.
+
+**Three things the prune deliberately does not do.** It does not prune the
+**peer-profile store**, which has its own eviction policy and self-corrects
+through the observation tiers. It does not reach the router's **own
+RouterInfo**, which lives beside the store rather than inside it. And it
+does not **select**: it removes peer *records*, so Plan 491's version gate
+stays at selection.
+
+**The controls are not vacuous, and that is measured.** Four mutations of
+the real tree, each applied, run against the real lanes, and reverted:
+removing the prune call from `fn run` fails nine tests; moving the prune
+call after the reconcile's snapshot fails seven; collapsing the retention
+window to zero fails seven; and dropping the destination-store prune count
+fails five. The tree was restored byte-for-byte after each control. The
+WP1 feasibility artefact carries two more controls of its own, recorded in
+its module comment.
+
+**The consequence of the policy is recorded, not designed away.** Pruning a
+stale floodfill can leave the router with no lookup target. Protecting
+floodfills would mean retaining records the router would refuse to accept
+-- the exact inconsistency this plan removes.
+
+**What Plan 507 does not close.** The destination store's **quota values**
+are unchanged (4 096 records and 4 MiB by default); the plan changes what
+happens *at* the quota, not the quota. The **lookup-target API-version
+gate** (Plan 503) stays open: the specification's table constrains neither a
+lookup target nor a DSM target beyond the two gates already in place, so
+the floor there is a product decision and not a derived one. Plan 491 F2 and
+F4, Plan 490 Medium #3, Plan 502 M1 and Plan 487 F3's destination-inbound
+half stay open. **No stock-peer evidence is claimed.**
+
+**A documentation drift is recorded, not fixed.** The module table's
+per-file line counts above are stale for **36** of the 63 rows that carry
+one. Plan 507 measured 40 stale rows, corrected the four it changed, and
+left the rest alone: the drift is a separate concern with its own
+plan-of-record, and correcting thirty-six unrelated rows here would bury
+the change.
+
+### Transit participation posture (Plan 492, `src/transit_participation.rs`)
+
+Plan 492 added the **operator-opted posture** that the M11 transit machinery
+had no answer for. The transit state machine and the transit ingress owner
+were already closed surfaces; what was missing was a policy that says *whether*
+this router relays other routers' tunnel traffic, *how much*, and *for how
+long*.
+
+The posture is one configuration section and one owner:
+
+```text
+[transit]
+participation = false          # the single switch; OFF by default
+share_limit = 25               # percent of the enforced share, 1..=100
+participating_tunnels = 4      # 1..=MAX_TRANSIT_PARTICIPATING_TUNNELS
+peer_participation_cap = 2      # 1..=MAX_TRANSIT_PEER_PARTICIPATION_CAP
+```
+
+`config.rs` owns the surface (`TransitConfig`, `RawTransitConfig` with
+`deny_unknown_fields`) and the named bounds
+(`MAX_TRANSIT_SHARE_LIMIT_PERCENT`, `MAX_TRANSIT_PARTICIPATING_TUNNELS`,
+`MAX_TRANSIT_PEER_PARTICIPATION_CAP`). `normalize_transit` rejects an
+out-of-range limit, a per-peer cap larger than the router-wide count, and an
+opt-in **without an enabled bandwidth policy** — the share limit is enforced
+against the governor's permitted share, so without a governor it would be
+advisory, and an advisory limit is a configuration error rather than a silent
+no-op.
+
+`transit_participation.rs` owns the policy:
+
+- `TransitParticipationPolicy` — the bounded limits, validated by one
+  constructor that the configuration path *and* the hand-built path both go
+  through.
+- `TransitParticipationOwner` — the accounting surface. It owns no socket, no
+  timer, and no task; the runtime owner supplies the clock.
+- `TransitParticipationBinding` — the owner plus the live governor, so the
+  permit stays healthy while the owner is installed and the owner has the
+  governor to revalidate against.
+
+**The counts are the data plane's own.** `admit` takes the transit service's
+authoritative registration counts (`active_count`, `active_for_peer`), so the
+owner never keeps a second, diverging ledger of live tunnels: an expired, a
+closed, and a rolled-back registration are reflected immediately. The
+participating-tunnel limit and the per-peer cap are measured against the
+registry, not against a counter that could drift.
+
+**The share is enforced, not advisory.** The owner holds the governor's
+`BandwidthEnforcementPermit` and revalidates it at the point of use
+(`revalidate`): a permit issued by a different governor instance is *stale*
+(`PermitWithdrawn`), and a dropped issuing governor is a *health loss*
+(`HealthLost`). The relay is charged against the permitted share **before**
+the cell leaves the router, and exceeding the share refuses the relay rather
+than growing it. Without an enforced permit there is no share, so every
+request is refused with `NoEnforcedPermit`.
+
+**The dispatch order is unchanged.** `TransitLiveOwner::dispatch_build_body`
+still reads *creator/service first, transit second, unknown fail-closed*, and
+the posture is consulted **after** the creator correlation check and **before**
+the transit dispatch — so a refused request never allocates a registration.
+`handle_tunnel_data_inner` charges the share before the forward. Both
+orderings are static-guarded by
+`crates/i2pr-daemon/tests/transit_participation_boundary.rs`, which carries an
+inverted probe for each rule.
+
+**The receipts are bounded and carry counts only.** A receipt holds the event
+kind, an optional typed refusal reason, the participating-tunnel count, the
+admitted-peer count, the relayed bytes, the refusal counters, and the stop
+count. It never holds a peer hash, an address, a tunnel id, a key, or a
+payload — and the guard proves that by inspecting the receipt *type*, not
+merely its values.
+
+**The ordinary build-hop selection now satisfies Plan 488's diversity rules.**
+`destination_peers.rs` gained `HopDiversityPolicy` (the /16 rule and the
+per-peer participation cap, taken from `i2pr-netdb` rather than restated),
+the candidate carries its `/16` prefix, and the bounded search honours
+`max_per_prefix16` without ever relaxing the rule to reach the hop count.
+`DestinationTunnelCoordinator` owns the bounded per-peer participation ledger
+and `record_hop_selection` records every selection, so the cap is measured
+against real selections rather than being advisory.
+
+> **Deviation from the plan document (recorded).** The plan named
+> `i2pr-client` for the selection diversity. The router's own build-hop
+> selection is the **daemon's** `destination_peers.rs`; `i2pr-client` owns
+> destination tunnel *lifecycles* and consumes peers that were already chosen
+> there (Plan 491 established the same fact for the version floors). The rule
+> therefore landed in the daemon, consuming Plan 488's policy from
+> `i2pr-netdb`, and `i2pr-client` is unchanged.
 
 ### M12 floodfill (Plans 270–283, 302–303, 306)
 
@@ -1078,8 +2929,8 @@ filesystem and loopback test isolation.
 ### Notable dependency facts
 
 - `i2pr-transport-ntcp2` and `i2pr-transport-ssu2` are **not** direct dependencies. NTCP2 is
-  disabled in production (Plan 101); SSU2 contracts are reached through the
-  composition-owned path, not a direct crate edge.
+  disabled by default and gated on an explicit qualification profile; SSU2 contracts are reached
+  through the composition-owned path, not a direct crate edge.
 - `i2pr-core` is declared and is the only path crate the daemon does not yet reference from
   `src/`; keep it declared (contracts/budgets/health are its reason) but do not invent usage.
 - `zeroize` and `chacha20poly1305` are present specifically for the Plan 341
@@ -1155,17 +3006,21 @@ above: **an inversion harness must verify its edit applied.**
 
 ## Tests
 
-**73 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
-modules (notably `src/lib.rs:1718`, `src/config.rs`, and the module-local test blocks in
+**134 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
+modules (notably `src/lib.rs:5496``, `src/config.rs`, and the module-local test blocks in
 `console.rs`, `i2pcontrol_dispatch.rs`, `outbound_secret.rs`, `outproxy_route.rs`,
 `transit_volume.rs`, and `service_els2.rs`).
+
+The area inventory below names **72** of the 134 files. The remaining 62 were
+added by later plans and are not yet assigned an area; the inventory is not
+inflated to hide that.
 
 ### Acceptance-suite inventory by area
 
 | Area | Count | Representative files |
 | --- | --- | --- |
 | CLI | 1 | `cli.rs` |
-| NetDB | 5 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs` |
+| NetDB | 9 | `netdb_integration.rs`, `netdb_tunnel_unit.rs`, `netdb_tunnel_live.rs`, `netdb_tunnel_external.rs`, `netdb_routing_consumer.rs` — the Plan 497 routing-table consumer lane: with the table attached the lookup asks the table's floodfill and never the flat store's nearer one, without it the lookup falls back, and both fallback reasons are counted, `netdb_peer_budget_receipt.rs` — the Plan 500 lane: the routing driver's receipt counts a lookup that spent its per-lookup peer budget in a bucket **separate** from the bucket for a lookup that ran out of candidates, `peer_reconcile_boundary.rs` — the Plan 506 static guard: the reconcile's lock order, its canonical write APIs, its bounded cadence, the single unsolicited-store ingest and the version gate at selection, `peer_reconcile_live.rs` — the Plan 506 out-of-crate lane: a peer that arrives through the production unsolicited-store path becomes known to both build-with stores after one reconcile, `netdb_retention_feasibility.rs` — the Plan 507 feasibility artefact: a store at its quota refuses a new peer and accepts it after a prune, `netdb_retention_boundary.rs` — the Plan 507 static guard: the retention window is the router's own acceptance window, the prune is the tree's own explicit prune, the ordering is prune then snapshot, the locks are one at a time, every prune is counted and no configuration key appears, `netdb_retention_live.rs` — the Plan 507 out-of-crate lane: the product prunes both live stores, a store at its quota turns over, a poisoned lock is counted and the router's own RouterInfo is never a victim, `transit_creator_retention_feasibility.rs` — the Plan 508 feasibility artefact: the window is derived from the coordinator's own bounds, the facts are bounded over many simulated builds and a live fact is never declined early, `transit_creator_retention_boundary.rs` — the Plan 508 static guard: the window is derived, every install carries an expiry, every use site consults it, the sweep drops the expired facts and no configuration key appears, `transit_creator_retention_live.rs` — the Plan 508 out-of-crate lane: a fact inside its window still bypasses transit, a fact at the last live instant still bypasses it, and an expired fact does not |
 | Exploratory tunnels / build / liveness | 4 | `exploratory_build_unit.rs`, `exploratory_build_live.rs`, `exploratory_tunnel_external.rs` |
 | Destinations (M6) | 3 | `destination_tunnel_unit.rs`, `destination_tunnel_live.rs`, `destination_tunnel_external.rs` |
 | Streaming (M6) | 3 | `streaming_tunnel_unit.rs`, `streaming_tunnel_live.rs`, `streaming_tunnel_external.rs` |
@@ -1176,7 +3031,8 @@ modules (notably `src/lib.rs:1718`, `src/config.rs`, and the module-local test b
 | Service tunnels (M10) | 24 | `service_tunnels_foundation.rs`, `service_tunnels_local_roundtrip.rs`, `service_tunnels_final_acceptance.rs`, `service_tunnels_adversarial_matrix.rs`, `service_tunnels_remote_qualification.rs`, `service_tunnels_application_remote_qualification.rs`, `service_tunnels_remote_route_integration_qualification.rs`, `service_tunnels_remote_transport_qualification.rs`, `service_tunnels_application_product_only_remote_qualification.rs`, `service_tunnels_application_genuine_remote_qualification.rs`, `service_tunnels_independent_application_clients.rs`, `service_tunnels_plan210_real_service_destination_material.rs`, `service_tunnels_plan212_router_backed_product.rs`, plus 12 per-profile `service_tunnel_*_product.rs` suites |
 | M11 transit | 3 | `m11_transit_data_plane.rs`, `m11_transit_live_owner.rs`, `m11_transit_i2pd_external.rs` |
 | M12 floodfill | 4 | `floodfill_controlled_lifecycle.rs`, `floodfill_normal_optin.rs`, `floodfill_i2pd_external.rs` |
-| SSU2 | 1 | `ssu2_daemon_preflight.rs` |
+| SSU2 | 6 | `ssu2_daemon_preflight.rs`, `ssu2_introducer_mesh.rs` — the Plan 490 private controlled mesh for the introducer (Bob) role, `ssu2_introducer_handoff.rs` — the Plan 498 relay-handoff drain lane: the discriminator that a relay block reaches the role owner, the control, the refusal row and the bound row, plus the Plan 499 carriage rows that the drain carries the produced block to the tag's target and counts a carriage refusal by reason, `ssu2_introducer_live_mesh.rs` — the Plan 499 live three-party UDP mesh, `ssu2_qualification_export.rs`, `ssu2_qualification_receipts.rs` |
+| NTCP2 operator profile | 1 | `ntcp2_private_lan_profile.rs` — the configuration refusals, the family-coherence rule, the controlled profile's refusal to widen to a private-LAN bind, the advertisement refusal, and one environment-gated row that binds the operator's real RFC1918 endpoint on both transports and asserts the record carries no capability letter |
 | Java / M6 cross-family | 1 | `java_tunnel_external.rs` |
 
 ### Black-box product discipline
@@ -1239,6 +3095,9 @@ Invokes the compiled binary via `Command::new(env!("CARGO_BIN_EXE_i2pr"))`:
 In-crate `#[cfg(test)]` in `src/lib.rs` and `src/config.rs` also cover composition
 regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
 `daemon_graph_rejects_ntcp2_enabled_config`) and the `[ssu2]` NTCP2 activation safety rows.
+The NTCP2 activation gate's own `#[cfg(test)]` module in `src/ntcp2_activation.rs` covers each
+refusal variant by name, every non-RFC1918 address shape, and the invariant that the gate
+never widens a scope.
 
 ---
 
@@ -1247,10 +3106,13 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
 1. **The daemon is the composition root, and that is legitimate.** It is the only production
    owner of Tokio, sockets, timers, channels, and every listener; `check-runtime-boundaries.sh`
    enforces the inverse for every other crate.
-2. **NTCP2 is disabled and unenableable.** The default is `false`, and explicit
-   `ntcp2.enabled = true` is rejected during config validation with a stable semantic error.
+2. **NTCP2 is disabled by default and profile-gated.** The default is `false`. An enabled
+   NTCP2 surface must name an explicit qualification profile, and only `controlled_loopback`
+   and `private_lan_qualification` are accepted; every other shape is rejected during config
+   validation with a stable semantic error naming the offending field.
 3. **The composition graph never registers `ntcp2-transport`.** A `lifecycle` service owns the
-   shutdown signal; `i2pr-transport-ntcp2` is not a direct dependency at all.
+   shutdown signal; `i2pr-transport-ntcp2` is not a direct dependency at all. The daemon owns
+   its own `ntcp2-router` service instead.
 4. **No default config path.** Every subcommand requires `--config`, so operator intent is
    always explicit and reproducible.
 5. **`deny_unknown_fields` on all 22 `Raw*` config structs.** Extra keys are an error
@@ -1311,6 +3173,19 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
     `RawConsoleConfig` converts a plaintext `password` to an Argon2id PHC string during
     normalization and hands only the hash to `Config`; the plaintext is not stored, not
     `Clone`, and `ConsolePasswordHash` has a redacting hand-written `Debug`.
+23. **The activation gate is a pure function, not an inline branch.** The configuration
+    layer already refuses every shape the NTCP2 activation gate refuses, so a gate branch
+    living inside the service closure could never be reached from a configuration file and
+    would therefore be untested by construction. `ntcp2_activation_scope` takes an
+    already-normalized `Ntcp2Config` and returns a scope or a typed refusal, which makes
+    every branch reachable by a unit test — including the branch that proves the gate does
+    not widen a scope.
+24. **The routing table is a cache; the flat store is the authority.** The Plan 497 consumer may
+    only **reorder** the flat store's own selection — never narrow it and never widen it — and
+    every fallback is counted **by reason** (`fell_back_disabled`, `fell_back_no_candidate`, or
+    `fell_back_unavailable` for a poisoned table). A consumer that could silently drop a
+    candidate would make the table's answer indistinguishable from a smaller store, so the
+    counted reason is the contract, not a diagnostic extra.
 
 ---
 
@@ -1460,6 +3335,701 @@ blinding rotates daily and there is no periodic re-resolution, so a resolution c
 midnight boundary addresses the **wrong DHT key**. Type 5 stays `advertised = false`, and Plan 380
 adds no support surface: the credential is i2pr-local configuration, not an advertised capability.
 
+## The exploratory request's target (Plan 514)
+
+Plan 513 landed the discovery spine. The request it sent was **aimed
+wrongly**, and the operator could not switch it off.
+
+### The aim was the flat store's iteration order
+
+The live cycle picked the peer to ask with `store.floodfill_advertisers().next()`.
+The store is a `BTreeMap` keyed by the peer's hash
+(`crates/i2pr-netdb/src/store.rs:84`), so its first floodfill advertiser is the
+**lowest-hash** one, and the choice did not depend on the search key at all:
+every exploration asked the **same** peer, until a smaller-hash floodfill
+entered the store. A peer that did not answer was asked again and again.
+
+The routing table's closest-first selection — the mechanism Plan 489 built,
+Plan 497 exposed through `RoutingTableConsumer::candidates`, and Plan 513 gave
+a reader — was **not consulted** on that path. The table's own exploration
+entry point, `RoutingTableConsumer::begin_exploration`
+(`src/netdb_participation.rs:894`), had **no production caller**.
+
+### The target is the table's closest floodfill
+
+`RoutingTableConsumer::closest_floodfill` (`src/netdb_participation.rs:1000`)
+asks the table for its closest-first answer and returns the first candidate.
+The spine's exploratory start (`src/netdb_participation.rs:1424`) asks it for
+the search key's routing key — the key the router **already computed** for the
+request — and addresses the request to that peer.
+
+The reference asks the same question of its own floodfill bucket set
+(`libi2pd/NetDbRequests.cpp:479`, at the exact pin); the derivation, and the
+distance rule the tree uses, are in `specs/QUALIFICATION-GATES.md` §13.
+
+### A request the table cannot target is refused, not redirected
+
+A table that names no floodfill — off, empty, or unreachable — ends the
+request. The refusal is counted under `explorations_refused_no_target`
+(`src/netdb_participation.rs:1130`), and the request is **never** redirected
+to an arbitrary peer. The reference ends its request too, rather than asking a
+substitute (`libi2pd/NetDbRequests.cpp:502-503`).
+
+### The operator's switch is real
+
+`netdb.exploration_enabled` is now read, at
+`src/lib.rs:1943`, and consulted by the discovery cycle at
+`src/lib.rs:2087`. It was parsed, defaulted to `false` and cross-validated
+against `netdb.routing_table_enabled`, and read by **nothing**: the
+exploration ran whenever the routing table was on.
+
+The switch gates the **exploratory request** only. The RouterInfo-kind
+resolution stays above it, so the routing table keeps its production reader
+and Plan 497's **M2** is not reopened. The switch's default does **not**
+move: the key's own documentation already said the exploration is off by
+default and that it cannot be enabled while the routing table is off, so the
+wiring was missing, not the design.
+
+### What is deliberately not claimed
+
+- The **peer exclusion** the reference applies — it never asks a peer it has
+  already asked — is **not** implemented, and the exploration asks **one**
+  peer per exploration rather than advancing within one. The exploration's
+  budget and advance belong to Plan 489/500/512; the gap is recorded as a
+  finding for a successor.
+- The **stock-peer** half remains blocked externally on Plan 493's authorized
+  two-host topology.
+- Nothing is advertised: `router.version` stays `0.9.62`, `caps` and the
+  published RouterInfo are unchanged, and the inventory's advertised count
+  stays zero.
+
+## The live NetDB discovery spine (Plan 513)
+
+Plan 497 recorded that the shared routing table had **no production reader**:
+the daemon populated and persisted it, and the coordinator asked it, but the
+coordinator was never in the daemon's service graph. Plan 513 gives the table a
+live reader and makes the router's DHT discovery a driven cycle.
+
+### The cycle
+
+`NetDbParticipation::drive_discovery` (`src/lib.rs:2053`) advances one bounded
+cycle on the participation owner's existing cadence:
+
+1. a RouterInfo-kind lookup that is in flight is awaited;
+2. an exploration that is in flight is awaited;
+3. a named peer an earlier exploration found is resolved;
+4. otherwise a new exploration starts.
+
+The order is not arbitrary. An exploration's answer is peer **hashes**, and a
+hash the router cannot resolve is a name, not a peer, so the resolution is the
+**enabling** half and the exploration that produces names to resolve comes
+first.
+
+One request at a time, one exploration at a time, one resolution at a time. A
+request the wire never answered is **abandoned** when its deadline passes and
+**counted**; it is never retried in a loop.
+
+### The two deliveries
+
+`ServiceProduct::drive_netdb_discovery` (`src/service_product.rs:4199`) hands
+the composed request to the transport, and the two kinds take **different**
+paths:
+
+- an **exploratory** request (wire lookup type `3`) is delivered **directly**
+  to the floodfill being asked, by `deliver_discovery_direct`;
+- a **RouterInfo-kind** request (wire lookup type `2`) rides the **outbound**
+  exploratory tunnel, by `deliver_discovery_via_outbound_tunnel`, and takes its
+  reply through the **inbound** exploratory tunnel.
+
+Plan 102's closed authority amendment forbids substituting a direct peer link
+for the exploratory-tunnel path, so a router that holds no usable outbound
+exploratory role **refuses** the RouterInfo-kind request rather than sending
+it directly. The refusal is counted.
+
+### The table is a preference, never a replacement
+
+The routing table's answer **reorders** the flat store's own selection. It
+never narrows it: a peer the flat store could serve is never dropped, and a
+peer the flat store would not have served is ignored. Every fallback — the
+table off, the table empty, the table unreachable — is counted **by reason**,
+on the table's own `RoutingTableCounters` and on the spine's
+`NetDbDiscoveryCounters`.
+
+### A suggestion is never evidence
+
+The peers an exploration names enter the routing table as **suggestions**, and
+the table accepts a suggestion only from a peer it already holds with **signed**
+evidence. A name enters the spine's bounded unresolved-peer queue only when
+the table **accepted** it: a refusal the router ignores would be a decoration.
+
+A queued name is then resolved by a RouterInfo-kind lookup, and the reply's
+signed record is validated by the lookup engine's own rules and inserted into
+the router's NetDB — so the named peer becomes a peer the router can ask. A
+reply from a peer the exploration never asked introduces **nothing**: the
+reply's sender is unauthenticated.
+
+### What the spine does not own
+
+The spine owns **no task, no timer, no listener and no socket**. The daemon's
+existing tick drives it: the tick advances the RouterInfo-kind validation
+clock, refreshes the inbound exploratory tunnel's reply path, and hands the
+composed request to the transport. The delivery outcome is counted as
+delivered or failed — never silently.
+
+### What is deliberately not claimed
+
+No **stock-peer** evidence is claimed: the qualification that would exercise a
+real exploration and a real RouterInfo lookup against a pinned stock router is
+blocked externally on Plan 493's authorized two-host topology. The reference's
+own **direct** fallback — i2pd 2.61.0 downgrades the exploratory request to a
+type-2 RouterInfo lookup when the exploratory tunnels are unavailable — is
+**not** implemented; the divergence is recorded in
+`specs/QUALIFICATION-GATES.md` §12. The **version gate** is inherited, and its
+scope is stated rather than assumed: Plan 491's DSM gate is scoped by its own
+definition (`dsm_target_eligibility`) to the peers the router sends a **DSM**
+to, which is the two **publication** paths; Plan 513 adds no DSM and changes
+neither publication path. Nothing is advertised: `router.version` stays
+`0.9.62`, `caps` and the published RouterInfo are unchanged, and the support
+inventory's advertised count stays zero.
+
+## The destination role in the tunnel liveness scheduler (Plan 512)
+
+Plan 487 recorded, and left open, the finding that **the destination inbound
+pool has no transit-hop failure detection**: a dead transit hop is invisible
+to the router until the tunnel expires, so a destination whose tunnels die
+with a hop is not replenished until the lease expires.
+
+Plan 512 lands the mechanism. It is worth being precise about what was
+already there, because the gap was **not** a missing scheduler.
+
+### What was already there
+
+- `src/tunnel_liveness.rs` — Plan 504's **pair-level** scheduler. A probe
+  leaves through one tunnel and must come back through the other; the answer
+  is correlated on the **acknowledged** message id; and a pair that misses
+  **two consecutive** responses is reported unhealthy. The scheduler itself
+  is **role-agnostic**: `register_pair` checks only the pair ceiling, the
+  slot inequality and the duplicate key.
+- `src/exploratory_build.rs` — the **exploratory** population,
+  `exploratory_liveness_pairs`, which pairs the exploratory pool's outbound
+  registrations with the inbound registration whose gateway is the **same
+  peer**.
+- `src/service_product.rs` — `sync_liveness_pairs`, which registers exactly
+  that population, and `drive_tunnel_liveness`, which drives the scheduler on
+  the existing tick.
+- Every **consequence** of a failure: the pool's failure seam
+  (`DestinationRuntime::mark_tunnel_failed`), the changed lease set, the
+  daemon tick's republication trigger, the replenishment deficit, and the
+  existing submit path that builds the replacement.
+
+So the detection existed and the consequences existed. What did not exist was
+the **population** for the destination role and the **routing** of its
+failure.
+
+### What Plan 512 adds
+
+**The population** is a separate function,
+`service_product::destination_liveness_pairs`, over a bounded binding table
+(`destination_role_bindings`) that maps a coordinator destination-role slot to
+the destination that owns it, the destination runtime's pool slot, the
+direction, and the inbound's local receive id.
+
+The pairing is deliberately **within one destination**: the destination's
+outbound role carries the probe out and the same destination's inbound role
+carries the answer back. Pairing across destinations would let one
+destination's dead outbound fail **another** destination's inbound, which is
+a false failure the plan must not produce.
+
+**The composition** is `ExploratoryBuildCoordinator::compose_destination_liveness_probe`.
+The destination role's inbound tunnel does not live in the exploratory pool —
+it is bound in the shared data-plane registry under the destination-role slot
+namespace — so its routing comes from the registry's typed
+`InboundGatewayRoute` rather than the pool's `PublicTunnelRouting`. The
+probe is addressed to the inbound tunnel's **gateway**, the way i2pd 2.61.0
+addresses it at the exact pin (`libi2pd/TunnelPool.cpp:452`), so the answer
+returns through the inbound tunnel the destination advertises and **no remote
+cooperation** is required.
+
+The exploratory composition keeps its **same-peer** precondition unchanged.
+That rule is correct for the exploratory population — both its tunnels are
+built to one peer — and would leave the destination population empty, because
+the destination role's two directions are built in separate rounds from
+separate peer selections.
+
+**The failure arm** is `ServiceProduct::fail_destination_liveness_pair`. An
+unhealthy destination pair fails the destination's inbound tunnel through the
+runtime's own `mark_tunnel_failed` seam, so the **existing** republication
+and replenishment paths are the ones that fire. i2pd's **"don't fail last
+tunnel"** rule is adopted verbatim, and the refusal is **counted** rather
+than silent.
+
+### The safety property is inherited, not relaxed
+
+Only an **authenticated** response proves a pair, and only a **proven** pair
+may be failed. That is Plan 504's gate, and the destination population
+inherits it unchanged. It is the property that bounds the blast radius of
+the gateway-addressed probe: a destination probe path that is systematically
+broken proves nothing, and therefore **fails nothing**.
+
+### What is deliberately not claimed
+
+- **Per-hop attribution.** The failure is a **pair-level** fact: the probe
+  did not come back. No peer profile is written, and the decision type
+  carries a pool slot and no peer identity.
+- **i2pd's both-sides failure.** i2pd fails the outbound and the inbound of
+  the pair; `i2pr` fails the **inbound** only. The divergence and its cost
+  are recorded in the closure record.
+- **Stock-peer evidence.** The mechanism is landed and proven in-tree. The
+  qualification that would exercise a real dead transit hop is blocked
+  externally on Plan 493's authorized two-host topology.
+
+The static guard is `crates/i2pr-daemon/tests/destination_liveness_boundary.rs`;
+the lane is `crates/i2pr-daemon/tests/destination_liveness_live.rs`. Plan
+504's guard and lane stay **byte-identical**, and their SHA-256 digests are
+pinned by the new guard, so the claim is checkable rather than asserted.
+
+## The outbound peer-session pool (Plan 522)
+
+The router used to dial per need and hold nothing between needs, so the
+publication's ordinary path was the handshake path. Plan 522 gives the
+router a **bounded pool** of outbound peer sessions, and the transport an
+**outbound-only** keepalive that holds a pooled session open.
+
+**What changed:**
+
+- `src/peer_pool.rs` — the bounded owner. It is runtime-neutral: it owns no
+  session, no socket, no task and no timer, and it reads its clock from its
+  caller. The population is the router's **own** version-gated floodfill
+  selection, under the **default** policy the publication's owner already
+  holds, so there is no second policy and no second source of truth. The
+  ceiling is one publication cycle's worth of peers (`15`) and the
+  per-period dial budget is two; a candidate beyond either bound is
+  **refused and counted** under its own reason, never evicted and never
+  skipped silently. Every counter carries a stable reason label, and the
+  admission is counted once per peer, so the receipt agrees with the pool's
+  own peer list;
+- `src/peer_pool_task.rs` — the pool's **own** task, for the same reason the
+  publication has one: a session establishment is an await, and the daemon's
+  `select!` loop must never block on a handshake. The bootstrap's lock is
+  taken to read the population and is **released** before any dial, so a
+  slow handshake can never hold the router's NetDB;
+- `src/service_product.rs` — `DestinationDialPurpose::PeerPoolMaintenance`,
+  the pool's own reason for a dial. The pool dials through the **one**
+  existing narrow seam, so the router's own publication and the pool share a
+  single dial path, and the publication's delivery path is **unchanged**;
+- `src/config.rs` — `ssu2.peer_pool` is an explicit opt-in, **off** by
+  default, refused unless the SSU2 service itself runs, and refused when the
+  session's idle timeout cannot hold the keepalive's unanswered deadline;
+- `src/router_i2np.rs` — the runtime's keepalive interval is derived from
+  the pool's own switch and the transport's own constant, so a router
+  without the pool sends no keepalive at all;
+- `src/i2pcontrol_inspection.rs` — the counters reach the inspection plane.
+  The cell holds counts only: it names no peer, no address and no key.
+
+**The pool writes no peer profile.** A dial outcome is this router's
+condition as often as the peer's, so the pool counts its outcomes in its own
+counters and nowhere else.
+
+**What is deliberately not claimed.** The **stock-peer** half needs Plan
+493's authorized two-host topology. The **dial scope** limit is not
+discharged: the transport's own dial target accepts a loopback endpoint or
+an RFC1918 IPv4 address, so a public deployment cannot use the pool today,
+and that limit is a transport boundary with its own plan-of-record. Nothing
+is advertised: `router.version` stays `0.9.62`, the published record's
+`caps` string is unchanged, and `Cargo.toml` and `Cargo.lock` are
+byte-identical.
+
+## The router's relay-tag request (Plan 524)
+
+A router behind a firewall cannot be reached directly, so it needs an
+**introducer**: a peer that will introduce it to the peers that want to talk
+to it. Plan 524 gives the router the **acquisition** half of that
+composition — it learns that a peer is an introducer, asks such a peer for a
+relay tag while the router is firewalled, and records the answer as an
+**authenticated introducer**. The **publication** half — building the
+introducer-only address, choosing it over the direct form, and signing it —
+is a successor's subject, and so is the `C` capability the router publishes
+about **itself**.
+
+- `src/introducer_request.rs` — the bounded owner. It is runtime-neutral: it
+  owns no task, no timer, no listener and no socket, and the product's
+  existing tick drives it. It refuses every window while the operator's
+  opt-in is off, refuses every window while the router is not firewalled,
+  and draws its candidates from the peers with a live session. The
+  candidate window is **bounded** and **rotates**, so a busy router sees
+  every peer it holds a session with over time instead of re-examining the
+  same head of the list for ever; a peer the router already asked is not
+  asked again while its session lives, and the asked set is pruned against
+  the live sessions so it never outgrows them. Every refusal is counted
+  under its own reason, and the counters name no peer, no address, no key
+  and no tag;
+- `src/introducer_request.rs` — `read_capability`, the read of the peer's
+  advertised capability. It takes the **validated** record from the
+  authoritative store and parses the address with the transport's own
+  strict parser. A peer with no stored record, with no SSU2 address, with
+  an unparsable address, or with an address that advertises no introducer
+  letter is **not** an introducer, and each is a distinct refusal — never a
+  silent absence. The test is the peer's **advertised** `C`, never its
+  published introducer set;
+- `src/service_product.rs` — `drive_introducer_request`, the tick step. It
+  reads the router's own reachability state, draws the bounded window from
+  the peers with a live session, reads their advertised capabilities, and
+  queues **at most one** relay-tag request through the runtime. It never
+  dials: the request rides a session the router already holds;
+- `src/config.rs` — `ssu2.introducer_request` is an explicit opt-in, **off**
+  by default, and refused unless the SSU2 service itself runs;
+- `src/i2pcontrol_inspection.rs` — the counters reach the inspection plane.
+  The cell holds counts only: it names no peer, no address, no key and no
+  tag;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the runtime's bounded
+  outstanding-request set and the recording. A tag is recorded **only** in
+  answer to a request this router made; a tag for any other peer is refused
+  and counted, because recording an introducer nobody asked for would put an
+  unauthenticated peer into the router's introducer set;
+- `src/ssu2_relay_drain.rs` — the drain **skips** the tag answer. The
+  handoff keeps the event — Plan 499's live-mesh evidence reads the minted
+  tag there — but the role owner never served it, so it is not charged with
+  a refusal it did not make.
+
+**What is deliberately not claimed.** Nothing is advertised: `router.version`
+stays `0.9.62`, the published record's `caps` string is unchanged, the
+inventory's advertised count stays **zero**, and `Cargo.toml` and
+`Cargo.lock` are byte-identical. The **stock-peer** half needs Plan 493's
+authorized two-host topology.
+
+## The router's published introducer set (Plan 525)
+
+Plan 524 gave the router the **acquisition** half of the SSU2 introducer
+composition — it learns that a peer is an introducer, asks such a peer for
+a relay tag while the router is firewalled, and records the answer as an
+**authenticated introducer**. Plan 525 gives the router the **publication**
+half: it publishes the validated introducer set it learned, in the
+specification's introducer-only address form. The `C` capability the router
+publishes about **itself** is a third, separate matter.
+
+- `src/self_publication.rs` — the owner. It asks the runtime for **which
+  form** the router publishes and hands the address to the netdb builder
+  that matches that form: `build_with_ssu2_address` for the direct form and
+  `build_with_ssu2_introducer_address` for the introducer-only one. It
+  never infers a form from a refusal, and it never writes an option. The
+  counters **distinguish** the two published forms and the withdrawal, and
+  the empty-introducer-set reason — which could never move before this
+  plan, because nothing produced the refusal — has its own counter;
+- `src/router_info_publication_task.rs` — the owner's counter snapshot is
+  published into the live cell on the publication's own cycle. The counters
+  are counts and stable reason labels only: they name no peer, no address,
+  no key and no tag;
+- `src/i2pcontrol_inspection.rs` — the cell reaches the inspection plane,
+  so the running router's own published-address posture is observable. An
+  unpublished or poisoned slot is a **gap**, never a fabricated zero;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the runtime owns the
+  decision, the material and the install gate. The daemon holds no copy of
+  the publication rule;
+- `crates/i2pr-netdb/src/local.rs` — the netdb's second builder and its
+  second qualification rule. The builder carries **no** floodfill permit,
+  so a record it builds is an ordinary router's record.
+
+**The withdrawal is unchanged.** A firewalled router with **no** introducer
+keeps publishing the netdb's ordinary zero-address record, where the
+reference publishes an unpublished `s`+`i`+`v` form. That divergence belongs
+to Plan 520's path.
+
+**What is deliberately not claimed.** Nothing is advertised:
+`router.version` stays `0.9.62`, the published record's `caps` string is
+unchanged, the inventory's advertised count stays **zero**, and
+`Cargo.toml` and `Cargo.lock` are byte-identical. The **stock-peer** half
+needs Plan 493's authorized two-host topology.
+
+## The router's advertised introducer role (Plan 526)
+
+Plan 525 gave the router the **publication** of the introducer set it learned.
+Plan 526 gives the router the **advertisement** of its own introducer role: the
+specification's `"C"` letter in the `caps` option of the router's own address.
+
+- `src/lib.rs` — the composition. The role owner is constructed **only** behind
+  the explicit `ssu2.introducer_service` opt-in. The blanket refusal that
+  Plan 520 kept made the role owner unreachable in **every** configuration, so
+  the role could never run and Plan 499's closed claim that the daemon's live
+  loop constructs it was false of the tree. The refusal is gone; the opt-in is
+  the only gate, and the opt-in keeps its default and its refusals;
+- `src/self_publication.rs` — the owner. It matches on the **typed** published
+  form, hands the address to the netdb builder that carries that form's own
+  rule, and counts the three published forms — the direct form, the
+  **role-bearing** direct form and the introducer-only form — under their own
+  reasons. The third rule's refusal has its own reason too. The owner's
+  **apply** half is separated from its **ask** half, so the hand-off and the
+  counters can be exercised with a material the caller supplies;
+- `crates/i2pr-runtime/src/ssu2_runtime.rs` — the runtime owns the role's live
+  state, composes the capability, and refuses a stale role letter at the
+  install gate;
+- `crates/i2pr-netdb/src/local.rs` and `crates/i2pr-netdb/src/floodfill_role.rs`
+  — the netdb's **third** builder and its **third** qualification rule, beside
+  the untouched direct and introducer rules. The builder carries **no**
+  floodfill permit.
+
+**What is deliberately not claimed.** Nothing is advertised in the inventory
+sense: `router.version` stays `0.9.62`, the inventory's advertised count stays
+**zero**, and `Cargo.toml` and `Cargo.lock` are byte-identical. The `B`
+(peer-test) advertisement is out of scope, and the advertisement is confined to
+the controlled loopback profile, so the `C` is a local qualification claim and
+not yet a network-reachable one. The **stock-peer** half needs Plan 493's
+authorized two-host topology.
+
+## The router's reachability is read, not asserted (Plan 527)
+
+The daemon's firewalled gate reads the runtime's tracker:
+
+```rust
+        let firewalled = self.inner.ssu2_handle.service().snapshot().reachability
+            == i2pr_transport::ReachabilityState::Firewalled;
+```
+
+Before Plan 527 that read was **permanently false**. The tracker the product
+reads could only ever receive confirming evidence, because every
+contradicting signal was written into a second tracker inside the peer-relay
+service that **nothing** read. So the gate refused every request — a router
+that was not firewalled asked nobody, and a router that could never become
+firewalled asked nobody either — and the introducer composition below it
+never ran.
+
+The gate itself is **unchanged**: the router asks only while its own
+reachability state is `Firewalled`, and every refusal is still counted under
+its own reason. What changed is that the state is now **reachable**, and the
+gate's flag is read from the tracker rather than injected.
+
+## The router can now learn its own address (Plan 529)
+
+The daemon does not own this surface. It owns the **reader**: the
+reachability state the daemon's firewalled gate asks on is the same state
+Plan 527 unified and Plan 528 gave a reachable meaning to, and Plan 529
+gives it a **producer** it can trust.
+
+**What changed.** The SSU2 handshake now carries the address at which the
+recipient sees the sender, the tree reads it instead of discarding it, and
+the runtime compares it with the router's own bound socket. So the
+corroboration class that had no field producer outside the controlled
+profile now has one, produced by a real handshake.
+
+**What did not change.** The daemon's firewalled gate, its refusal reasons
+and its counters are untouched. The gate still asks **only** on the state
+the tracker really holds, and a router that is not firewalled still asks
+nobody. Plan 529 changes what the tracker can hold, not who reads it.
+
+**The lane.** Two real runtime routers speak a real SSU2 handshake over real
+loopback UDP. A real UDP relay stands between them for the disagreement row,
+because a peer always sees the router's bound socket without an address
+rewrite — the relay is the tree's stand-in for a NAT. The lane never injects
+the observation the tracker reads.
+
+## The firewalled gate can now be true (Plan 528)
+
+The gate reads the runtime's tracker:
+
+```rust
+        let firewalled = self.inner.ssu2_handle.service().snapshot().reachability
+            == i2pr_transport::ReachabilityState::Firewalled;
+```
+
+Plan 527 made that read honest — it reads the **one** tracker, not a second
+one — but the state it read could still never be `Firewalled`, because the
+transport applied the corroboration floor to contradictions and the
+controlled driver turned every non-confirming verdict into an **error**
+instead of a fact.
+
+Plan 528 changes neither the gate nor its refusal reasons. It changes what
+the tracker can hold: the **contradiction** floor is now separate from the
+corroboration floor, a **firewalled verdict** is first class, and the
+router's own bound-socket comparison records a disagreement as that verdict.
+So the gate can now be true, and when it is, the router asks one eligible
+peer for a relay tag — and every refusal is still counted under its own
+reason.
+
+The controlled activation refuses anything that is not a confirmation, so
+the floodfill's reachability proof is still minted only from a real
+confirmation.
+
+## The router records its own bound address (Plan 530)
+
+The router's reachability has one owner — the runtime — and one reader
+(Plan 527). The transport's model says `Reachable` needs **three distinct
+supporting classes**, and the router's own configured bind is one of them.
+
+**Before this plan the class was counted but never earned.** The daemon
+already opted in: `ssu2_runtime_config_from` maps
+`explicit_bind_corroboration: true`, and the runtime turns that into the
+transport's `configured_direct_allowed`, so the transport counted class 0
+whenever it was recorded. But the only recorder was
+`note_explicit_bind_for_controlled_qualification`, and the daemon's only
+caller of it was the **controlled** floodfill activation
+(`crates/i2pr-daemon/src/floodfill.rs:648`). So a router in ordinary
+operation held at most two classes, its state stalled at
+`CandidateReachable`, and it published the firewalled form for ever.
+
+**The recorder now runs in ordinary operation**, inside the runtime, at bind
+time. The daemon's part of the change is that it already had the opt-in: no
+configuration key is added and no default moves.
+
+**The daemon records no reachability signal of its own.** The recorder is
+private to the runtime, and Plan 520's guard rule 10 — that the daemon must
+not record a reachability signal of its own — stays green. The guard
+`crates/i2pr-daemon/tests/ssu2_explicit_bind_corroboration_boundary.rs` pins
+that structurally.
+
+**The controlled activation is untouched.** Its narrow recorder and its call
+site are byte-identical, and the fail-closed refusal it owns — no bound
+socket, or a bind the runtime cannot name, is `BindFailed` — is not
+weakened. The narrow recorder becomes redundant for the class and is kept
+anyway, because Plan 283's foundation and the controlled path's refusal are
+worth more than the tidiness of a single recorder.
+
+**The triple is now earnable.** The bind, the peer's observed external
+address (Plan 529) and a confirmed peer test (Plan 521) are three distinct
+classes, so the direct form becomes publishable. The lane proves it with two
+real daemon-owned routers over real loopback UDP: a real handshake and a real
+confirmed peer test, and the **direct** publication material at the end.
+
+**What is not claimed.** The runtime's publication path stays
+**loopback-only**, so the direct form the plan makes reachable is a
+**controlled-loopback** claim. The peer test stays behind the default-off
+`ssu2.peer_test` opt-in. The **production** SSU2 peer-test driver and the
+**requester** side stay out of scope, and the **stock-peer** half needs Plan
+493's authorized two-host topology.
+
+## The router's relay requester (Plan 531)
+
+A router behind a firewall cannot reach a peer directly. The SSU2 relay
+protocol lets it ask the peer's **introducer** to do the reaching. The
+introducer half was already in the tree; this is the **requester** half.
+
+**Before this plan the requester half had no caller.** The transport's
+`RelayRequester` state machine existed, and the runtime's `start_relay_request`
+seam existed, and neither had a production caller. The transport's
+`RelayFirewalledSignal` — class 4, contradicting — had no producer at all, so
+a firewalled peer was unreachable and the tree had no way to say so.
+
+**The owner is the daemon's.** `crates/i2pr-daemon/src/relay_requester.rs` holds
+the policy: which target, which introducer, when, the nonce, and the
+signature. It reads the target's published introducer set out of the
+**validated** RouterInfo store and resolves the introducer by hash from the
+same store. It holds no task, no timer, no listener and no socket.
+
+**The mechanics are the runtime's.** The owner starts the request through the
+runtime's existing `start_relay_request` seam, and the runtime owns the
+sockets, the session, the bounded tables and the transport's verification. The
+daemon does not keep a second copy of the transport's requester table, and the
+guard fails closed if one appears.
+
+**The inbound half has its own drain.** `drain_requester_events` is **new**;
+the existing `drain_relay_events` is byte-identical, because its signature and
+its call site are pinned by Plans 490, 499 and 524. The split is not
+cosmetic: a hole punch names no session and no peer hash, and a Relay Response
+that correlates with one of this router's own live requests belongs to the
+requester role, not to the introducer's.
+
+**The daemon records no reachability signal of its own.** A completed exchange
+calls the **runtime's** `note_relay_firewalled`, so the transport's class-4
+contradiction is recorded through its own owner and no corroborating class is
+ever claimed for a relayed peer. The guard pins that structurally.
+
+**One opt-in only.** `ssu2.relay_requester`, default **off**, refused at parse
+time without `ssu2.enabled` (`crates/i2pr-daemon/src/config.rs:3536`). Every
+refusal is a typed, counted reason — fifteen of them, from `Disabled` to
+`TargetUnknown` — and **no refusal writes into a peer's record**: a local
+condition never becomes a peer's profile.
+
+**The owner runs on the existing tick.** It is constructed beside the
+introducer owner when the opt-in is on, and it is driven by the daemon's
+**existing** relay tick, the same tick that drains the introducer's handoff,
+so both halves of an exchange share one cadence. It adds no task of its own.
+
+**What is not claimed.** The **target** side's response emission has no
+product wiring in this tree: the transport says the caller emits the accept and
+the hole punch, and no daemon role does that yet, so the lane completes that
+half over the transport's own preimage. The delivery is confined to the
+**controlled loopback profile** — the router's SSU2 dial target is loopback-only
+and the private-LAN variant accepts only RFC1918 IPv4 — which is Plan 431's
+bound. The **production** SSU2 peer-test driver stays unbuilt, the `B`
+advertisement and the `caps=f` advertisement stay with their owners, and the
+**stock-peer** half needs Plan 493's authorized two-host topology.
+
+## The router's relay target (Plan 532)
+
+A router behind a firewall cannot reach a peer directly. The SSU2 relay
+protocol lets the peer's **introducer** do the reaching. The **target** is the
+peer that is reached: it receives the introduction, verifies it, and **answers**
+it.
+
+**Before this plan the target half had no caller.** The transport's
+`RelayTarget` state machine existed and was complete, and the runtime's
+`on_target_relay_intro` seam existed, and neither had a production caller. The
+introduction was routed to the **introducer's** handoff unconditionally, so the
+introducer owner refused it as not its role and the target's table was never
+fed.
+
+**The owner is the daemon's.** `crates/i2pr-daemon/src/relay_target.rs` holds
+the policy: whether to answer at all, the requester's validated material, the
+accept's signature, the hole punch's pieces, and the counted refusals. It reads
+the requester's **validated** RouterInfo out of the authoritative store and
+takes the requester's signing key and introduction key from that validated
+record through the transport's strict `Ssu2RouterAddress::parse`. It holds no
+task, no timer, no listener and no socket, and it keeps **no** introduction
+table: the transport's own target table is the authority on a replay.
+
+**The mechanics are the runtime's.** The owner verifies the introduction
+through the runtime's existing `on_target_relay_intro` seam, so the transport's
+own state machine is used and not re-implemented, and it hands the hole punch's
+pieces to the runtime's new outbound seam, which builds the datagram with the
+transport's own codec and stages it through the runtime's existing bounded
+queue. The daemon does not keep a second copy of the transport's target table,
+and the guard fails closed if one appears.
+
+**The inbound half has its own drain.** `drain_target_events` is **new**; the
+existing `drain_relay_events` and Plan 531's `drain_requester_events` are
+byte-identical. The split is not cosmetic: an introduction is addressed to
+*this* router, so it belongs to the target role and not to the introducer's.
+
+**One signer implementation for the router's own key.** The target's accept is
+signed with the router's **own** identity key, over the **introducer-bound**
+preimage `relay_response_preimage(bob_hash, …)` — the introducer forwards the
+accept verbatim, so the accept must be bound to the introducer that forwarded
+it. The signer is `relay_requester::LocalIdentitySigner`, the same seam the
+requester uses, and the target implements its own `RelayTargetSigner` trait
+over it. The seed never leaves the identity bundle.
+
+**The daemon records no reachability signal of its own.** A router that
+answers an introduction is reachable **through the relay**, not directly, so
+the answer gains no corroborating class and the target's owner touches no
+tracker. The guard pins that structurally.
+
+**One opt-in only.** `ssu2.relay_target`, default **off**, refused at parse
+time without `ssu2.enabled` (`crates/i2pr-daemon/src/config.rs:3566`). Every
+refusal is a typed, counted reason — sixteen of them, from `Disabled` to
+`StagingRefused` — and **no refusal writes into a peer's record**: a requester
+this router does not hold is a **local** condition, never a peer's profile.
+
+**The owner runs on the existing tick.** It is constructed beside the
+introducer and requester owners when the opt-in is on, and it is driven by the
+daemon's **existing** relay tick, the same tick that drains the introducer's
+and the requester's handoffs, so all three halves of an exchange share one
+cadence. It adds no task of its own.
+
+**What is not claimed.** The introduction is routed to the target's handoff
+**only while the opt-in is on**: with the opt-in off — the default — it keeps
+travelling the introducer's handoff exactly as before, and the lane proves
+both halves. The transport's own requester table requires the accept to be
+correlated before a hole punch is processed, while the punch travels one hop
+and the accept two, so the requester owner has no deferred-punch buffer; the
+lane holds one punch aside until the accept is correlated and presents it
+afterwards, and the production drain and the production requester owner are
+unchanged. The target role also needs the **authoritative store**, which lives
+in the bootstrap: with no bootstrap the target's introductions are never
+drained. The delivery is confined to the **controlled loopback profile** —
+the router's SSU2 dial target is loopback-only and the private-LAN variant
+accepts only RFC1918 IPv4 — which is Plan 431's bound. The **production**
+SSU2 peer-test driver stays unbuilt, the `B` advertisement and `caps=f` stay
+with their owners, and the **stock-peer** half needs Plan 493's authorized
+two-host topology.
+
 ## Cross-references
 
 ### Deep dives
@@ -1482,6 +4052,8 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
 - [i2pr-su3.md](i2pr-su3.md) — SU3 framing and signature verification.
 - [i2pr-netdb-persist.md](i2pr-netdb-persist.md) — `CacheLoader`, `ReseedIngestor`.
 - [i2pr-console.md](i2pr-console.md) — the socketless console substrate this crate hosts.
+- [NTCP2 private-LAN qualification procedure](../operations/ntcp2-private-lan-qualification.md) —
+  the operator-facing procedure for the guarded operator profile.
 - [tooling.md](tooling.md) — scripts, fixtures, lanes, CI.
 - [dependency-graph.md](dependency-graph.md) — the allowlist this crate satisfies.
 
@@ -1509,6 +4081,20 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
 - **I2CP** — Plans 164–172. Closure:
   [`170`](../../plans/closure/i2cp/170-m9-i2cp-independent-clients-and-final-closure.md).
 - **SSU2** — Plans 158–161. Closure: `plans/closure/ssu2/`.
+- **SSU2 introducer (Bob) relay role** — Plans 490, 498, 499. Closure:
+  [`490`](../../plans/closure/network-participation/490-status.md),
+  [`499`](../../plans/closure/network-participation/499-status.md). Plan-of-record:
+  [`498`](../../plans/implementation/network-participation/498-ssu2-introducer-role-owner-in-the-live-inbound-loop.md),
+  [`499`](../../plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md).
+  Plan 498's implementation discharges Plan 490's **Medium #1** finding — the
+  runtime's relay handoff was decoded, authenticated, and then dropped because
+  the daemon never drained it — and it corrects that finding's prescription:
+  `ServiceProduct::poll_inbound` is not on the live path, so the drain lives in
+  the daemon's own inbound loop. Plan 499 discharges Plan 490's **Medium #2**
+  finding — no live socket carriage of a Relay Request: the runtime gained a
+  bounded outbound relay queueing API and the daemon's drain gained a
+  carriage seam, and the live three-party UDP mesh shows the role completing
+  on the wire. The role stays default-off and non-advertised.
 - **M10 service tunnels** — Plans 174–180, 182, 213–215. Closure:
   `plans/closure/service-tunnels/`. Plan-of-record:
   [`174`](../../plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),
@@ -1521,6 +4107,14 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
   [`268-status.md`](../../plans/closure/transit-tunnels/268-status.md).
 - **M12 floodfill** — Plans 270–283, 302–303, 306; type-5 floor later populated by Plans
   330–334. Closure: `plans/closure/floodfill/`.
+- **NetDB network participation** (peer-profile store, floodfill-indexed routing table,
+  consumer phase) — Plans 488, 489, 497. Closure:
+  [`488`](../../plans/closure/network-participation/488-status.md),
+  [`489`](../../plans/closure/network-participation/489-status.md). Plan-of-record:
+  [`497`](../../plans/implementation/network-participation/497-netdb-participation-consumer-phase.md).
+  Plan 433 owns the `NetDbTunnelCoordinator` composition into the daemon's service graph and
+  is registered **blocked** on Plans 431/432, so Plan 497's routing-table consumer is a seam
+  the daemon owns but does not yet compose into the tunnel-building path.
 - **Exploratory tunnels** — Plans 185/188; Plan 109/110 corrective. Closure:
   [`117`](../../plans/closure/exploratory-tunnels/117-status.md),
   [`117-corrective-closure`](../../plans/closure/exploratory-tunnels/117-corrective-closure.md).
@@ -1553,7 +4147,9 @@ adds no support surface: the credential is i2pr-local configuration, not an adve
     SOCKS request-path integration, and the loopback outproxy wire lane. That gap is why Plan 343
     closed only half the line.
 - **NTCP2** — Plan 101 guard; the development interop lane is closed and normal-daemon NTCP2
-  stays disabled.
+  stays disabled by default. An enabled NTCP2 surface is gated on an explicit qualification
+  profile, and the operator-facing procedure for the guarded operator profile is
+  [`docs/operations/ntcp2-private-lan-qualification.md`](../operations/ntcp2-private-lan-qualification.md).
 - **Router console** — Plans 356–358, ADR 0034. Plan-of-record:
   [`356`](../../plans/implementation/router-console/356-eggserve-axum-self-contained-console-foundation.md),
   [`357`](../../plans/implementation/router-console/357-loopback-browser-security-and-optional-authentication.md),
@@ -1597,3 +4193,545 @@ this refresh:
   type 5 (`m11_transit_tunnels` row, `specs/support.toml:370`).
 - No Encrypted LeaseSet2 capability is advertised and no live interoperability is claimed.
   Full Proposal 170 conformance is not claimed.
+
+## The requester's establishment (Plan 533)
+
+A router behind a firewall cannot reach a peer directly. The SSU2 relay
+protocol lets the peer's **introducer** do the reaching — and the requester
+then has to **open the session** with the peer it was relayed to. That last
+step is what Plan 533 adds; the exchange itself was already complete in shape
+after Plans 531 and 532.
+
+**Three gaps stood in the way, and all three are now closed.**
+
+- The accept's token was **inert**: the target drew it from the daemon's own
+  randomness, while the only possible consumer is the target's responder,
+  whose authority is the runtime's token table. The token is now issued by
+  that table, bound to the requester's **exact** source address.
+- An early hole punch was **refused and lost**: the transport requires the
+  accept before a hole punch, and the punch travels one hop while the accept
+  travels two. The requester owner now **holds** the punch and presents it
+  again once the accept is correlated.
+- There was **no establishment**: nothing read the accept's endpoint and
+  token, nothing read the target's validated keys, and nothing dialled.
+
+**The owner is the daemon's.** `crates/i2pr-daemon/src/relay_requester.rs`
+holds the policy: which target, which introducer, when — and now the
+**deferral** and the **establishment material**. The deferral is a bounded
+table of hole punches that arrived before their accept; the transport's
+wrong-role refusal is the **deferral signal**, not a failure, and the held
+punch is presented again through the transport's own seam once the accept
+lands. The establishment material is the accept's endpoint and token, kept on
+the live request and published when the exchange completes.
+
+**The establishment's owner is the daemon's too.**
+`crates/i2pr-daemon/src/relay_establishment.rs` reads the target's **validated**
+RouterInfo out of the authoritative store, takes the target's static and
+introduction keys from that validated record through the transport's strict
+parser, builds the dial target under the **qualification profile**, and
+presents the accept's token. It holds no socket and dials nothing itself.
+
+**The task is the daemon's, and it is owned.**
+`crates/i2pr-daemon/src/relay_establishment_task.rs` runs the establishment on
+a task of its own under the service's child scope, because a session
+establishment is an await and the daemon's `select!` loop must never block on
+a handshake — the relay tick is a 100 ms cadence. The handoff between the
+requester owner and the task is **bounded**, and a full handoff returns the
+material to the owner under a counted reason rather than dropping it silently.
+The bootstrap's lock is released before the dial, so a slow handshake can never
+hold the router's NetDB.
+
+**What this does not do.** The daemon writes **no** reachability signal of its
+own: a peer reached through a relay is reachable *through the relay*, not
+directly, so the establishment gains no corroborating class and the
+corroboration count is unchanged. No configuration key is added — the
+establishment rides `ssu2.relay_requester` and the token issuance rides
+`ssu2.relay_target`, and both stay default off.
+
+## The relayed peer's build route (Plan 534)
+
+A router behind a firewall can now **reach** a peer through that peer's
+introducer (Plan 533) and hold an authenticated session with it. What the
+router still could not do was **use** it: the tunnel-build route drew its peer
+from the peer-profile store's policy selection, so a peer the router had
+deliberately reached was one candidate among every peer the router knew, and
+the deliberate reach was diluted into a random draw.
+
+**The owner is the daemon's.** `crates/i2pr-daemon/src/relay_session_peer.rs`
+holds the **local observation table**: a bounded, expiring record that this
+router reached a peer through a relay. It holds no socket, owns no task and
+dials nothing; it records, and the route takes.
+
+**The observation is recorded by the establishment's own task.**
+`crates/i2pr-daemon/src/relay_establishment_task.rs` records the peer when the
+handshake succeeds, through the public `record_established_peer` seam. The peer
+comes from the dial target the task already built, so no identity crosses a
+boundary that did not already have it.
+
+**The route names it.** `crates/i2pr-daemon/src/exploratory_driver.rs` takes
+the **oldest** live observation before it draws a candidate, and names that
+peer. The named target is the route's **subject**, not one more candidate: the
+selection's rank floor, participation cap and per-prefix diversity rule exist
+to spread load, and letting them dilute a deliberate reach would defeat the
+point.
+
+**The same floor applies.** The named target is gated by the **same**
+`tunnel_peer_eligibility` the drawn candidates pass, and the gate's verdict is
+carried faithfully. A peer below the floor is refused and counted. A named
+target whose validated record the router does not hold is a **local**
+condition and is counted as `peer_material_absent` — never as the peer's
+missing version.
+
+**One build path.** The named target's build goes through the **existing**
+`ExploratoryBuildCoordinator::rebuild_exploratory`, so Plan 504's liveness
+scheduler and Plan 505's pairing apply unchanged. When a named target is
+refused the route falls back to the store's own selection, so one ineligible
+peer never blocks the exploratory posture.
+
+**What this does not do.** The observation is a fact about **this router's**
+session, not about the peer: the daemon writes **no** reachability signal, the
+corroboration count is unchanged, and the peer's profile gains no
+corroborating class. Taking the observation is **consuming**, so the router
+builds toward a peer it reached through a relay once and reaches it again
+through the relay if it wants to; and the observation **expires**, because a
+session that died while the router was not looking must not be built toward.
+No configuration key is added — the table rides `ssu2.relay_requester` and is
+created only when the operator asked for the requester role.
+
+## The relay target answers with no lock held (Plan 536)
+
+Plan 532 built the relay **target** role, and it recorded a **Low** finding:
+*"the target role needs the bootstrap's store"* — the composition root drains
+the target's handoff only when the daemon holds a `Bootstrap`. Plan 536 is
+that finding's owner.
+
+**Two shapes changed.** The target's drain is no longer gated on the
+bootstrap, and it no longer holds the router's NetDB lock across the answer.
+
+**The material source is the seam.** `crates/i2pr-daemon/src/relay_target.rs`
+gains a **daemon-local** trait, `RelayTargetMaterialSource`, with one method,
+`read_requester_material`. It is implemented **for the validated store
+itself** — the netdb crate's own `RouterInfoStore` — so the free function
+`read_requester_material(&RouterInfoStore, [u8; 32])` is unchanged, its
+signature, its body and its four refusals are exactly what they were, and
+Plan 532's lane still compiles and still passes. A second implementation,
+`ValidatedStoreMaterialSource`, is the **production** one: it holds
+`Option<&Arc<Mutex<Bootstrap>>>` and reads the one named peer under the
+bootstrap's mutex.
+
+**The guard is released before the read returns.** The production source binds
+the bootstrap's guard to a **local**, reads the material, and lets the guard
+drop when the function returns. The accept is therefore signed and staged with
+**no lock held** — the same pattern Plan 533's establishment task already
+follows for the same store. The lane measures it with a signer that probes
+the lock at the moment it signs, and a second signer that *holds* the lock
+proves the probe is not vacuous.
+
+**The drain is never skipped silently.** The composition root's relay tick
+builds the source from `bootstrap.as_ref()` and drains the target's handoff
+**whenever the target role exists**. A router that holds no validated store —
+or whose NetDB lock is poisoned — refuses the introduction under the typed
+reason `StoreUnavailable`, counted under `refusals_store_unavailable`. The
+refusal is a fact about **this router**, never about the requester: it is
+never written into the requester's profile, and it never counts as a peer
+fault. Before Plan 536 the same situation produced no drain, no refusal, no
+count and no trace.
+
+**The read stays read-only.** One named peer, one strict address parse, two
+derived values, no mutation and no peer profile written.
+
+**The target's semantics are untouched.** The accept's signature preimage, the
+hole punch, the dial profile, the transport's target table and the transport's
+refusal order are exactly what the tree already had. Plan 532's lane and
+guard stay **byte-identical** — the plan changes the material **source**, not
+the semantics — and Plan 532's guard still finds the strings it looks for.
+
+**What the plan does not do.** It adds no store, no lock, no owner, no
+configuration key, no task, no timer, no listener and no socket, and it
+changes no transport file. The **router's validated store is still the
+bootstrap's store** (`crates/i2pr-daemon/src/bootstrap.rs:215`): separating
+the router's NetDB from the bootstrap's lifetime is a successor's work. The
+plan removes the **lock scope** and the **silent skip**, and leaves the
+ownership alone.
+
+## The relay requester asks with no lock held (Plan 537)
+
+Plan 531 built the relay **requester** role, and Plan 536's closure record
+assigned the requester's remaining contention to **"the requester's line"**:
+*"The requester's outbound step keeps its bootstrap gate. That is deliberate —
+asking a peer for a relay genuinely needs the router's peer population — but it
+means the requester still contends with the router's NetDB."* Plan 537 is that
+line's owner.
+
+**Two shapes changed.** The outbound step is no longer gated on the bootstrap,
+and it no longer holds the router's NetDB lock across the request.
+
+**The material source is the seam.** `crates/i2pr-daemon/src/relay_requester.rs`
+gains a **daemon-local** trait, `RelayRequesterMaterialSource`, with three
+reads: `peer_pool`, `published_introducers` and `introducer_endpoint`. It is
+implemented **for the validated store itself** — the netdb crate's own
+`RouterInfoStore` — so the free functions `read_published_introducers` and
+`read_introducer_endpoint` are unchanged, their signatures, their bodies and
+their `store.get(` reads are exactly what they were, and Plan 531's lane still
+compiles and still passes. A second implementation,
+`ValidatedStoreRequesterSource`, is the **production** one: it holds
+`Option<&Arc<Mutex<Bootstrap>>>` and takes the bootstrap's mutex for one
+self-contained read at a time.
+
+**The guard is released before each read returns.** The production source binds
+the bootstrap's guard to a **local**, performs **one** read, and lets the guard
+drop when the function returns. The RelayRequest is therefore signed and
+carried with **no lock held** — the same pattern Plan 533's establishment task
+and Plan 536's target role already follow for the same store. The lane measures
+it with a signer that probes the lock at the moment it signs, and a second
+signer that *holds* the lock proves the probe is not vacuous.
+
+**The refusal to ask is never skipped silently.** The composition root's relay
+tick builds the source from `bootstrap.as_ref()` and drives the outbound step
+**whenever the requester role exists**. A router that holds no validated store —
+or whose NetDB lock is poisoned — refuses the request under the typed reason
+`StoreUnavailable`, counted under `refusals_store_unavailable`. The refusal is a
+fact about **this router**, never about any peer: it is never written into a
+peer's profile, and it never counts as a peer fault. Before Plan 537 the same
+situation produced no request, no refusal, no count and no trace.
+
+**The requester's need for the peer population is unchanged.** Asking a peer for
+a relay genuinely needs to know which peers the router's NetDB holds, so the
+pool read stays. What changed is its **scope**: it is one self-contained read
+whose guard is released before it returns, instead of the prelude to a
+signature and two transport writes under the same guard.
+
+**The requester's semantics are untouched.** The RelayRequest preimage, the
+signature, the nonce discipline, the session gate, the transport's requester
+table and the counters are exactly what the tree already had. Plan 531's lane
+and guard stay **byte-identical** — the plan changes the material **source**,
+not the semantics — and Plan 531's guard still finds the strings it looks for.
+
+**What the plan does not do.** It adds no store, no lock, no owner, no
+configuration key, no task, no timer, no listener and no socket, and it changes
+no transport file and no runtime file. The **router's validated store is still
+the bootstrap's store** (`crates/i2pr-daemon/src/bootstrap.rs:215`):
+separating the router's NetDB from the bootstrap's lifetime is a successor's
+work. The plan removes the **lock scope** and the **silent skip**, and leaves
+the ownership alone.
+
+## The NetDB's floodfill statistic is accounted (Plan 538)
+
+The daemon's bootstrap owns the router's only validated `RouterInfoStore`, and
+its mutex **is** the router's NetDB lock. The bootstrap read the store's
+statistics at five points — the prune, the authenticated ingest, the cache
+loader, the state computation and the reseed path — every one of them under
+that lock, and the statistics were **derived by a scan**, so the router's
+NetDB lock was held across a population walk on the router's **live
+maintenance path**.
+
+**The bootstrap now computes the statistics once per operation.** The refresh
+**takes** the statistics it refreshes:
+
+```rust
+fn refresh_snapshot(&mut self, stats: RouterInfoStoreStats) {
+    self.snapshot.record_count = stats.record_count;
+    self.snapshot.encoded_bytes = stats.total_encoded_bytes;
+    self.snapshot.floodfill_advertisers = stats.floodfill_advertiser_count;
+    self.snapshot.last_reseed_summary = self.last_reseed_summary.clone();
+}
+```
+
+Every call site computes the statistics once and passes them in, so the
+snapshot's counts and the caller's counts are the same numbers by construction
+and no operation computes them twice. The state computation reads them **once**
+and decides on that one computation, so it can no longer disagree with the
+snapshot it just refreshed.
+
+**The counts are unchanged.** The refresh points are unchanged, the
+`BootstrapSnapshot` fields are unchanged, and the `BootstrapState` decision
+still compares the record count against `min_router_infos` and the floodfill
+advertiser count against `min_floodfill_advertisers`. The count is exact, so
+the decision is the one the tree already made.
+
+**The bootstrap's public surface is unchanged.** `snapshot()`,
+`diagnostics()` and `store_summary()` keep their signatures and their results.
+
+**What is not claimed.** The store's **prune** is still a population walk under
+the router's NetDB lock, because a prune must examine every record. That work
+keeps its named owner — the successor that gives the router a NetDB owner of
+its own, which is the larger change Plans 536 and 537 both named.
+
+## The routing table's population holds no NetDB lock (Plan 539)
+
+**The shape.** The composition root's `populate_routing_table` used to walk
+**every** floodfill advertiser the NetDB holds and index each one, and it did
+that walk **under the router's NetDB lock** — the bootstrap's mutex *is* the
+router's NetDB lock. The walk's body called the routing table's own `index`,
+which takes the routing table's own mutex, so the router's NetDB lock
+**wrapped** the routing table's mutex for the whole population.
+
+**The source.** The population is now read through a **daemon-local** trait,
+`RoutingTablePopulationSource`, with one method:
+
+```rust
+fn advertisers(&self) -> Result<Vec<ValidatedRouterInfo>, RoutingPopulationRefusal>;
+```
+
+The trait is implemented **for the store itself**, so a lane that passes a
+`&store` still compiles and still passes. The **production** implementation,
+`ValidatedStorePopulationSource`, holds the router's bootstrap and a reference
+to the owner's refusal counter; its read takes the bootstrap's lock, performs
+**one** read, and **releases the guard before the read returns**.
+
+**The indexing.** The composition root indexes the returned advertisers
+**after** the read returns, so the indexing runs with **no** NetDB lock held
+and the router's NetDB lock never nests inside the routing table's. The
+population still rides the **existing** startup and the **existing** tick; no
+task, timer, listener or socket is added.
+
+**The absence.** A missing store and a poisoned lock are the same typed
+refusal, `RoutingPopulationRefusal::StoreUnavailable`. The owner holds the
+counter and the **source** increments it, so the number lives with the owner
+that owns the routing table while the lane can observe a refusal being
+counted. The refusal is a fact about **this router**, never about a peer, and
+it is never written into a peer's profile.
+
+**The precedent.** The shape of this fix is the one the tree already used
+thirty lines below the defect: Plan 505's `learn_bootstrap_peers` takes the
+bootstrap's lock for one self-contained read, lets the guard drop before the
+read returns, and learns its batch afterwards — and its own comment says
+why.
+
+## The NetDB's prune does not walk the population (Plan 540)
+
+The daemon's peer reconcile calls the validated store's prune **under the
+router's NetDB lock** — the bootstrap's mutex, which *is* the router's NetDB
+lock — and the reconcile is on the router's live maintenance cadence. Before
+Plan 540 the prune found the stale records by walking **every** retained
+record, so the lock was held across an O(population) walk.
+
+**The prune's call site is unchanged.** The bootstrap still calls
+`self.store.prune(Date::from_millis(now_ms), window_ms)` under the
+bootstrap's lock, and Plan 507 pins that call site byte for byte. What changed
+is the **cost of the walk**: the store now finds the stale records through a
+maintained age index, so the lock is held for a walk proportional to what the
+prune removes.
+
+**The lock scope is still the reconcile's.** Plan 540 does not narrow the
+reconcile's lock scope, and it does not pretend to: the guard reads the
+source and the lane observes what the prune does, so the claim is a claim
+about the **shape** of the work under the lock, not about a measurement of how
+long the lock is held.
+
+**The prune's semantics are unchanged.** The same records are removed, in one
+call, under the same window; the accounting is released with each record, and
+the router's own RouterInfo is never a prune victim.
+
+The plan adds **no** store, **no** lock, **no** owner, **no** configuration
+key, **no** task, **no** timer, **no** listener and **no** socket, it changes
+**no** transport file and **no** runtime file, and `Cargo.toml` and
+`Cargo.lock` stay byte-identical. Nothing is advertised: `router.version`
+stays `0.9.62` and the inventory's advertised count stays **zero**.
+
+## The floodfill selection store is fed the router's advertisers (Plan 541)
+
+The router's **authoritative** floodfill selection store — the
+`DestinationTunnelCoordinator`'s store, which `candidate_hashes` and
+`version_gated_candidate_hashes` read — was fed
+`Bootstrap::validated_router_info_snapshot()`. That snapshot is the **first
+256 records in ascending `RouterHash` order**, and the bound belongs to the
+**group provider**'s RouterInfo supply. The floodfill advertisers are
+distributed across the hash space, so the selection store held an arbitrary
+subset of the NetDB and normally held **no** advertiser at all, and the router
+then failed closed with `NoEligibleFloodfill` while its own NetDB held
+thousands of floodfill advertisers.
+
+**The feed carries the advertisers.** Two seams carry them:
+
+- the **Destination-groups seed** reads
+  `bootstrap.floodfill_advertiser_snapshot()`;
+- the **reconcile's feed** takes the advertiser snapshot under the bootstrap's
+  lock, releases it, and writes the advertisers into the coordinator's store
+  through the canonical write API.
+
+The two locks are never held at once, and a refusal at capacity is counted and
+the batch continues, so one peer at capacity never aborts the reconcile.
+
+**The group provider's bound is unchanged.** The bound belongs to the group
+provider's own RouterInfo supply, and the three other consumers of the bounded
+snapshot — the controlled NTCP2 lookup's candidate pool, the peer-profile learn
+cadence and the controlled NTCP2 dial — keep it.
+
+**The selection's observable behaviour is unchanged.** It still filters on the
+capability and still yields the advertisers in ascending `RouterHash` order,
+so Plan 538's guard needs no extension.
+
+**What is not claimed.** The wiring is proven **statically**, not
+behaviourally: the guard reads the source and the lane observes what the
+selection does. The router's validated store is still the bootstrap's store,
+the advertiser snapshot is still a copy taken under the router's NetDB lock,
+and the peer-profile store's feed is still the bounded prefix; all three keep
+their named owner.
+
+## The NetDB's retention runs in every posture (Plan 542)
+
+`RouterInfoStore::insert` refuses at the quota and never evicts, and the prune's
+own doc comment states the consequence: *"a NetDB that filled up would refuse
+every new peer, permanently"*. The prune had exactly **one** production caller,
+`PeerReconcile::prune_bootstrap`, and `PeerReconcile` exists only inside
+`ServiceProduct` — which the daemon builds only when
+`service_tunnels_active(config)` is true, and that is false by default for
+I2PControl, SAM and every service tunnel.
+
+So an SSU2-only router had a **write-only** NetDB. The reseed, the cache and the
+authenticated unsolicited `DatabaseStore` kept feeding it; it reached
+`netdb.max_records` or `netdb.max_encoded_bytes`; and then it refused every
+subsequent peer for as long as the router ran.
+
+**The step has a second caller.** `netdb_participation::prune_netdb` applies the
+router's **own** window — Plan 507's derived `RETENTION_WINDOW_MS`, imported
+rather than restated — and returns a `PruneOutcome` the reconcile already
+understands, so the two callers cannot disagree about what a prune outcome is.
+
+**The cadence is the one the router already has.**
+`run_netdb_retention` rides the participation maintenance period under the
+service's child scope, so there is no second cadence, no second knob, no new
+timer, no listener and no ownerless task. A cadence period outside the bound is
+refused rather than clamped silently.
+
+**The switch is the NetDB's own.** The participation service starts the step
+under `config.netdb.enabled`, **outside** the routing table's `if enabled`
+block. The routing table's population, the exploration job, the profile feed and
+the discovery spine keep their existing gates: the router's ability to *use* its
+NetDB is no longer the condition of its ability to *forget*.
+
+**What is not claimed.** The step's **reachability** is proven statically, not
+behaviourally. The lane constructs the owner directly and observes what the step
+does; the guard proves the step has a caller outside the reconcile, that the
+caller is not behind the routing-table switch, and that the window has one
+definition. The router's validated store is still the bootstrap's store, and it
+keeps its named owner.
+
+## The router's own record reaches a peer out of band (Plan 544)
+
+`export_local_router_info` writes the router's own signed RouterInfo to
+`<data_dir>/export/<lowercase-hex-router-hash>` at `0700`/`0600`, beside the
+inspection publication that already encoded it.
+
+The two-host private-LAN qualification topology this repository has been
+blocked on has **no floodfill**, and the SSU2 publication path is
+loopback-clamped by design, so on an RFC1918 bind the router's record was
+published nowhere. The export is the lab handoff every I2P run has always used,
+made mechanical: the operator copies the file, and never derives a name.
+
+**The name is the hash.** The peer's cache loader derives its expected key from
+the filename, so a record under any other name is a key mismatch that reads
+exactly like an invalid record.
+
+**The directory is `export/`.** It is not `netdb/routers/`, which the router
+loads into its **own** store at startup: a record written there would make the
+router hold itself as a peer.
+
+The helper is a bounded synchronous write. It reads no configuration, opens no
+socket, spawns nothing and takes no lock; a record whose hash cannot be derived
+is skipped rather than written under a guessed name.
+
+**What is not claimed.** This is not publication. The router still publishes to
+no NetDB it cannot reach, and the export says nothing about a stock router's
+admission.
+
+## The SSU2 pool's population is not floodfill-only (Plan 545)
+
+`PeerPool::plan` preferred nothing and fell back to nothing: its only candidate
+source was `select_version_gated_floodfills`, so a router whose NetDB held no
+floodfill advertisers — every private-LAN and controlled-loopback posture —
+planned **no dial at all**. The router could receive a session and could not
+open one.
+
+**The pool now prefers floodfills and falls back to the peers it has learned.**
+A floodfill owns the nearby keyspace, so a session with it is worth more; the
+fallback exists so the pool is never empty. The fallback is reached only when
+the floodfill selection's target set is empty, and both selections reach the
+same `gate_candidates`, so a peer the preferred path would refuse is refused by
+the fallback for the same counted reason.
+
+**The absence is now named.** The tick reports the planned, examined, refused
+and started counts; each dial reports its outcome; and the three address-parsing
+steps in `ensure_peer_session_for_record` that ended in `.ok()?` name their
+failures. Before this, "never attempted" and "attempted and failed silently"
+were indistinguishable in a lab log.
+
+**What is not claimed.** The pool's ceilings are unchanged, no configuration key
+appears, and nothing is advertised. The observed two-host result is a planned
+dial and an `Established` SSU2 session within one tick between two `i2pr`
+routers, not against a stock router.
+
+## The bound-address publication key (Plan 546)
+
+`[ssu2] publish_bound_address` (default `false`) says **which address** the
+router may publish; `[ssu2] advertise` still says **whether** it publishes at
+all. They are separate keys on purpose: `qualification_profile` names a *dial*
+posture, and conflating the two would let a change of dial profile silently
+widen publication.
+
+With the key off, the runtime still produces publication material only for a
+loopback bind, so the floodfill role's `is_normal_qualified_address` refuses
+the material's address through its routability arm exactly as before. With it
+on, the runtime may publish the bound address and the floodfill accepts the
+runtime's material, because the runtime is the authority on what may be
+published — two authorities for one question either agree and are dead code or
+disagree and are a bug.
+
+**The precondition.** `Reachable` from a configured bind means "the socket is
+bound to this address". On a lab LAN or a directly-connected public host that
+is also "peers can reach this address"; behind NAT it is not, and a router that
+publishes the difference is the router the interlock existed to prevent. The
+key's own documentation says so. Live testing from behind NAT needs a peer
+test's verdict carried into runtime reachability, which no plan has done yet:
+`PeerTestOwner` exists but is built inside `ServiceProduct`, behind
+`service_tunnels_active(config)`, and nothing feeds its verdict to the runtime.
+
+The daemon copies the value out of the configuration before the `'static`
+service closure, like every other value that closure reads, and threads it
+through `FloodfillEvaluationContext` into `NormalReadiness`.
+
+## The peer test lives beside the transport it measures (Plan 547)
+
+`[ssu2] peer_test` (default `false`) asks this router to run an I2NP peer
+test against a peer it already holds a session with. Plan 521 gave the router
+the exchange and put its owner inside `ServiceProduct`; Plan 547 **moved** the
+owner out, because the product is built only when a destination group can
+exist at all — so a router that runs **only** SSU2 had no owner, sent no
+probe, and could never corroborate its own reachability.
+
+The owner now lives in `crates/i2pr-daemon/src/peer_test_runtime.rs`
+(`PeerTestRuntime`) and is built in the SSU2 service closure from
+`ssu2_config.peer_test` **alone**. It is driven by the daemon's **existing**
+group tick — no task, no timer, no listener — and it has exactly **one**
+consumer, the daemon's own inbound path: the seam reads the **classified**
+dispatcher outcome, so the message is decoded once and the responder runs no
+decoder of its own. Two consumers would answer the same probe twice and
+double the counters, so the guard pins the single consumer and the
+destination-group product owns no peer test at all.
+
+**The recorder did not move.** The runtime stays the only writer of
+reachability: the owner hands it a matched round trip and the runtime derives
+the address family from the session the exchange travelled on, so the daemon
+never asserts one. A completed exchange is the **third** corroboration class
+— the two the router has on its own are the configured bind and the validated
+path — and it is the class that turns `CandidateReachable` into `Reachable`,
+which is what `publication_material` requires. A **contradiction** takes
+precedence over the corroboration, so a router whose address a peer cannot
+reach refuses to publish it.
+
+**The second gate was an argument list.** `refresh_local_router_info_record`
+installed through `install_local_router_info`, which passes no NTCP2 endpoint,
+while the install gate requires a record that names an NTCP2 address to match
+that endpoint — so a dual-transport record had **never** been installable
+after a re-date, and the measured log showed `reason=InvalidPublication` beside
+`outcome=RefusedNoTarget`. The re-dating path now carries the endpoint and
+the scope it is admitted in, and chooses the install form by the record's
+**own** content: a record that names an NTCP2 address goes through the scoped
+form, whose gate still compares that address with the supplied endpoint; a
+record that names none keeps the plain form, whose gate requires exactly
+that. The endpoint is **supplied**, never inferred from the record, because
+inferring it would make the test compare the record with itself.
+
+The publication's task carries the endpoint and the scope in its own inputs,
+so the transport's service loop holds none of them.

@@ -42,7 +42,7 @@ use std::fmt;
 
 use i2pr_netdb::{
     DestinationHash, LeaseSet2Store, LeaseSet2ValidationContext, LookupAction, LookupFinalState,
-    LookupId, LookupKind, LookupOutcome, LookupPolicy, ReplyPathProvider, RouterHash,
+    LookupId, LookupKind, LookupOutcome, LookupPolicy, ReplyPath, ReplyPathProvider, RouterHash,
     RouterInfoLookup, RouterInfoStore, RouterInfoStoreConfig, StartOutcome, ValidationContext,
     handle_database_store_lease_set2, router_hash_from_destination,
 };
@@ -79,6 +79,12 @@ pub enum NetDbSeamError {
     /// The caller invoked an ingestion path without an active
     /// LeaseSet2 lookup.
     NoActiveLeaseSet2Lookup,
+    /// Plan 513: the caller invoked an ingestion path without an active
+    /// exploratory lookup.
+    NoActiveExploratoryLookup,
+    /// Plan 513: the caller invoked an ingestion path without an active
+    /// RouterInfo-kind lookup.
+    NoActiveRouterInfoLookup,
     /// The supplied envelope did not carry a `DatabaseStore` body.
     UnsupportedBody,
     /// The lookup state machine rejected the response.
@@ -89,6 +95,8 @@ impl std::fmt::Display for NetDbSeamError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoActiveLeaseSet2Lookup => formatter.write_str("no active LeaseSet2 lookup"),
+            Self::NoActiveExploratoryLookup => formatter.write_str("no active exploratory lookup"),
+            Self::NoActiveRouterInfoLookup => formatter.write_str("no active RouterInfo lookup"),
             Self::UnsupportedBody => formatter.write_str("envelope is not a DatabaseStore"),
             Self::LookupEngine(error) => write!(formatter, "lookup engine: {error}"),
         }
@@ -184,6 +192,24 @@ pub struct NetDbSeam {
     lease_set2_provider: Option<Box<dyn ReplyPathProvider>>,
     /// Plan 122 §B: LeaseSet2 lookup context for response ingestion.
     lease_set2_context_seconds: u32,
+    /// Plan 513: the Exploratory-kind lookup state machine. An
+    /// exploratory request is wire lookup type `3`: it asks one named
+    /// floodfill for the peers closest to a random search key. The
+    /// machine is separate from the RouterInfo-kind machine so a peer
+    /// resolution and an exploration never share one state slot.
+    exploratory_lookup: RouterInfoLookup,
+    /// Plan 513: the Exploratory-kind lookup's reply-path provider. The
+    /// seam consults this provider only while an exploratory lookup is
+    /// active, so the Plan 117 router-side provider is not double-fired.
+    exploratory_provider: Option<Box<dyn ReplyPathProvider>>,
+    /// Plan 513: the seam's bounded lookup policy. The exploratory
+    /// ingestion path needs the same suggestion ceilings the lookup state
+    /// machines were constructed with.
+    policy: LookupPolicy,
+    /// Plan 513: RouterInfo-kind lookup context for response ingestion.
+    /// The caller advances this on every clock tick so the validator's
+    /// freshness policy stays correct.
+    routerinfo_context_seconds: u32,
 }
 
 impl NetDbSeam {
@@ -199,6 +225,10 @@ impl NetDbSeam {
             lease_set2_lookup: RouterInfoLookup::new(policy),
             lease_set2_provider: None,
             lease_set2_context_seconds: 0,
+            exploratory_lookup: RouterInfoLookup::new(policy),
+            exploratory_provider: None,
+            policy,
+            routerinfo_context_seconds: 0,
         }
     }
 
@@ -226,6 +256,21 @@ impl NetDbSeam {
     /// Plan 122 §B: clear the LeaseSet2 reply-path provider.
     pub fn clear_lease_set2_reply_path_provider(&mut self) {
         self.lease_set2_provider = None;
+    }
+
+    /// Plan 513: attach the Exploratory-kind lookup's reply-path
+    /// provider.
+    ///
+    /// The provider supplies the **inbound** exploratory tunnel the
+    /// exploratory request's reply travels through. The Plan 117
+    /// router-side provider is not consulted for an exploratory lookup.
+    pub fn set_exploratory_reply_path_provider(&mut self, provider: Box<dyn ReplyPathProvider>) {
+        self.exploratory_provider = Some(provider);
+    }
+
+    /// Plan 513: clear the Exploratory-kind lookup's reply-path provider.
+    pub fn clear_exploratory_reply_path_provider(&mut self) {
+        self.exploratory_provider = None;
     }
 
     /// Plan 122 §B: sets the LeaseSet2 lookup response validation
@@ -428,6 +473,29 @@ impl NetDbSeam {
         let outcome = self
             .lease_set2_lookup
             .handle_pending_after_path(store, routing_key);
+        self.map_lease_set2_start_outcome(outcome)
+    }
+
+    /// Drives the active LeaseSet2 lookup to its next candidate
+    /// after one emitted attempt went unanswered within its window.
+    /// Already-queried peers are skipped by the state machine, so a
+    /// retry rotates floodfills instead of re-asking the silent one;
+    /// exhaustion yields a terminal `Complete` action, never a spin.
+    pub fn advance_lease_set2_after_timeout_with_store(
+        &mut self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+    ) -> LookupAction {
+        let outcome = self
+            .lease_set2_lookup
+            .advance_after_attempt_timeout(store, routing_key);
+        self.map_lease_set2_start_outcome(outcome)
+    }
+
+    /// Shared mapping from a LeaseSet2 start/advance outcome to the
+    /// runtime action. Terminal results become `Complete` actions
+    /// with the classified final state.
+    fn map_lease_set2_start_outcome(&self, outcome: StartOutcome) -> LookupAction {
         match outcome {
             StartOutcome::PendingAttempt(action) => action,
             StartOutcome::NeedsReplyPath(action) => action,
@@ -588,18 +656,83 @@ impl NetDbSeam {
         target: RouterHash,
         routing_key: &RouterHash,
     ) -> LookupAction {
+        self.begin_lookup_with_preferred(store, request_id, target, routing_key, None)
+    }
+
+    /// Begins a new lookup whose preferred peers are tried first.
+    ///
+    /// Plan 497. When `preferred` is `Some`, the state machine selects
+    /// the candidates exactly as it always does — the same flat-store
+    /// selection, the same policy, the same exclusions — and then
+    /// reorders that selection so the routing table's preferred peers
+    /// lead. The candidate **set** is never reduced: a peer the flat
+    /// store could serve is still served, and the target is still
+    /// excluded.
+    ///
+    /// `None` keeps the flat-store behaviour exactly as it was, so an
+    /// unchanged deployment is unaffected.
+    pub fn begin_lookup_with_preferred(
+        &mut self,
+        store: &RouterInfoStore,
+        request_id: u64,
+        target: RouterHash,
+        routing_key: &RouterHash,
+        preferred: Option<&[RouterHash]>,
+    ) -> LookupAction {
+        self.begin_routerinfo_lookup(store, request_id, target, routing_key, preferred, None)
+    }
+
+    /// Plan 513: begin a `LookupKind::RouterInfo` lookup for the named
+    /// peer.
+    ///
+    /// This is the **RouterInfo-kind start** of the live discovery spine:
+    /// it asks a floodfill for one named peer's `RouterInfo` so the router
+    /// can resolve a hash it holds but cannot yet reach. The lookup kind
+    /// is wire type `2`, the reply travels the **inbound** exploratory
+    /// tunnel, and the request travels the **outbound** exploratory tunnel
+    /// the caller composes it through.
+    ///
+    /// `reply_path` is the inbound exploratory tunnel's reply path. When it
+    /// is `None` the seam consults its injected reply-path provider
+    /// instead, which is what the Plan 117 composition contract expects.
+    ///
+    /// The candidate selection is the flat store's own selection, exactly
+    /// as [`Self::begin_lookup_with_preferred`] has always done it. When
+    /// `preferred` is `Some`, the routing table's answer **reorders** that
+    /// selection and never narrows it: a peer the flat store could serve
+    /// is still served, and a peer the flat store would not have served is
+    /// ignored. `None` keeps the flat-store behaviour exactly as it was.
+    pub fn begin_routerinfo_lookup(
+        &mut self,
+        store: &RouterInfoStore,
+        request_id: u64,
+        target: RouterHash,
+        routing_key: &RouterHash,
+        preferred: Option<&[RouterHash]>,
+        reply_path: Option<ReplyPath>,
+    ) -> LookupAction {
         let lookup_id = LookupId::new(request_id, LookupKind::RouterInfo, target);
-        let outcome = self.lookup.start(store, lookup_id, routing_key);
+        let outcome = match preferred {
+            Some(preferred) => {
+                self.lookup
+                    .start_with_preferred(store, lookup_id, routing_key, preferred)
+            }
+            None => self.lookup.start(store, lookup_id, routing_key),
+        };
         match outcome {
             StartOutcome::PendingAttempt(action) => action,
             StartOutcome::NeedsReplyPath(action) => {
-                // The state machine is asking for a reply path. Ask
-                // the injected provider; if a path is available,
-                // feed it back into the state machine and continue
-                // driving the loop until we reach a send or terminal
-                // action.
-                if let Some(provider) = self.provider.as_ref()
-                    && let Some(path) = provider.provide_reply_path()
+                // The state machine is asking for a reply path. The
+                // caller-supplied path wins; otherwise the injected
+                // provider is asked. If a path is available, feed it back
+                // into the state machine and continue driving the loop
+                // until we reach a send or terminal action.
+                let supplied = reply_path.or_else(|| {
+                    self.provider
+                        .as_ref()
+                        .and_then(|provider| provider.provide_reply_path())
+                });
+                if let Some(path) = supplied
                     && self.lookup.accept_reply_path(lookup_id, path)
                 {
                     self.advance_after_path(store, routing_key)
@@ -682,6 +815,189 @@ impl NetDbSeam {
                 }
             }
         }
+    }
+
+    /// Plan 513: begin an `LookupKind::Exploratory` lookup against the
+    /// named floodfill.
+    ///
+    /// This is the **Exploratory-kind start** of the live discovery spine.
+    /// The request is wire lookup type `3` and its key is the supplied
+    /// random search key, so the floodfill answers with the peers closest
+    /// to that key. The named floodfill is the peer being asked: an
+    /// exploratory request is addressed **directly** to one floodfill, not
+    /// spread over a candidate list.
+    ///
+    /// The reply travels the **inbound** exploratory tunnel the seam's
+    /// exploratory provider supplies. The request itself is delivered by
+    /// the caller over the direct transport seam, which is the
+    /// specification's path for an exploratory lookup.
+    pub fn begin_exploratory_lookup(
+        &mut self,
+        request_id: u64,
+        search_key: RouterHash,
+        floodfill: RouterHash,
+        reply_path: Option<ReplyPath>,
+    ) -> LookupAction {
+        let lookup_id = LookupId::new(request_id, LookupKind::Exploratory, search_key);
+        let outcome = self
+            .exploratory_lookup
+            .start_with_candidates(lookup_id, &[floodfill]);
+        match outcome {
+            StartOutcome::PendingAttempt(action) => action,
+            StartOutcome::NeedsReplyPath(action) => {
+                let supplied = reply_path.or_else(|| {
+                    self.exploratory_provider
+                        .as_ref()
+                        .and_then(|provider| provider.provide_reply_path())
+                });
+                if let Some(path) = supplied
+                    && self.exploratory_lookup.accept_reply_path(lookup_id, path)
+                {
+                    self.advance_exploratory_after_path()
+                } else {
+                    action
+                }
+            }
+            StartOutcome::Terminal(result) => {
+                let final_state = match *result {
+                    i2pr_netdb::LookupResult::Failure { final_state, .. } => final_state,
+                    i2pr_netdb::LookupResult::Success { .. }
+                    | i2pr_netdb::LookupResult::LeaseSet2Success { .. } => {
+                        LookupFinalState::Success
+                    }
+                    i2pr_netdb::LookupResult::EncryptedLeaseSet2Success { .. } => {
+                        LookupFinalState::Success
+                    }
+                };
+                LookupAction::Complete {
+                    lookup_id,
+                    outcome: LookupOutcome::new(
+                        lookup_id.kind(),
+                        lookup_id.target(),
+                        final_state,
+                        0,
+                        0,
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Plan 513: returns the active exploratory lookup identity, if any.
+    pub fn active_exploratory_lookup(&self) -> Option<LookupId> {
+        self.exploratory_lookup.active_lookup()
+    }
+
+    /// Plan 513: cancel the active exploratory lookup and free the state
+    /// machine slot.
+    pub fn cancel_exploratory_lookup(&mut self) {
+        let _ = self.exploratory_lookup.cancel();
+    }
+
+    /// Plan 513: drive the active exploratory lookup to its next action
+    /// after a reply path has been accepted.
+    fn advance_exploratory_after_path(&mut self) -> LookupAction {
+        let outcome = self.exploratory_lookup.handle_pending_after_path(
+            &empty_router_info_store(),
+            &RouterHash::from_bytes([0; 32]),
+        );
+        match outcome {
+            StartOutcome::PendingAttempt(action) => action,
+            StartOutcome::NeedsReplyPath(action) => action,
+            StartOutcome::Terminal(result) => {
+                let final_state = match *result {
+                    i2pr_netdb::LookupResult::Failure { final_state, .. } => final_state,
+                    i2pr_netdb::LookupResult::Success { .. }
+                    | i2pr_netdb::LookupResult::LeaseSet2Success { .. } => {
+                        LookupFinalState::Success
+                    }
+                    i2pr_netdb::LookupResult::EncryptedLeaseSet2Success { .. } => {
+                        LookupFinalState::Success
+                    }
+                };
+                let lookup_id = self.exploratory_lookup.active_lookup().unwrap_or_else(|| {
+                    LookupId::new(0, LookupKind::Exploratory, RouterHash::from_bytes([0; 32]))
+                });
+                LookupAction::Complete {
+                    lookup_id,
+                    outcome: LookupOutcome::new(
+                        lookup_id.kind(),
+                        lookup_id.target(),
+                        final_state,
+                        0,
+                        0,
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Plan 513: sets the RouterInfo-kind lookup's response validation
+    /// timestamp. The caller must advance this on every clock tick so the
+    /// validator's freshness policy stays correct.
+    pub fn set_routerinfo_now_seconds(&mut self, now_seconds: u32) {
+        self.routerinfo_context_seconds = now_seconds;
+    }
+
+    /// Plan 513: ingest one `DatabaseStore` into the active RouterInfo-kind
+    /// lookup.
+    ///
+    /// The record is validated by the lookup engine's own rules and
+    /// inserted into the router's NetDB store, so the named peer becomes a
+    /// peer the router can ask. A `DatabaseStore` that does not name the
+    /// lookup's target changes nothing: the engine returns `Continue`, and
+    /// the router's peer population is never widened by an unrelated
+    /// record.
+    pub fn ingest_routerinfo_store(
+        &mut self,
+        store: &mut RouterInfoStore,
+        store_message: &DatabaseStoreMessage,
+    ) -> Result<i2pr_netdb::ResponseOutcome, NetDbSeamError> {
+        let lookup_id = self
+            .lookup
+            .active_lookup()
+            .ok_or(NetDbSeamError::NoActiveRouterInfoLookup)?;
+        let context = ValidationContext::new(i2pr_proto::Date::from_millis(
+            u64::from(self.routerinfo_context_seconds).saturating_mul(1000),
+        ));
+        let outcome = i2pr_netdb::handle_database_store(
+            &mut self.lookup,
+            store,
+            lookup_id,
+            store_message,
+            context,
+        )?;
+        Ok(outcome)
+    }
+
+    /// Plan 513: returns the active RouterInfo-kind lookup identity, if any.
+    pub fn active_routerinfo_lookup(&self) -> Option<LookupId> {
+        self.lookup.active_lookup()
+    }
+
+    /// Plan 513: ingest one `DatabaseSearchReply` into the active
+    /// exploratory lookup.
+    ///
+    /// The reply's peers are merged into the lookup's bounded suggestion
+    /// buffer. The reply is **not** evidence about any peer: the router
+    /// still has to resolve each named peer's own signed `RouterInfo`
+    /// before the routing table may index it.
+    pub fn ingest_exploratory_search_reply(
+        &mut self,
+        reply: &i2pr_proto::DatabaseSearchReplyMessage,
+    ) -> Result<i2pr_netdb::ResponseOutcome, NetDbSeamError> {
+        let lookup_id = self
+            .exploratory_lookup
+            .active_lookup()
+            .ok_or(NetDbSeamError::NoActiveExploratoryLookup)?;
+        let result = i2pr_netdb::handle_search_reply(
+            &mut self.exploratory_lookup,
+            lookup_id,
+            reply,
+            self.policy.max_suggested_hashes(),
+            self.policy.suggested_hash_limit(),
+        )?;
+        Ok(result)
     }
 
     /// Returns the typed composition outcome the runtime scheduler
@@ -773,6 +1089,14 @@ impl NetDbSeam {
     /// Returns the underlying lookup state machine reference.
     pub fn lookup(&self) -> &RouterInfoLookup {
         &self.lookup
+    }
+
+    /// Plan 513: returns the seam's bounded lookup policy.
+    ///
+    /// The policy carries the ceilings and the deadlines every lookup the
+    /// seam runs is bounded by.
+    pub fn policy(&self) -> &LookupPolicy {
+        &self.policy
     }
 
     /// Returns a typed validation context the caller can use for

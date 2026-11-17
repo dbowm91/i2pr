@@ -1,0 +1,25 @@
+{
+  "caps": "OR",
+  "encryption_type": "ECIES_X25519",
+  "family": "i2pd",
+  "family_signature_valid": null,
+  "label": "withholding-no-floodfill",
+  "net_id": 2,
+  "published_addresses": [
+    {
+      "address_caps": "46",
+      "host": "192.168.44.10",
+      "port": 19001,
+      "transport": "SSU2",
+      "version": 2
+    }
+  ],
+  "router_version": "0.9.62",
+  "schema": "i2pr-plan495-lab-routerinfo-v1",
+  "signature_valid": true,
+  "signing_key_type": "ed25519",
+  "withheld": [
+    "i2pd-floodfill-declared",
+    "i2pd-floodfill-eligible"
+  ]
+}

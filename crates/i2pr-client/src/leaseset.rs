@@ -90,7 +90,14 @@ pub enum LeaseSetRotationCause {
     InitialGeneration,
     /// The usable inbound tunnel set changed.
     TunnelSetChanged,
-    /// The earliest advertised lease is inside the configured rotation margin.
+    /// The usable inbound tunnel set changed while the earliest advertised
+    /// lease was inside the configured rotation margin: the margin-driven
+    /// rotation, where the pool's replenishment replaced the tunnel whose
+    /// advertised lease was about to die.
+    ///
+    /// Plan 487 WP4: the margin is the rotation **deadline**, not a second
+    /// regeneration trigger. A replacement is signed only when the pool's
+    /// usable tunnel set actually changed.
     ApproachingExpiry,
 }
 
@@ -341,6 +348,25 @@ impl LeaseSetLifecycle {
     }
 
     /// Evaluates whether a replacement LeaseSet2 is required.
+    ///
+    /// A replacement is generated **only when the pool's usable inbound
+    /// tunnel set changed**. Re-signing an unchanged lease set cannot
+    /// extend the record: the advertised lease still dies at the same
+    /// second, so the floodfill stores a record that is no better than the
+    /// one it replaces while the `published` timestamp keeps advancing.
+    /// Plan 487 WP4 (live qualification) measured the cost of that rule
+    /// in the product: five publications inside 21 s, none of which
+    /// advanced the oldest advertised lease, followed by a hard
+    /// `LeaseAlreadyExpired` rejection once `published` reached the lease
+    /// end — which propagated as a service-fatal error and tore down the
+    /// `ssu2-router` service mid-stream.
+    ///
+    /// The approaching-expiry margin therefore no longer triggers a
+    /// regeneration of its own. It is the **deadline** the pool's
+    /// replenishment works against: the margin-aware replenishment
+    /// replaces the tunnel whose advertised lease is inside the window
+    /// while that tunnel is still alive, the changed tunnel set is what
+    /// this evaluation observes, and the rotation follows.
     pub fn evaluate(&self, leases: &[InboundLeaseSource], now_seconds: u64) -> LeaseSetDecision {
         if self.stopping {
             return LeaseSetDecision::Stopping;
@@ -352,15 +378,20 @@ impl LeaseSetLifecycle {
             return LeaseSetDecision::Regenerate(LeaseSetRotationCause::InitialGeneration);
         };
         if current.leases.as_slice() != leases {
+            // The usable inbound set changed: this is the rotation. A
+            // change that lands inside the rotation window is the
+            // margin-driven rotation — the replacement the pool built for
+            // the approaching expiry. Any other change is an ordinary
+            // tunnel set change (a tunnel failed or was withdrawn).
+            let rotation_margin = u64::from(self.config.lease_rotation_margin_seconds());
+            if current
+                .earliest_lease_expiry_seconds()
+                .saturating_sub(rotation_margin)
+                <= now_seconds
+            {
+                return LeaseSetDecision::Regenerate(LeaseSetRotationCause::ApproachingExpiry);
+            }
             return LeaseSetDecision::Regenerate(LeaseSetRotationCause::TunnelSetChanged);
-        }
-        let rotation_margin = u64::from(self.config.lease_rotation_margin_seconds());
-        if current
-            .earliest_lease_expiry_seconds()
-            .saturating_sub(rotation_margin)
-            <= now_seconds
-        {
-            return LeaseSetDecision::Regenerate(LeaseSetRotationCause::ApproachingExpiry);
         }
         LeaseSetDecision::Retain
     }
@@ -1027,7 +1058,16 @@ mod tests {
     }
 
     #[test]
-    fn approaching_expiry_rotates_the_lease_set() {
+    fn approaching_expiry_does_not_resign_an_unchanged_lease_set() {
+        // Plan 487 WP4 regression. The approaching-expiry margin is the
+        // rotation *deadline*, not a second regeneration trigger: a
+        // replacement is signed only when the pool's usable tunnel set
+        // actually changed. Re-signing the same expiring lease set
+        // cannot extend the record, and the live qualification measured
+        // the cost: five publications inside 21 s that advanced
+        // `published` without advancing the oldest advertised lease,
+        // followed by a hard `LeaseAlreadyExpired` rejection once
+        // `published` reached the lease end.
         let identity = identity(104);
         let pool = pool_with_inbound(&[5], 0);
         let leases = pool.inbound_lease_sources(0);
@@ -1044,7 +1084,101 @@ mod tests {
         );
         assert_eq!(
             lifecycle.evaluate(&leases, earliest - margin),
+            LeaseSetDecision::Retain,
+            "an unchanged lease set is retained inside the rotation window"
+        );
+        assert_eq!(
+            lifecycle.evaluate(&leases, earliest),
+            LeaseSetDecision::Retain,
+            "an unchanged lease set is retained past the rotation window"
+        );
+        assert_eq!(
+            lifecycle.generations(),
+            1,
+            "the retained record is not re-signed"
+        );
+    }
+
+    #[test]
+    fn the_pool_replacement_inside_the_rotation_window_is_the_margin_rotation() {
+        // Plan 487 WP4: the margin-driven rotation is the *changed* tunnel
+        // set that lands inside the rotation window — the replacement the
+        // pool built for the approaching expiry.
+        let identity = identity(124);
+        let first = pool_with_inbound(&[5], 0);
+        let first_leases = first.inbound_lease_sources(0);
+        let mut lifecycle = LeaseSetLifecycle::new(DestinationConfig::balanced());
+        lifecycle
+            .refresh(&identity, &first_leases, 0)
+            .expect("initial");
+        let earliest = lifecycle
+            .current()
+            .expect("record")
+            .earliest_lease_expiry_seconds();
+        let margin = u64::from(DestinationConfig::balanced().lease_rotation_margin_seconds());
+        let inside = earliest - margin + 1;
+
+        // A replacement tunnel arrives while the rotation window is open.
+        let mut second = pool_with_inbound(&[6], inside);
+        second
+            .register_inbound(established_inbound(5), inside)
+            .expect("second inbound");
+        let second_leases = second.inbound_lease_sources(inside);
+        assert_ne!(first_leases, second_leases, "the tunnel set changed");
+        assert_eq!(
+            lifecycle.evaluate(&second_leases, inside),
             LeaseSetDecision::Regenerate(LeaseSetRotationCause::ApproachingExpiry)
+        );
+        let decision = lifecycle
+            .refresh(&identity, &second_leases, inside)
+            .expect("margin rotation");
+        assert_eq!(
+            decision,
+            LeaseSetDecision::Regenerate(LeaseSetRotationCause::ApproachingExpiry)
+        );
+        let current = lifecycle.current().expect("record");
+        assert!(
+            current.published_seconds() > 0,
+            "the replacement advances `published`"
+        );
+        assert!(
+            current.earliest_lease_expiry_seconds() > earliest,
+            "the replacement advances the oldest advertised lease"
+        );
+    }
+
+    #[test]
+    fn a_rotation_never_signs_a_record_whose_lease_cannot_outlive_published() {
+        // Plan 487 WP4 regression: the live qualification's fatal error
+        // was `lease end N is not after published N`. A rotation that
+        // carries a lease which cannot outlive the record's own
+        // `published` timestamp is rejected by the builder, and the
+        // rejection used to propagate as a service-fatal error. The
+        // lifecycle must not sign such a record in the first place.
+        let identity = identity(125);
+        let pool = pool_with_inbound(&[5], 0);
+        let leases = pool.inbound_lease_sources(0);
+        let mut lifecycle = LeaseSetLifecycle::new(DestinationConfig::balanced());
+        lifecycle.refresh(&identity, &leases, 0).expect("initial");
+        let earliest = lifecycle
+            .current()
+            .expect("record")
+            .earliest_lease_expiry_seconds();
+        // A lease set whose only lease ends exactly at the prospective
+        // `published` second cannot be signed.
+        let expiring = vec![InboundLeaseSource::from_parts(
+            i2pr_tunnel::pool::TunnelSlot::from_raw(1),
+            Hash::from_bytes([7u8; 32]),
+            11,
+            earliest,
+            earliest,
+        )];
+        let error = lifecycle
+            .refresh(&identity, &expiring, earliest)
+            .expect_err("the builder rejects the record");
+        assert!(
+            matches!(error, LeaseSetError::LeaseAlreadyExpired { .. }),
+            "the builder rejects a lease that cannot outlive `published`"
         );
     }
 

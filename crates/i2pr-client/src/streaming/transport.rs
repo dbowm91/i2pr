@@ -43,6 +43,31 @@ impl fmt::Display for TransportOutcome {
     }
 }
 
+/// The kind of streaming packet a transport request carries.
+///
+/// Plan 487 WP2: the kind is **producer-owned**. The runtime attributes
+/// an acknowledgement to the egress stage from this field instead of
+/// re-decoding the wire bytes, so no stage count is ever inferred
+/// from another stage's count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutboundPacketKind {
+    /// The initial SYN.
+    Syn,
+    /// A SYN response (SYN-ACK).
+    SynAck,
+    /// A data packet carrying application payload.
+    Data,
+    /// A standalone acknowledgement.
+    Ack,
+    /// A graceful close.
+    Close,
+    /// A reset.
+    Reset,
+    /// A connectionless datagram (protocol 18), which is not a
+    /// streaming packet at all.
+    Datagram,
+}
+
 /// A request to send one streaming packet through the transport layer.
 ///
 /// The transport implementation consumes this request and routes the
@@ -64,6 +89,8 @@ pub struct TransportSendRequest {
     pub send_stream_id: u32,
     /// Receiver's stream ID.
     pub receive_stream_id: u32,
+    /// The kind of packet this request carries (Plan 487 WP2).
+    pub kind: OutboundPacketKind,
 }
 
 /// Abstract interface for sending streaming packets through the

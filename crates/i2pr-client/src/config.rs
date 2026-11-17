@@ -482,6 +482,30 @@ impl DestinationConfig {
         self.lease_rotation_margin_seconds
     }
 
+    /// Pool capacity for the inbound direction.
+    ///
+    /// Plan 487 WP4: the pool must be able to hold the base target **and
+    /// one replacement** while the tunnel whose advertised lease is
+    /// inside the rotation window is still alive. The replacement is
+    /// what the approaching-expiry rotation publishes — a record whose
+    /// advertised lease outlives the tunnel it replaced. Without the
+    /// headroom the replacement registration is rejected as "pool full",
+    /// the advertised lease dies with no successor, and the destination
+    /// is unresolvable for the gap between the lease's end and the next
+    /// tunnel build.
+    ///
+    /// The capacity stays bounded: it is the effective target plus one
+    /// replacement slot, clamped to the shared pool's directional
+    /// ceiling.
+    pub const fn pool_inbound_capacity(&self) -> u16 {
+        let capacity = self.effective_inbound_target().saturating_add(1);
+        if capacity > i2pr_tunnel::MAX_EXPLORATORY_INBOUND {
+            i2pr_tunnel::MAX_EXPLORATORY_INBOUND
+        } else {
+            capacity
+        }
+    }
+
     /// Projects the destination policy onto the shared bounded tunnel-pool
     /// configuration owned by `i2pr-tunnel`.
     ///
@@ -489,10 +513,11 @@ impl DestinationConfig {
     /// quantity plus standby), so standby tunnels register in the
     /// same bounded container while usability still keys on the
     /// base target. The constructor guarantees the sums fit the
-    /// directional ceilings.
+    /// directional ceilings. Plan 487 WP4 adds the inbound replacement
+    /// headroom; see [`Self::pool_inbound_capacity`].
     pub const fn pool_config(&self) -> Result<BoundedTunnelPoolConfig, ExploratoryConfigError> {
         BoundedTunnelPoolConfig::try_new(
-            self.effective_inbound_target(),
+            self.pool_inbound_capacity(),
             self.effective_outbound_target(),
             self.length_hops,
             self.tunnel_lifetime_seconds,

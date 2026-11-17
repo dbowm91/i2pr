@@ -20,6 +20,14 @@ pub enum LookupKind {
     RouterInfo,
     /// Standard `DatabaseLookup` for a Standard `LeaseSet2` record.
     LeaseSet2,
+    /// Plan 489: exploratory `DatabaseLookup`. The request carries a
+    /// random search key; the peer answers with the peers closest to
+    /// that key's routing position rather than with a stored record.
+    ///
+    /// The exploratory lookup never completes through a
+    /// `DatabaseStore`. Its answer is a `DatabaseSearchReply`, and
+    /// the peers it names feed the routing table.
+    Exploratory,
 }
 
 impl LookupKind {
@@ -28,6 +36,7 @@ impl LookupKind {
         match self {
             Self::RouterInfo => 2,
             Self::LeaseSet2 => 1,
+            Self::Exploratory => 3,
         }
     }
 }

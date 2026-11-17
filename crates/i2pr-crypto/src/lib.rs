@@ -501,6 +501,36 @@ pub fn verify_router_info(info: &RouterInfo) -> Result<(), CryptoError> {
     )
 }
 
+/// Re-dates and re-signs an encoded RouterInfo with the router's own key.
+///
+/// Plan 518. The signed region is re-encoded with the fresh publication date
+/// and signed again, so the record's **content** -- its addresses, its peers
+/// and its options -- is preserved exactly: only the date and the signature
+/// change. The result is decoded and verified before it is returned, so a
+/// caller never publishes a record this function could not prove.
+///
+/// The router's **hash** does not change. A RouterInfo's key is derived from
+/// the router identity, not from the signed bytes
+/// (`crates/i2pr-netdb/src/router_info.rs:249`), so a re-dated record is the
+/// same router to the network.
+pub fn resign_router_info_with_published(
+    bundle: &RouterIdentityBundle,
+    encoded: &[u8],
+    published: Date,
+) -> Result<Vec<u8>, CryptoError> {
+    let info = RouterInfo::decode(encoded, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
+    let signed = info.signed_bytes_with_published(published)?;
+    let signature = bundle.signing_key().sign(&signed)?;
+    let mut assembled = signed;
+    assembled.extend_from_slice(signature.as_bytes());
+    let verified = RouterInfo::decode(&assembled, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
+    verify_router_info(&verified)?;
+    if verified.published() != published {
+        return Err(CryptoError::InvalidSignature);
+    }
+    Ok(assembled)
+}
+
 /// Verifies the signature on a Standard LeaseSet2.
 ///
 /// The signature preimage is the exact byte region retained by the

@@ -173,6 +173,7 @@ fn initiator_config(world: &World) -> InitiatorConfig {
         expected_router_hash: world.bob_hash,
         clock: ClockSkewPolicy::handshake(),
         local_mtu: 1280,
+        remote_address: Some(endpoint(BOB_SOURCE)),
     }
 }
 
@@ -183,7 +184,6 @@ fn responder_config(world: &World) -> ResponderConfig {
         expected_peer_hash: Some(world.alice_hash),
         clock: ClockSkewPolicy::handshake(),
         local_mtu: 1280,
-        local_address: AddressBlock::new(endpoint(BOB_SOURCE)),
     }
 }
 
@@ -210,10 +210,21 @@ fn established_session(actions: Vec<HandshakeAction>) -> AuthenticatedSsu2Sessio
 /// Drives the full tokenless Retry trajectory and returns both sessions.
 fn full_tokenless_handshake() -> (AuthenticatedSsu2Session, AuthenticatedSsu2Session) {
     let world = world();
+    let config = initiator_config(&world);
+    full_tokenless_handshake_with(&world, config)
+}
+
+/// Drives the full tokenless Retry trajectory with a caller-supplied
+/// initiator configuration, so a test can vary what the initiator reports
+/// about the responder without changing the trajectory.
+fn full_tokenless_handshake_with(
+    world: &World,
+    config: InitiatorConfig,
+) -> (AuthenticatedSsu2Session, AuthenticatedSsu2Session) {
     let alice_source = socket_addr(ALICE_SOURCE);
 
     let (initiator, actions) = Initiator::begin(
-        initiator_config(&world),
+        config,
         InitiatorSecrets {
             static_secret: secret(11),
             ephemeral_secret: secret(12),
@@ -230,7 +241,7 @@ fn full_tokenless_handshake() -> (AuthenticatedSsu2Session, AuthenticatedSsu2Ses
     let token_request = write_bytes(&actions).pop().expect("token request");
 
     let mut store = TokenStore::establishment();
-    let responder = Responder::new(responder_config(&world), NOW_MS);
+    let responder = Responder::new(responder_config(world), NOW_MS);
     let (responder, actions) = responder
         .on_token_request(
             token_request,
@@ -353,6 +364,159 @@ fn full_tokenless_retry_trajectory_reaches_matching_keys() {
         .open(0, &header, &back)
         .expect("open");
     assert_eq!(opened, probe);
+}
+
+/// Plan 529: the specification's Address block carries "Alice's address,
+/// sent to Alice by Bob, or Bob's address, sent to Bob by Alice" -- the
+/// address at which the **recipient** sees the **sender**. The responder
+/// put its own bound address there before this plan, which told the
+/// initiator that the initiator's address was the responder's.
+#[test]
+fn the_session_created_carries_the_initiator_address_not_the_responder_own() {
+    let (alice, bob) = full_tokenless_handshake();
+
+    assert_eq!(
+        alice.observed_address(),
+        Some(endpoint(ALICE_SOURCE)),
+        "the responder reports the address at which it sees the initiator"
+    );
+    assert_ne!(
+        alice.observed_address(),
+        Some(endpoint(BOB_SOURCE)),
+        "the responder must never report its own address as the initiator's"
+    );
+    assert_eq!(
+        bob.peer_endpoint(),
+        socket_addr(ALICE_SOURCE),
+        "the responder still sees the initiator at its source address"
+    );
+}
+
+/// Plan 529: the block is symmetric. The initiator reports the address at
+/// which it sees the responder in the Session Request, and the responder
+/// reads it out of the authenticated payload.
+#[test]
+fn the_session_request_carries_alices_view_of_bob_and_the_responder_reads_it() {
+    let (alice, bob) = full_tokenless_handshake();
+
+    assert_eq!(
+        bob.observed_address(),
+        Some(endpoint(BOB_SOURCE)),
+        "the responder reads the initiator's view of the responder"
+    );
+    assert_ne!(
+        bob.observed_address(),
+        Some(endpoint(ALICE_SOURCE)),
+        "the responder must not read the initiator's own address as the responder's"
+    );
+    assert_eq!(
+        alice.peer_endpoint(),
+        socket_addr(BOB_SOURCE),
+        "the initiator still reaches the responder at the address it dialed"
+    );
+}
+
+/// Plan 529: the Retry is sent by the same responder for the same request,
+/// so it must not carry a different address. The Retry is sealed outside
+/// the Noise transcript, so it stays a weaker fact: the tree's `parse_retry`
+/// keeps discarding it, and it is never a reachability observation.
+#[test]
+fn the_retry_carries_the_observed_source_address() {
+    use i2pr_transport_ssu2::MessageType;
+    use i2pr_transport_ssu2::crypto::open_token_payload;
+    use i2pr_transport_ssu2::handshake::{find_observed_address, prevalidate_long_datagram};
+
+    let world = world();
+    let alice_source = socket_addr(ALICE_SOURCE);
+    let (initiator, actions) = Initiator::begin(
+        initiator_config(&world),
+        InitiatorSecrets {
+            static_secret: secret(11),
+            ephemeral_secret: secret(12),
+            local_conn_id: 0x1111_1111_1111_1111,
+            remote_conn_id: 0x2222_2222_2222_2222,
+            packet_number: 0x0bad_f00d,
+            timestamp: NOW_SECS as u32,
+        },
+        None,
+        vec![0x77_u8; 16],
+        NOW_MS,
+    )
+    .expect("begin");
+    let token_request = write_bytes(&actions).pop().expect("token request");
+
+    let mut store = TokenStore::establishment();
+    let responder = Responder::new(responder_config(&world), NOW_MS);
+    let (_responder, actions) = responder
+        .on_token_request(
+            token_request,
+            alice_source,
+            0x3333_3333_3333_3333,
+            0x0c0c_0c0c,
+            NOW_SECS as u32,
+            vec![0x11_u8; 8],
+            [0x01_u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            &mut store,
+            NOW_SECS,
+        )
+        .expect("token request");
+    let retry = write_bytes(&actions).pop().expect("retry");
+    let _ = initiator;
+
+    // The Retry's payload is sealed under the intro key, so the test opens
+    // it the way the peer does: the Retry's own parser discards the
+    // address, which is exactly why the value has to be proved here.
+    let mut inbound = retry.clone();
+    let pre = prevalidate_long_datagram(&mut inbound, &world.bob_intro, MessageType::Retry, false)
+        .expect("prevalidate");
+    let header = pre.header();
+    let sealed = &inbound[i2pr_transport_ssu2::constants::LONG_HEADER_LENGTH..];
+    let payload = open_token_payload(
+        &world.bob_intro,
+        header.packet_number(),
+        &header.encode(),
+        sealed,
+    )
+    .expect("open retry payload");
+
+    assert_eq!(
+        find_observed_address(&payload),
+        Some(endpoint(ALICE_SOURCE)),
+        "the Retry carries the same observed source address as the Session Created"
+    );
+}
+
+/// Plan 529: a missing Address block is **evidence absent**, never a
+/// handshake requirement. The session is established and the receiver
+/// observes nothing.
+#[test]
+fn a_session_with_no_address_block_is_established_and_records_nothing() {
+    let world = world();
+    let mut config = initiator_config(&world);
+    config.remote_address = None;
+
+    let (alice, bob) = full_tokenless_handshake_with(&world, config);
+
+    assert_eq!(
+        bob.observed_address(),
+        None,
+        "a peer that sent no Address block produces no observation"
+    );
+    assert_eq!(
+        alice.peer_endpoint(),
+        socket_addr(BOB_SOURCE),
+        "the session is established all the same"
+    );
+    assert_eq!(
+        bob.peer_endpoint(),
+        socket_addr(ALICE_SOURCE),
+        "the responder's session is established all the same"
+    );
+    assert_eq!(
+        bob.local_conn_id(),
+        0x3333_3333_3333_3333,
+        "the responder's session carries the same connection ID"
+    );
 }
 
 #[test]
@@ -1445,7 +1609,7 @@ fn retry_respects_amplification_budget() {
         3,
         0x0102_0304_0506_0708,
         NOW_SECS as u32,
-        address,
+        Some(address),
         None,
         vec![0x1_u8; 16],
     )

@@ -125,9 +125,22 @@ pub enum LookupFinalState {
     /// The target `RouterInfo` was accepted from a `DatabaseStore`
     /// response.
     Success,
-    /// The lookup exhausted the peer budget without a usable
+    /// The lookup ran out of **candidates** without a usable
     /// `DatabaseStore`.
+    ///
+    /// The candidate list is the set of peers the lookup was allowed to
+    /// consider; running out of it means the lookup asked every peer it
+    /// could and none answered. This is distinct from
+    /// [`Self::PeerBudgetExhausted`], which means the lookup stopped
+    /// asking while candidates were still left.
     PeerExhausted,
+    /// The lookup spent its per-lookup peer budget without a usable
+    /// `DatabaseStore`.
+    ///
+    /// This is a **policy** ceiling on the number of peers queried, and
+    /// it is distinct from [`Self::PeerExhausted`], which means the
+    /// **candidate list** ran out.
+    PeerBudgetExhausted,
     /// The lookup deadline elapsed before completion.
     Timeout,
     /// The runtime cancelled the lookup.
@@ -139,16 +152,27 @@ pub enum LookupFinalState {
     NoEligibleCandidates,
 }
 
+impl LookupFinalState {
+    /// Returns the stable label of the final state.
+    ///
+    /// The label is the bucket a receipt counts the state under, so the
+    /// same final state always lands in the same bucket.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::PeerExhausted => "peer-exhausted",
+            Self::PeerBudgetExhausted => "peer-budget-exhausted",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::PathUnavailable => "path-unavailable",
+            Self::NoEligibleCandidates => "no-eligible-candidates",
+        }
+    }
+}
+
 impl fmt::Display for LookupFinalState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Success => formatter.write_str("success"),
-            Self::PeerExhausted => formatter.write_str("peer-exhausted"),
-            Self::Timeout => formatter.write_str("timeout"),
-            Self::Cancelled => formatter.write_str("cancelled"),
-            Self::PathUnavailable => formatter.write_str("path-unavailable"),
-            Self::NoEligibleCandidates => formatter.write_str("no-eligible-candidates"),
-        }
+        formatter.write_str(self.label())
     }
 }
 

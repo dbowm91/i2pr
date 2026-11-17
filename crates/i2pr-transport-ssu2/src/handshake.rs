@@ -454,7 +454,7 @@ pub fn build_retry(
     packet_number: u32,
     token: u64,
     timestamp: u32,
-    address: AddressBlock,
+    address: Option<AddressBlock>,
     termination: Option<TerminationBlock>,
     padding: Vec<u8>,
 ) -> Result<Vec<u8>, HandshakeError> {
@@ -463,7 +463,14 @@ pub fn build_retry(
     }
     let mut blocks = Vec::with_capacity(5);
     blocks.push(Block::Timestamp(TimestampBlock::new(timestamp)));
-    blocks.push(Block::Address(address));
+    // Plan 529: the Address block carries the address at which this
+    // responder sees the initiator, which the responder learns from the
+    // request's source. A source that cannot be expressed as an SSU2
+    // endpoint yields no block, and the peer then declines the Retry
+    // rather than being told a wrong address.
+    if let Some(address) = address {
+        blocks.push(Block::Address(address));
+    }
     if let Some(termination) = termination {
         blocks.push(Block::Termination(termination));
     }
@@ -972,8 +979,15 @@ pub fn validate_router_info(
             }
         } else if address.options().get("host").is_some()
             || address.options().get("port").is_some()
-            || address.options().get("ihost0").is_some()
+            || address.options().get("ih0").is_some()
+            || address.options().get("iexp0").is_some()
+            || address.options().get("itag0").is_some()
         {
+            // Plan 523: the introducer marker in an SSU2 address is the
+            // specification's own group (`ih0`/`iexp0`/`itag0`). The SSU 1
+            // introducer options are not part of an SSU2 address and are
+            // refused by the strict parser, so naming them here would
+            // leave the check unable to fire.
             return Err(HandshakeError::IntroKeyInvalid);
         }
         matched = true;
@@ -1049,6 +1063,31 @@ pub fn require_timestamp(payload: &[u8]) -> Result<u32, HandshakeError> {
         }
     }
     Err(HandshakeError::MissingTimestamp)
+}
+
+/// Extracts the Address block of an authenticated handshake payload.
+///
+/// Plan 529: the specification's Address block carries "Alice's
+/// address, sent to Alice by Bob, or Bob's address, sent to Bob by
+/// Alice" -- the address at which the **recipient** sees the
+/// **sender**. The block arrives inside an authenticated handshake
+/// payload, so the value it carries is an authenticated observation
+/// of the sender's external address.
+///
+/// A missing block is **not** a handshake failure: the observation is
+/// evidence, not a handshake requirement. This function only ever
+/// returns `None` rather than an error, so it can never terminate a
+/// session. A malformed block makes the whole payload unparsable,
+/// which the mandatory timestamp check has already rejected before
+/// this function is consulted.
+pub fn find_observed_address(payload: &[u8]) -> Option<crate::address::Ssu2Endpoint> {
+    let parsed = parse_blocks(payload).ok()?;
+    for block in parsed.blocks() {
+        if let DecodedBlock::Address(value) = block {
+            return Some(value.endpoint());
+        }
+    }
+    None
 }
 
 /// Extracts the first NewToken announcement of an authenticated
@@ -1167,7 +1206,7 @@ mod tests {
             9,
             0x0102_0304_0506_0708,
             1_700_000_000,
-            address,
+            Some(address),
             None,
             vec![1_u8; 16],
         )
@@ -1187,7 +1226,7 @@ mod tests {
                 9,
                 0,
                 1_700_000_000,
-                AddressBlock::new(endpoint()),
+                Some(AddressBlock::new(endpoint())),
                 None,
                 Vec::new(),
             )
@@ -1203,7 +1242,7 @@ mod tests {
                 9,
                 5,
                 1_700_000_000,
-                AddressBlock::new(endpoint()),
+                Some(AddressBlock::new(endpoint())),
                 None,
                 vec![1_u8; 64],
             )
@@ -1223,7 +1262,7 @@ mod tests {
             9,
             0,
             1_700_000_000,
-            AddressBlock::new(endpoint()),
+            Some(AddressBlock::new(endpoint())),
             Some(termination),
             Vec::new(),
         )

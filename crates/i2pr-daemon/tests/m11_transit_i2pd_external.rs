@@ -74,8 +74,14 @@ use i2pr_daemon::transit_compose::{TransitBuildService, TransitHopMaterial};
 use i2pr_daemon::transit_owner::{
     LiveGatewayOutcome, LiveInboundOutcome, TransitBuildEvidence, TransitLiveOwner,
 };
+use i2pr_daemon::transit_participation::{
+    TransitParticipationBinding, TransitParticipationOwner, TransitParticipationPolicy,
+};
 use i2pr_proto::{Hash, I2npMessage, RouterInfo};
-use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2InboundI2np};
+use i2pr_runtime::{
+    BandwidthGovernor, BandwidthGovernorConfig, CancellationToken, ChildFailurePolicy, ChildScope,
+    Ssu2InboundI2np,
+};
 use i2pr_transport::PeerId;
 use i2pr_tunnel::build_crypto::{BuildCryptography, EciesX25519BuildCryptography};
 use i2pr_tunnel::{TransitBandwidthSummary, TransitHopRoleKind};
@@ -147,6 +153,34 @@ const MAX_LEDGER_OBSERVATIONS: usize = 4096;
 /// epoch advances the injected transit clock beyond creation + this
 /// bound and then delivers a genuine reference cell.
 const TRANSIT_LIFETIME_MS: u64 = 600_000;
+
+/// The M11 qualification posture.
+///
+/// Plan 492: the transit machinery is admitted only through a participation
+/// posture. The M11 lanes qualify the *machinery* against a reference
+/// router, so they install the loosest bounded posture: the transit
+/// service's own admission policy stays the governing limit, and the
+/// posture's share budget is wide enough that the lane's cells are never
+/// refused for share.
+fn participation_for_test() -> TransitParticipationBinding {
+    let governor = BandwidthGovernor::new(BandwidthGovernorConfig {
+        inbound_bytes_per_second: 1024 * 1024,
+        outbound_bytes_per_second: 1024 * 1024,
+        burst_bytes: 64 * 1024,
+        control_reserve_percent: 10,
+        max_pending_requests: 16,
+        max_pending_per_peer: 2,
+    })
+    .expect("valid governor");
+    let policy = TransitParticipationPolicy::new(
+        100,
+        i2pr_daemon::config::MAX_TRANSIT_PARTICIPATING_TUNNELS,
+        i2pr_daemon::config::MAX_TRANSIT_PEER_PARTICIPATION_CAP,
+    )
+    .expect("bounded posture");
+    let owner = TransitParticipationOwner::new(policy, Some(&governor), 100).expect("posture");
+    TransitParticipationBinding::new(owner, Some(governor))
+}
 
 fn wall_ms() -> u64 {
     SystemTime::now()
@@ -572,7 +606,7 @@ fn plan255_local_live_owner_dispatches_obep_through_handle_inbound() {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(0xC0FFEE),
     );
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     assert!(owner.is_enabled(), "controlled live owner must be enabled");
 
     let mut rng = ChaCha8Rng::seed_from_u64(0xC0FFEE);
@@ -629,7 +663,7 @@ fn plan256_local_live_owner_self_reply_fails_closed_without_ibgw() {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(0xC0FFEE),
     );
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     assert!(owner.is_enabled(), "controlled live owner must be enabled");
 
     let mut rng = ChaCha8Rng::seed_from_u64(0xC0FFEE);
@@ -687,7 +721,7 @@ fn plan255_local_live_owner_dispatches_ibgw_through_handle_inbound() {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(0xBAAD),
     );
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     assert!(owner.is_enabled());
 
     let mut rng = ChaCha8Rng::seed_from_u64(0xBAAD);
@@ -727,7 +761,7 @@ fn plan255_local_live_owner_dispatches_participant_through_handle_inbound() {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(0xFEED),
     );
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     assert!(owner.is_enabled());
 
     let mut rng = ChaCha8Rng::seed_from_u64(0xFEED);
@@ -862,7 +896,7 @@ fn plan255_local_expiry_drops_live_data() {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(0xFADE),
     );
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     let mut rng = ChaCha8Rng::seed_from_u64(0xFADE);
     let next_router = Hash::from_bytes([0xEE; 32]);
     let record = build_participant_record(next_router, 0x9601, 0x9602, 0x51A7_5601, 30);
@@ -906,7 +940,7 @@ fn plan255_local_cancel_drains() {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(0xCACA),
     );
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     let cancel_token = owner.cancellation().clone();
     owner.cancel();
     assert!(cancel_token.is_cancelled());
@@ -924,7 +958,7 @@ fn plan255_local_session_close_reconciles_peer() {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(0xBEEF),
     );
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     let peer = PeerId::from_bytes([0x77; 32]);
     let router_hash = Hash::from_bytes([0xCC; 32]);
     owner.install_peer(router_hash, peer).expect("install peer");
@@ -5682,11 +5716,14 @@ fn fresh_owner(
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(seed),
     );
-    owner.enable(build_transit_service(
-        identity.local_hash,
-        identity.responder_priv,
-        handle.delivery().clone(),
-    ));
+    owner.enable(
+        build_transit_service(
+            identity.local_hash,
+            identity.responder_priv,
+            handle.delivery().clone(),
+        ),
+        participation_for_test(),
+    );
     // Bounded LOCAL consumer: background reference tunnel-test
     // traffic can complete as OBEP LOCAL actions; without a sink
     // those would surface as fatal owner errors and abort the
@@ -6381,11 +6418,10 @@ async fn run_qualification() -> Result<(), String> {
         CancellationToken::new(),
         ChaCha8Rng::seed_from_u64(wall_secs() ^ 0x9E37),
     );
-    reject_owner.enable(build_rejecting_transit_service(
-        local_hash,
-        responder_priv,
-        handle.delivery().clone(),
-    ));
+    reject_owner.enable(
+        build_rejecting_transit_service(local_hash, responder_priv, handle.delivery().clone()),
+        participation_for_test(),
+    );
     reject_owner
         .install_peer(a_hash, PeerId::from_hash(a_hash))
         .map_err(|e| format!("install A peer (reject): {e}"))?;

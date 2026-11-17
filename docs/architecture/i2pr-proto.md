@@ -78,9 +78,10 @@ single-directory with **three** top-level submodules under `src/`
 | `common::certificate` | `src/common/certificate.rs` | 194 | `Certificate` enum and `KeyCertificate` | `Certificate`, `KeyCertificate` |
 | `common::identity` | `src/common/identity.rs` | 368 | `KeyAndCert` plus `RouterIdentity`/`Destination` | `KeyAndCert`, `RouterIdentity`, `Destination` |
 | `common::router_address` | `src/common/router_address.rs` | 78 | Transport-address record | `RouterAddress` |
-| `common::router_info` | `src/common/router_info.rs` | 262 | Signed descriptor with retained `signed_bytes` | `RouterInfo`, `ProtocolVersion`, `Capabilities` |
+| `common::router_info` | `src/common/router_info.rs` | 284 | Signed descriptor with retained `signed_bytes`, and the **Plan 518** re-encode of the signed region with a fresh publication date | `RouterInfo`, `ProtocolVersion`, `Capabilities` |
 | `common::lease` | `src/common/lease.rs` | 299 | Classic `Lease`/`LeaseSet` plus explicit variant classification | `Lease`, `LeaseSet`, `DeferredLeaseSetVariant`, `decode_lease_set_variant`, `decode_lease_set2_variant` |
 | `common::lease2` | `src/common/lease2.rs` | 1789 | Standard LeaseSet2 family: carrier, header, flags, keys, offline signature, MetaLeaseSet | `Lease2`, `LeaseSet2`, `LeaseSet2Header`, `LeaseSet2Flags`, `LeaseSet2EncryptionKey`, `OfflineSignature`, `MetaLease`, `MetaLeaseSet`, `LeaseSet2BuildError`, `LeaseSet2HeaderError`, `LeaseSet2EncryptionKeyError`, `LeaseSet2KeySelectionError`, `LEASE_SET2_SIGNATURE_DOMAIN_BYTE`, `LEASE_SET2_DATABASE_STORE_TYPE`, `LEASE2_WIRE_SIZE`, `MAX_META_LEASES`, `MAX_LEASE_SET2_*` |
+| `common::version` | `src/common/version.rs` | 823 | Plan 491 typed comparator over published `router.version` strings: the specification's numeric rule, the `Unknown`/`Uncomparable` states, the API-version table's minimum-peer obligation rows, and the floor derivation | `ApiVersion`, `PublishedVersion`, `VersionEligibility`, `VersionFloors`, `MinimumPeerObligation`, `MINIMUM_PEER_OBLIGATIONS`, `SPECIFICATION_API_LEVEL`, `CATCH_ALL_VERSION`, `floors_in_force`, `MAX_API_VERSION_COMPONENTS` |
 | `common::base32` | `src/common/base32.rs` | 789 | RFC 4648 base 32, CRC-32, encrypted-service (`b33`) address form (Plan 332) | `EncryptedServiceAddress`, `Base32Error`, `crc32`, `base32_encode`, `base32_decode`, `is_encrypted_service_address`, `B32_SUFFIX`, `B32_HASH_CHARS`, `B32_SERVICE_CHARS`, `B32_SERVICE_WIDE_CHARS`, `B32_FLAG_*`, `B32_UNBLINDED_SIGTYPE_*`, `B32_BLINDED_SIGTYPE` |
 | `common::els2` | `src/common/els2.rs` | 662 | DatabaseStore type 5: encrypted-LeaseSet2 outer-layer framing, offline-key block, exact signature preimage (Plan 332) | `EncryptedLeaseSet2`, `EncryptedLeaseSet2Flags`, `EncryptedLeaseSet2OfflineKeys`, `ENCRYPTED_LEASE_SET2_STORE_TYPE`, `ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE`, `ENCRYPTED_LEASE_SET2_UNBLINDED_SIGTYPES`, `ENCRYPTED_LEASE_SET2_FLAG_OFFLINE_KEYS`, `ENCRYPTED_LEASE_SET2_FLAGS_RESERVED_MASK`, `ENCRYPTED_LEASE_SET2_MAX_EXPIRES_OFFSET`, `ENCRYPTED_LEASE_SET2_SALT_LENGTH`, `ENCRYPTED_LEASE_SET2_MIN_OUTER_CIPHERTEXT_LENGTH`, `INNER_LEASE_SET2_STORE_TYPE`, `INNER_META_LEASE_SET2_STORE_TYPE` |
 | `i2np` | `src/i2np/mod.rs` | 79 | I2NP wire constants and glob re-exports | `MAX_I2NP_PAYLOAD_SIZE`, `STANDARD_HEADER_SIZE`, `SHORT_SSU_HEADER_SIZE`, `SHORT_TRANSPORT_HEADER_SIZE`, `MAX_DATABASE_LOOKUP_EXCLUDED_PEERS`, `MAX_DATABASE_SEARCH_REPLY_PEERS`, `MAX_BUILD_RECORDS`, `VARIABLE_BUILD_RECORD_SIZE`, `SHORT_BUILD_RECORD_SIZE`, `SHORT_REQUEST_PLAINTEXT_SIZE`, `SHORT_REPLY_PLAINTEXT_SIZE`, `SHORT_BUILD_EPHEMERAL_KEY_LEN`, `SHORT_BUILD_NONCE_LEN`, `SHORT_BUILD_TAG_LEN`, `TUNNEL_DATA_PAYLOAD_SIZE`, `TUNNEL_TEST_BODY_SIZE` |
@@ -147,6 +148,127 @@ block type **5**, per `geti2p.net/spec/ecies#blocks` and exact-pinned i2pd
 early draft but not the published specification; i2pd 2.61.0 rejects block
 type `1` as `Unknown block type` (it uses `1` for `Session ID`). `Ack
 Request` (type 9) is parsed and skipped per the Plan 213 corrective.
+
+### Plan 491: the published API-version comparator (`common/version.rs`)
+
+A router publishes its I2NP API level in the `router.version` option. Plan
+491 makes that string **comparable**, because the specification's API-version
+table attaches two minimum-peer obligations to a router's declared level:
+
+```text
+0.9.62  minimum peers will build tunnels through, as of 0.9.68
+        minimum floodfill peers will send DSM to, as of 0.9.68
+```
+
+`ApiVersion` is the comparator. It is **numeric**, never lexicographic: the
+components are compared left to right as numbers, so `0.9.13` is at least
+`0.9.12` and `0.9.9` is *not* at least `0.9.10`. This is the rule the
+specification states and the rule the pinned Java reference implements in
+`net.i2p.util.VersionComparator`. A version with more than four components
+is not truncated — it is *uncomparable*.
+
+`PublishedVersion` keeps the three cases apart:
+
+| state | meaning | eligible? |
+|---|---|---|
+| `Known(version)` | a well-formed, comparable version | yes, if it is at or above the floor |
+| `Unknown` | the peer published no version at all | never |
+| `Uncomparable` | the peer published a value that cannot be compared | never |
+
+The two non-comparable states are **refusals, never passes**. A malformed or
+absent version never compares as "newest".
+
+The obligation rows are **data**, not prose:
+`MINIMUM_PEER_OBLIGATIONS` lists the table's rows that carry a
+minimum-peer obligation, each with the row's own version and the network
+release its "as of" clause names. `floors_in_force(declared, release)` derives
+the two floors from that table: a row applies when the router's declared
+version is at or above the row's version *and* the release named in the
+row's "as of" clause has been reached, and the highest applicable row wins.
+The floors are therefore never hand-maintained; the table is the only copy of
+the truth.
+
+The catch-all line — the specification's `0.7.9 or lower` row, "all messages
+and features not listed above" — is named explicitly as `CATCH_ALL_VERSION`
+so the rule is testable rather than incidental. The numeric comparison
+already places every obligation row above it.
+
+The comparator allocates nothing and never panics: a malformed string is a
+state, not an error. A deterministic corpus property test maps four thousand
+generated strings plus the interesting hand-picked ones onto a value or an
+explicit state, and checks the ordering is total over the comparable subset.
+
+### Plan 511: the component ceiling is derived, not asserted
+
+Plan 491's comparator's component bound rested on a **prose claim**: the
+specification's API-version table contains a four-component row (`0.6.1.10`),
+so the doc comment above `MAX_API_VERSION_COMPONENTS` said four components
+are accepted. The tree held only the table's **minimum-peer obligation** rows
+as data, so the row the bound depended on was not held at all.
+
+Plan 511 makes it a **held record** and the bound a **derivation**:
+
+```rust
+pub const SPECIFICATION_WIDEST_VERSION_ROW: &[u16] = &[0, 6, 1, 10];
+
+pub const MAX_API_VERSION_COMPONENTS: usize =
+    version_row_width(SPECIFICATION_WIDEST_VERSION_ROW);
+```
+
+The stored array's width (`[u16; MAX_API_VERSION_COMPONENTS]`) and the
+parser's bound are that same constant, so a version the parser accepts is
+stored in full and `cmp_to`'s ordering stays **exact** — no truncation, no
+lossy fallback.
+
+**The consequence is the point.** A future five-component row in the
+specification's table widens the comparator **by construction**: the held
+record becomes that row, the ceiling follows it, and such a version becomes
+**comparable** rather than uncomparable. Under the old hard-coded four it
+would have been refused. The guard pins the record, so a change to it is
+**reported** rather than absorbed.
+
+**No behaviour changes.** The record is four components wide, so the constant
+is four and the comparator accepts and refuses exactly the versions it accepts
+and refuses today. `ApiVersion` stays 10 bytes and `PublishedVersion` stays
+12.
+
+**The divergence from the references is recorded, not hidden.** Both pinned
+references admit a version with more components than the specification's
+table has ever used — i2pd 2.61.0 collapses `router.version`'s digits into an
+`int` with no component count, and Java I2P's `VersionComparator` walks both
+strings to exhaustion with no cap — so `i2pr` is the only one of the three
+that refuses one. The refusal is **typed**, **counted**, **fail-closed** and
+**monotone**: it can only exclude a peer both references would admit, never
+admit one below a floor. The full derivation, with the pins and the file and
+line for each reference, is in `specs/QUALIFICATION-GATES.md` §10.
+
+### Plan 518: the signed region is re-encoded, not re-derived
+
+A RouterInfo's signature covers the record's **signed region** -- the identity, the
+addresses, the peers and the options -- and the **date** is part of that region. So
+re-dating a record means re-signing it, and a re-sign means the signed region has to
+be produced again.
+
+`RouterInfo::signed_bytes_with_published(&self, published: Date)` does that **from
+the record's own decoded parts**:
+
+```rust
+pub fn signed_bytes_with_published(&self, published: Date) -> Result<Vec<u8>, CodecError>
+```
+
+It re-encodes through the same `encode_unsigned` path the original encode used, so
+the addresses, the peers and the options are the record's own -- never re-derived,
+never re-guessed, and never a lossy round trip through a partial view.
+
+**Why this is in the protocol crate and not in the daemon.** The daemon must not
+re-implement the encoding: a second encoder would be a second answer to "what does
+this record say", and the two could drift. The re-encode lives beside the decode, so
+the two halves of the codec stay together.
+
+**No wire-format change.** `published` is already part of the signed region, so the
+re-encoded bytes have the same shape as the original. The record's **hash** does not
+change either, because a RouterInfo's key is derived from the router identity rather
+than from the signed bytes.
 
 ## Public surface
 

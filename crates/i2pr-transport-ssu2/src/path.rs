@@ -64,6 +64,16 @@ pub const MAX_PATH_CHALLENGES_PER_SESSION: u32 = 8;
 /// Candidate-path MTU: the SSU2 minimum until validation completes.
 pub const PATH_CANDIDATE_MTU: u16 = constants::SSU2_MIN_MTU;
 
+/// How many re-validations of the path **in use** one session may issue.
+///
+/// The budget is generous because a re-validation is a liveness probe on the
+/// path that already carries traffic, not a migration attempt: at the cadence
+/// the runtime drives, a session reaches this ceiling only after many hours.
+/// It is a ceiling, not a target, so a pathological clock cannot turn the
+/// probe into unbounded traffic. `MAX_PATH_CHALLENGES_PER_SESSION` continues
+/// to govern migration candidates, which are a different question.
+pub const MAX_PATH_REVALIDATIONS_PER_SESSION: u32 = 64;
+
 /// Typed path-validation failures.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum PathError {
@@ -82,6 +92,9 @@ pub enum PathError {
     /// The endpoint is not a tracked candidate.
     #[error("SSU2 path endpoint is not a tracked candidate")]
     NotACandidate,
+    /// A re-validation of the path in use is already outstanding.
+    #[error("SSU2 path re-validation is already in flight")]
+    RevalidationInFlight,
     /// The candidate expired before the response arrived.
     #[error("SSU2 path candidate expired")]
     ExpiredCandidate,
@@ -152,6 +165,23 @@ impl PathCandidate {
     }
 }
 
+/// One bounded re-validation of the path **in use**.
+///
+/// It is deliberately not a [`PathCandidate`]: a candidate is an endpoint the
+/// router does not yet trust and may migrate to, while a re-validation names
+/// the endpoint the router already publishes and must never move.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Revalidation {
+    challenge: [u8; PATH_CHALLENGE_LENGTH],
+    deadline_ms: u64,
+}
+
+impl Revalidation {
+    const fn expired(self, now_ms: u64) -> bool {
+        now_ms >= self.deadline_ms
+    }
+}
+
 /// One validation-machine effect for the runtime to fulfill.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PathEvent {
@@ -164,6 +194,15 @@ pub enum PathEvent {
         endpoint: Ssu2Endpoint,
         /// The exact challenge bytes to transmit.
         challenge: [u8; PATH_CHALLENGE_LENGTH],
+    },
+    /// The path already in use proved itself again.
+    ///
+    /// This is **not** a migration: the endpoint is unchanged, nothing moves,
+    /// and no per-IP or per-subnet accounting is touched. The runtime records
+    /// it as validated-path evidence and nothing else.
+    Revalidated {
+        /// The endpoint that proved itself, unchanged.
+        endpoint: Ssu2Endpoint,
     },
     /// The candidate proved itself and was promoted.
     Validated {
@@ -187,6 +226,10 @@ pub struct PathCounters {
     pub denied_candidates: u64,
     /// Candidates expired before proof arrived.
     pub expired_candidates: u64,
+    /// Re-validations of the path in use that completed.
+    pub revalidations: u64,
+    /// Re-validations of the path in use that expired unanswered.
+    pub expired_revalidations: u64,
 }
 
 /// The runtime-neutral path-validation state machine.
@@ -195,6 +238,9 @@ pub struct PathValidator {
     validated: ValidatedPath,
     candidates: Vec<PathCandidate>,
     challenges_issued: u32,
+    /// The outstanding re-validation of the path in use, if any.
+    revalidation: Option<Revalidation>,
+    revalidations_issued: u32,
     counters: PathCounters,
 }
 
@@ -205,6 +251,8 @@ impl PathValidator {
             validated: ValidatedPath::new(endpoint, mtu)?,
             candidates: Vec::new(),
             challenges_issued: 0,
+            revalidation: None,
+            revalidations_issued: 0,
             counters: PathCounters::default(),
         })
     }
@@ -329,6 +377,46 @@ impl PathValidator {
         }))
     }
 
+    /// Asks the path **in use** to prove itself again.
+    ///
+    /// The challenge names the validated endpoint, and only a response from
+    /// that endpoint is accepted, so a re-validation can never move the path.
+    /// A session with one already outstanding refuses a second, and the
+    /// per-session ceiling bounds the whole probe sequence: the count is a
+    /// ceiling, not a target.
+    ///
+    /// Returns the endpoint the challenge must be sent to.
+    pub fn request_revalidation(
+        &mut self,
+        challenge: [u8; PATH_CHALLENGE_LENGTH],
+        now_ms: u64,
+    ) -> Result<Ssu2Endpoint, PathError> {
+        if challenge == [0_u8; PATH_CHALLENGE_LENGTH] {
+            return Err(PathError::InvalidChallenge);
+        }
+        if self
+            .revalidation
+            .is_some_and(|entry| !entry.expired(now_ms))
+        {
+            return Err(PathError::RevalidationInFlight);
+        }
+        if self.revalidations_issued >= MAX_PATH_REVALIDATIONS_PER_SESSION {
+            return Err(PathError::ChallengeBudgetExhausted);
+        }
+        self.revalidations_issued = self.revalidations_issued.saturating_add(1);
+        self.revalidation = Some(Revalidation {
+            challenge,
+            deadline_ms: now_ms.saturating_add(PATH_VALIDATION_TIMEOUT_MS),
+        });
+        Ok(self.validated.endpoint())
+    }
+
+    /// Whether a re-validation of the path in use is outstanding at `now_ms`.
+    pub fn revalidation_in_flight(&self, now_ms: u64) -> bool {
+        self.revalidation
+            .is_some_and(|entry| !entry.expired(now_ms))
+    }
+
     /// Handles one authenticated PathResponse from `endpoint`.
     ///
     /// Only an exact challenge match from the tracked candidate
@@ -343,6 +431,24 @@ impl PathValidator {
         now_ms: u64,
     ) -> Result<PathEvent, PathError> {
         self.expire_locked(now_ms);
+        // A re-validation answer comes from the endpoint already in use, which
+        // is never a candidate. It is resolved first, and only an exact match
+        // from that endpoint counts; anything else falls through to the
+        // migration machine so a genuine candidate response is never eaten.
+        if let Some(revalidation) = self.revalidation
+            && endpoint == self.validated.endpoint()
+            && data == revalidation.challenge
+        {
+            if revalidation.expired(now_ms) {
+                self.revalidation = None;
+                self.counters.expired_revalidations =
+                    self.counters.expired_revalidations.saturating_add(1);
+                return Err(PathError::ExpiredCandidate);
+            }
+            self.revalidation = None;
+            self.counters.revalidations = self.counters.revalidations.saturating_add(1);
+            return Ok(PathEvent::Revalidated { endpoint });
+        }
         let position = self
             .candidates
             .iter()
@@ -376,6 +482,11 @@ impl PathValidator {
     /// diagnostics. The validated path is unaffected: expiry retains
     /// (returns to) the old path.
     pub fn poll_expired(&mut self, now_ms: u64) -> Vec<Ssu2Endpoint> {
+        if self.revalidation.is_some_and(|entry| entry.expired(now_ms)) {
+            self.revalidation = None;
+            self.counters.expired_revalidations =
+                self.counters.expired_revalidations.saturating_add(1);
+        }
         let expired: Vec<Ssu2Endpoint> = self
             .candidates
             .iter()
@@ -389,7 +500,12 @@ impl PathValidator {
     /// Returns the earliest candidate deadline, if any, for the
     /// runtime central scheduler.
     pub fn next_deadline_ms(&self) -> Option<u64> {
-        self.candidates.iter().map(|entry| entry.deadline_ms).min()
+        let candidate = self.candidates.iter().map(|entry| entry.deadline_ms).min();
+        let revalidation = self.revalidation.map(|entry| entry.deadline_ms);
+        match (candidate, revalidation) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        }
     }
 
     fn expire_locked(&mut self, now_ms: u64) {
@@ -427,6 +543,156 @@ mod tests {
 
     fn socket(endpoint: Ssu2Endpoint) -> SocketAddr {
         endpoint.socket_addr()
+    }
+
+    // Plan 549: the path in use can prove itself again, and doing so is
+    // **not** a migration.
+
+    #[test]
+    fn revalidation_proves_the_path_in_use_without_migrating() {
+        let current = v4(1, 1000);
+        let mut validator = PathValidator::new(current, 1280).expect("validator");
+        let target = validator
+            .request_revalidation(challenge(9), 1_000)
+            .expect("request");
+        assert_eq!(target, current);
+        assert!(validator.revalidation_in_flight(1_000));
+        let event = validator
+            .on_path_response(current, &challenge(9), 1_100)
+            .expect("response");
+        assert_eq!(event, PathEvent::Revalidated { endpoint: current });
+        // The path did not move, no candidate was consumed, and the event is
+        // not the migration variant.
+        assert_eq!(validator.validated().endpoint(), current);
+        assert_eq!(validator.candidate_count(), 0);
+        assert_eq!(validator.counters().migrations, 0);
+        assert_eq!(validator.counters().revalidations, 1);
+    }
+
+    #[test]
+    fn a_revalidation_second_request_is_refused_while_one_is_in_flight() {
+        let mut validator = PathValidator::new(v4(1, 1000), 1280).expect("validator");
+        validator
+            .request_revalidation(challenge(3), 1_000)
+            .expect("first");
+        assert_eq!(
+            validator.request_revalidation(challenge(4), 1_000),
+            Err(PathError::RevalidationInFlight)
+        );
+    }
+
+    #[test]
+    fn a_revalidation_answer_from_another_endpoint_is_not_the_proof() {
+        let current = v4(1, 1000);
+        let mut validator = PathValidator::new(current, 1280).expect("validator");
+        validator
+            .request_revalidation(challenge(5), 1_000)
+            .expect("request");
+        // A different endpoint that echoes the same bytes is not the path in
+        // use, so it can never complete the re-validation.
+        assert_eq!(
+            validator.on_path_response(v4(2, 2000), &challenge(5), 1_100),
+            Err(PathError::NotACandidate)
+        );
+        assert!(validator.revalidation_in_flight(1_100));
+        assert_eq!(validator.counters().revalidations, 0);
+    }
+
+    #[test]
+    fn a_revalidation_wrong_value_keeps_the_probe_open() {
+        let current = v4(1, 1000);
+        let mut validator = PathValidator::new(current, 1280).expect("validator");
+        validator
+            .request_revalidation(challenge(6), 1_000)
+            .expect("request");
+        assert_eq!(
+            validator.on_path_response(current, &challenge(7), 1_100),
+            Err(PathError::NotACandidate)
+        );
+        assert!(validator.revalidation_in_flight(1_100));
+        // The legitimate answer still completes it inside the window.
+        assert_eq!(
+            validator.on_path_response(current, &challenge(6), 1_200),
+            Ok(PathEvent::Revalidated { endpoint: current })
+        );
+    }
+
+    #[test]
+    fn a_revalidation_late_answer_is_refused_and_counted() {
+        let current = v4(1, 1000);
+        let mut validator = PathValidator::new(current, 1280).expect("validator");
+        validator
+            .request_revalidation(challenge(8), 1_000)
+            .expect("request");
+        let late = 1_000 + PATH_VALIDATION_TIMEOUT_MS + 1;
+        assert_eq!(
+            validator.on_path_response(current, &challenge(8), late),
+            Err(PathError::ExpiredCandidate)
+        );
+        assert_eq!(validator.counters().revalidations, 0);
+        assert_eq!(validator.counters().expired_revalidations, 1);
+        assert!(!validator.revalidation_in_flight(late));
+    }
+
+    #[test]
+    fn a_zero_revalidation_challenge_is_refused() {
+        let mut validator = PathValidator::new(v4(1, 1000), 1280).expect("validator");
+        assert_eq!(
+            validator.request_revalidation(challenge(0), 1_000),
+            Err(PathError::InvalidChallenge)
+        );
+    }
+
+    #[test]
+    fn the_revalidation_budget_is_a_ceiling() {
+        let current = v4(1, 1000);
+        let mut validator = PathValidator::new(current, 1280).expect("validator");
+        let mut now = 1_000;
+        for _ in 0..MAX_PATH_REVALIDATIONS_PER_SESSION {
+            validator
+                .request_revalidation(challenge(1), now)
+                .expect("request");
+            validator
+                .on_path_response(current, &challenge(1), now + 1)
+                .expect("response");
+            now += 100;
+        }
+        assert_eq!(
+            validator.request_revalidation(challenge(1), now),
+            Err(PathError::ChallengeBudgetExhausted)
+        );
+        assert_eq!(
+            validator.counters().revalidations,
+            u64::from(MAX_PATH_REVALIDATIONS_PER_SESSION)
+        );
+    }
+
+    #[test]
+    fn a_candidate_response_is_not_eaten_by_an_outstanding_revalidation() {
+        let current = v4(1, 1000);
+        let mut validator = PathValidator::new(current, 1280).expect("validator");
+        let candidate = v4(2, 2000);
+        let candidate_challenge = validator
+            .note_authenticated_packet(candidate, challenge(2), 0)
+            .expect("note")
+            .and_then(|event| match event {
+                PathEvent::ChallengeToSend { challenge, .. } => Some(challenge),
+                _ => None,
+            })
+            .expect("candidate challenge");
+        validator
+            .request_revalidation(challenge(9), 10)
+            .expect("request");
+        // A genuine candidate response still migrates while the re-validation
+        // is outstanding.
+        assert_eq!(
+            validator.on_path_response(candidate, &candidate_challenge, 20),
+            Ok(PathEvent::Validated {
+                previous: current,
+                current: candidate
+            })
+        );
+        assert_eq!(validator.validated().endpoint(), candidate);
     }
 
     #[test]

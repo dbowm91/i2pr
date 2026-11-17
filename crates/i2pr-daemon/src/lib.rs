@@ -26,6 +26,7 @@ pub mod encrypted_service_resolver;
 pub mod encrypted_target_credential;
 pub mod error;
 pub mod exploratory_build;
+pub mod exploratory_driver;
 pub mod floodfill;
 pub mod i2cp;
 pub mod i2pcontrol;
@@ -33,16 +34,31 @@ pub mod i2pcontrol_dispatch;
 pub mod i2pcontrol_inspection;
 pub mod i2pcontrol_tunnels;
 pub mod inbound_dispatch;
+pub mod introducer_request;
+pub mod netdb_participation;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
 mod news;
+pub mod ntcp2_activation;
 pub mod outbound_lookup;
 pub mod outbound_secret;
 pub mod outproxy_options;
 pub mod outproxy_route;
+pub mod peer_pool;
+pub mod peer_pool_task;
+pub mod peer_reconcile;
 pub mod peer_test;
+pub mod peer_test_runtime;
+pub mod relay_establishment;
+pub mod relay_establishment_task;
+pub mod relay_requester;
+pub mod relay_session_peer;
+pub mod relay_target;
 pub mod router_i2np;
+pub mod router_info_publication;
+pub mod router_info_publication_task;
 pub mod sam;
+pub mod self_publication;
 pub mod service_delivery;
 pub mod service_els2;
 pub mod service_generation;
@@ -58,10 +74,17 @@ pub mod service_tunnels_socks5;
 pub mod service_tunnels_socks_irc;
 pub mod service_tunnels_streamr;
 pub mod service_tunnels_tls;
+pub mod ssu2_introducer;
+pub mod ssu2_qualification_export;
+pub mod ssu2_qualification_receipts;
+pub mod ssu2_relay_drain;
 pub mod transit_compose;
+pub mod transit_composition;
 pub mod transit_owner;
+pub mod transit_participation;
 pub mod transit_volume;
 pub mod tunnel_liveness;
+pub mod version_eligibility;
 
 pub use error::DaemonError;
 pub use i2cp::{I2cpServiceError, I2cpServiceSnapshot, I2cpServiceState};
@@ -76,17 +99,23 @@ use cli::{CheckConfigArgs, Cli, Command, IdentityCommand, RunArgs};
 use config::Config;
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
 use i2pr_netdb::{
-    LocalRouterInfoBuilder, RouterInfoStore, RouterInfoStoreConfig, ValidationContext,
+    BucketSetConfig, ExplorationBudget, ExplorationPolicy, LocalRouterInfoBuilder,
+    ProfileStoreConfig, RouterHash, RouterInfoStore, RouterInfoStoreConfig, ValidationContext,
 };
 use i2pr_netdb_persist::{ReseedIngestLimits, ReseedIngestor};
 use i2pr_proto::Date;
 use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::{IdentityStore, Ssu2TransportIdentityStore};
-use rand_core::TryRngCore;
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use rand_chacha::ChaCha8Rng;
+use rand_core::{SeedableRng, TryRngCore};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use crate::transit_owner::TransitLiveOwner;
 
 /// Bounded startup deadline installed on every supervised daemon service.
 ///
@@ -400,6 +429,7 @@ fn readiness_expectation(service: &str) -> &'static str {
         CONSOLE_SERVICE_NAME => "loopback router console listener bound and accepting",
         ADDRESSBOOK_REFRESH_SERVICE_NAME => "address-book refresh cadence loop running",
         SIGNED_NEWS_REFRESH_SERVICE_NAME => "signed-news refresh cadence loop running",
+        NETDB_PARTICIPATION_SERVICE_NAME => "NetDB participation owner running",
         NTCP2_SERVICE_NAME => "controlled NTCP2 TCP listener bound with local RouterInfo ready",
         SSU2_SERVICE_NAME => "authenticated router I2NP owner running",
         APP_RUNTIME_SERVICE_NAME => {
@@ -703,17 +733,22 @@ fn build_daemon_graph_inner(
             "enabled service tunnels require service_tunnels.enabled = true".to_owned(),
         ));
     }
+    // Plan 496: Plan 101's blanket "controlled-loopback only" refusal at the
+    // composition root is replaced by the same profile-aware gate the NTCP2
+    // service uses, so there is one authority for the decision. Every
+    // configuration the old guard rejected is still rejected, and the
+    // refusal now names its own reason.
     if config.transport.ntcp2.enabled
-        && config.transport.ntcp2.qualification_profile
-            != crate::config::Ntcp2QualificationProfile::ControlledLoopback
+        && let Err(refusal) =
+            crate::ntcp2_activation::ntcp2_activation_scope(&config.transport.ntcp2)
     {
         return Err(DaemonError::RuntimeSupervisorFailed(
-            "enabled NTCP2 requires the controlled-loopback qualification profile".to_string(),
+            refusal.reason().to_owned(),
         ));
     }
     if config.transport.ntcp2.enabled && config.network.network_id > u16::from(u8::MAX) {
         return Err(DaemonError::RuntimeSupervisorFailed(
-            "controlled NTCP2 network ID exceeds the handshake width".to_owned(),
+            "NTCP2 network ID exceeds the handshake width".to_owned(),
         ));
     }
 
@@ -823,14 +858,19 @@ fn build_daemon_graph_inner(
     // default graph), never fabricated.
     inspection.publish_log_ring(crate::control_sources::LogRing::global());
     inspection.publish_metrics(Arc::new(crate::control_sources::ControlMetrics::new()));
-    // Plan 340: the product's transit participation posture. Production
-    // composition never constructs a transit data-plane owner — the
-    // inbound path consults `controlled_transit_disabled_probe` instead —
-    // so this router relays nothing and says so. The `Disabled` variant
-    // owns no counters, so the zeros the three transit selectors report
-    // are a property of the enforced posture rather than a substituted
-    // measurement. Enabling participation is a separate decision and is
-    // deliberately not reachable from here.
+    // Plan 340: the product's transit participation posture. The
+    // composition root publishes the `Disabled` posture, which owns **no
+    // counters**, so the zeros the three transit selectors report are a
+    // property of the enforced posture rather than a substituted
+    // measurement.
+    //
+    // Plan 502: the posture is no longer the end of the story. The
+    // default profile still constructs **no** transit data-plane owner and
+    // still relays nothing; but the SSU2 service now installs the owner
+    // when the operator opted in, and republishes the posture as `Enabled`
+    // with that service's own volume counters. The default stays the
+    // default: participation is still an explicit operator decision, and
+    // it is still not advertised.
     inspection.publish_transit_participation(crate::transit_volume::TransitParticipation::Disabled);
     let bans = crate::control_sources::BanLedger::new();
     if inspection.publish_bans(bans.attested()).is_err() {
@@ -911,6 +951,28 @@ fn build_daemon_graph_inner(
         register_news_refresh_service(&mut builder, config, inspection)?;
     }
 
+    // Plan 497: the daemon owns the NetDB participation state. The shared
+    // routing-table consumer is built here so that Plan 433's composition
+    // of the NetDB tunnel-building coordinator takes this exact `Arc`
+    // through `NetDbTunnelCoordinator::with_routing_table`.
+    //
+    // That coordinator is **not** created in this phase, and must not be:
+    // Plan 433 owns the composition of the NetDB / destination-tunnel
+    // coordinator into the service graph and is registered blocked on an
+    // external acquisition contract. Composing it here would take a scope
+    // this plan does not own.
+    let participation = Arc::new(NetDbParticipation::new(
+        config,
+        local_router_hash(bootstrap.as_ref()),
+        wall_clock_ms(),
+    ));
+    register_netdb_participation_service(
+        &mut builder,
+        config,
+        bootstrap.clone(),
+        Arc::clone(&participation),
+    )?;
+
     // NTCP2 and SSU2 feed one bounded router-I2NP ingress owner. Keeping
     // the bridge here makes the composition explicit: the NTCP2 link task
     // authenticates and frames bytes, while the existing router product
@@ -966,6 +1028,15 @@ fn build_daemon_graph_inner(
             ntcp2_ingress.delivery.clone(),
             local_router_info_tx,
             local_router_info_rx,
+            // Plan 505: the peer-profile handle the exploratory build
+            // driver selects its peers through and records its
+            // observations into.
+            participation.profiles.clone(),
+            // Plan 513: the live NetDB discovery spine. The group's
+            // product tick delivers the request the NetDB participation
+            // owner composes, and the two owners share one routing
+            // table.
+            Some(participation.discovery()),
         )?;
     }
 
@@ -1121,6 +1192,12 @@ fn register_sam_service(
                     if sam_product_mode == crate::config::SamProductMode::RouterNetwork
                         && let Some(manager) = shared_service_manager
                     {
+                        // Plan 486: the SAM side owns the manager edge
+                        // (`attach_router_network_manager`); the
+                        // manager side owns the waiter-query edge so
+                        // the router-inbound dispatch seam can route
+                        // parked-ACCEPT SYNs to the receiver mirror.
+                        manager.attach_sam_stream_registry(state.stream_registry());
                         state.attach_router_network_manager(manager);
                     }
                     // Publish the live owner for the Plan 288
@@ -1475,6 +1552,9 @@ const I2CP_SERVICE_NAME: &str = "i2cp-bridge";
 const I2PCONTROL_SERVICE_NAME: &str = "i2pcontrol";
 const ADDRESSBOOK_REFRESH_SERVICE_NAME: &str = "addressbook-refresh";
 const SIGNED_NEWS_REFRESH_SERVICE_NAME: &str = "signed-news-refresh";
+/// Plan 497: the supervised owner of the daemon's NetDB participation
+/// state.
+const NETDB_PARTICIPATION_SERVICE_NAME: &str = "netdb-participation";
 
 /// Registers the supervised I2PControl HTTPS service in the supplied
 /// builder. The factory captures the [`I2pControlServiceState`] so the
@@ -1735,6 +1815,767 @@ fn register_news_refresh_service(
         })?;
     Ok(())
 }
+/// The directory, under the router data directory, that holds the persisted
+/// peer-profile projection (Plan 497).
+const PROFILE_PROJECTION_DIRECTORY: &str = "peer-profiles";
+
+/// The prefix of one persisted peer-profile projection file (Plan 497).
+const PROFILE_PROJECTION_FILE_PREFIX: &str = "profile-projection-";
+
+/// The suffix of one persisted peer-profile projection file (Plan 497).
+const PROFILE_PROJECTION_FILE_SUFFIX: &str = ".txt";
+
+/// The maximum number of directory entries the startup projection scan
+/// examines (Plan 497).
+///
+/// The scan is bounded so a hostile or accidental directory cannot turn the
+/// router's startup into an unbounded walk.
+const PROFILE_PROJECTION_SCAN_LIMIT: usize = 64;
+
+/// Returns the daemon's wall-clock reading in milliseconds.
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+/// Returns the local router's hash, or the null hash when the router has no
+/// identity yet.
+///
+/// The null hash anchors the routing table at a fixed position. It is only
+/// reachable before the router publishes an identity, and an empty table
+/// cannot answer a lookup with it.
+fn local_router_hash(bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>) -> RouterHash {
+    bootstrap
+        .and_then(|bootstrap| bootstrap.lock().ok())
+        .and_then(|bootstrap| bootstrap.local_hash())
+        .unwrap_or_else(|| RouterHash::from_bytes([0u8; 32]))
+}
+
+/// The daemon's NetDB participation state.
+///
+/// Plan 497. The daemon owns one peer-profile store and one floodfill-indexed
+/// routing table:
+///
+/// * the **participation owner** drives the profile maintenance cadence and
+///   owns the persisted peer-profile projection;
+/// * the **routing table** is a cache of derived state. The flat peer map
+///   stays the **authority**: a table that cannot answer a key falls back
+///   to today's selection, and every fallback is counted by reason.
+///
+/// Plan 433 owns the composition of the NetDB tunnel-building coordinator
+/// into the daemon's service graph, and that coordinator is **not** created
+/// here: Plan 433 is registered blocked on an external acquisition
+/// contract. The shared consumer is built here so that Plan 433's
+/// composition takes this exact `Arc` through
+/// `NetDbTunnelCoordinator::with_routing_table`; until then the consumer is
+/// reachable only from this crate.
+struct NetDbParticipation {
+    /// The shared peer-profile handle the maintenance owner drives.
+    profiles: crate::netdb_participation::PeerParticipationHandle,
+    /// The shared routing-table consumer the lookup path consults.
+    routing_table: Arc<crate::netdb_participation::RoutingTableConsumer>,
+    /// Plan 513: the live NetDB discovery spine. The owner starts an
+    /// exploration on its existing cadence and hands the composed request
+    /// to the transport owner.
+    discovery: Arc<crate::netdb_participation::NetDbDiscoverySpine>,
+    /// Plan 514: whether the router runs exploratory lookups.
+    ///
+    /// This is `netdb.exploration_enabled`, and it was **never read**:
+    /// the key was parsed, defaulted and cross-validated, and the
+    /// exploration ran whenever the routing table was on. The switch now
+    /// gates the exploratory request, exactly as the key's own doc
+    /// comment says it should.
+    exploration_enabled: bool,
+    /// The number of projections the startup load applied.
+    restored_projections: AtomicU32,
+    /// The number of projections the startup load refused to apply.
+    discarded_projections: AtomicU32,
+    /// Plan 542: the NetDB's retention counters. The retention step is the
+    /// **only** writer, so a count can never be attributed to a step that
+    /// did not run.
+    retention: Arc<crate::netdb_participation::NetDbRetentionCounters>,
+    /// The number of times the routing table's population could
+    /// not be read.
+    ///
+    /// The owner owns the number and the **source** increments it, so the
+    /// count stays with the owner that owns the routing table. A refusal is
+    /// a fact about **this router** -- it has no usable validated store --
+    /// and it is never written into a peer's profile.
+    population_refusals: AtomicU32,
+}
+
+impl NetDbParticipation {
+    /// Builds the daemon's participation state.
+    ///
+    /// The routing table is a **cache**: it is populated from the daemon's
+    /// own NetDB and it never removes a peer the flat store could serve.
+    /// When the operator has not enabled the table the consumer is built
+    /// disabled, so every request answers
+    /// [`RoutingTableFallback::Disabled`](crate::netdb_participation::RoutingTableFallback::Disabled)
+    /// and the lookup path falls back to the flat store exactly as it does
+    /// today.
+    fn new(config: &Config, local_hash: RouterHash, now_ms: u64) -> Self {
+        let router_info =
+            RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes);
+        let profile_store = ProfileStoreConfig {
+            router_info,
+            max_profiles: config
+                .netdb
+                .max_records
+                .min(ProfileStoreConfig::default().max_profiles),
+            ..ProfileStoreConfig::default()
+        };
+        let driver = crate::netdb_participation::RoutingTableDriver::new(
+            local_hash,
+            Date::from_millis(now_ms),
+            crate::netdb_participation::RoutingTableConfig {
+                table: BucketSetConfig {
+                    max_entries: config.netdb.routing_table_max_entries,
+                    max_bucket_size: config.netdb.routing_table_max_bucket_size,
+                },
+                exploration: ExplorationPolicy {
+                    budget: ExplorationBudget {
+                        max_peers: config.netdb.exploration_max_peers,
+                        deadline_ms: config.netdb.exploration_deadline_ms,
+                    },
+                    ..ExplorationPolicy::default()
+                },
+                ..crate::netdb_participation::RoutingTableConfig::default()
+            },
+        );
+        let routing_table = Arc::new(crate::netdb_participation::RoutingTableConsumer::new(
+            driver,
+            config.netdb.routing_table_enabled,
+        ));
+        // Plan 513: the discovery spine shares the **one** routing table with
+        // the participation owner, so the table's preference and the
+        // exploration's suggestions are the same state.
+        let discovery = Arc::new(crate::netdb_participation::NetDbDiscoverySpine::new(
+            Arc::clone(&routing_table),
+            i2pr_netdb::LookupPolicy::default(),
+        ));
+        Self {
+            profiles: crate::netdb_participation::PeerParticipationHandle::new(
+                crate::netdb_participation::PeerParticipationDriver::new(profile_store),
+            ),
+            routing_table,
+            discovery,
+            exploration_enabled: config.netdb.exploration_enabled,
+            restored_projections: AtomicU32::new(0),
+            discarded_projections: AtomicU32::new(0),
+            population_refusals: AtomicU32::new(0),
+            retention: Arc::new(crate::netdb_participation::NetDbRetentionCounters::default()),
+        }
+    }
+
+    /// Plan 542 — starts the NetDB's retention cadence.
+    ///
+    /// The step runs under the service's child scope, so the task has an
+    /// owner and a cancellation path, and it rides the **participation**
+    /// maintenance period the router already configures rather than adding
+    /// a second knob. It is started whenever the NetDB is enabled, which is
+    /// independent of the routing table's switch.
+    fn start_retention(
+        self: &Arc<Self>,
+        bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>,
+        children: &i2pr_runtime::ChildScope,
+        period: Duration,
+    ) {
+        let bootstrap = bootstrap.cloned();
+        let counters = Arc::clone(&self.retention);
+        if let Err(error) = children.spawn(move |child_cancellation| async move {
+            let exit = crate::netdb_participation::run_netdb_retention(
+                bootstrap,
+                counters,
+                child_cancellation,
+                period,
+            )
+            .await;
+            match exit {
+                crate::netdb_participation::NetDbRetentionExit::Cancelled => Ok(()),
+                crate::netdb_participation::NetDbRetentionExit::InvalidPeriod => {
+                    Err(i2pr_runtime::ChildTaskFailure::Explicit)
+                }
+            }
+        }) {
+            tracing::warn!(
+                transition = "netdb_retention_spawn_refused",
+                reason = %error,
+                "the NetDB retention cadence could not be started"
+            );
+        }
+    }
+
+    /// Returns the NetDB's retention counters.
+    fn retention_snapshot(&self) -> crate::netdb_participation::NetDbRetentionSnapshot {
+        self.retention.snapshot()
+    }
+
+    /// Starts the participation owner.
+    ///
+    /// The owner applies the persisted projection when it is present and
+    /// current, populates the routing table from the daemon's own NetDB,
+    /// advances the driver's clock so the daily rotation can happen, and
+    /// then runs the maintenance cadence under the service's child scope.
+    /// Every step is bounded and local: none of them can fail the router's
+    /// startup.
+    fn start(
+        self: &Arc<Self>,
+        bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>,
+        projection_directory: &Path,
+        children: &i2pr_runtime::ChildScope,
+        period: Duration,
+    ) {
+        let now_ms = wall_clock_ms();
+        // Plan 488 F4: apply the persisted projection when it is present and
+        // current; discard it otherwise.
+        self.load_projection(projection_directory, now_ms);
+        // Advance the driver's clock first, so every peer the table holds
+        // is indexed with today's date and the daily rotation can happen.
+        self.routing_table.advance_time(now_ms);
+        // Populate the routing table from the daemon's own NetDB.
+        // Plan 539: the source releases the router's NetDB lock before the
+        // population's read returns, so the indexing holds no NetDB lock.
+        let population = crate::netdb_participation::ValidatedStorePopulationSource::new(
+            bootstrap,
+            &self.population_refusals,
+        );
+        self.populate_routing_table(&population, &[]);
+        // Plan 505: feed the peer-profile store from the daemon's own
+        // NetDB, so the exploratory build driver's selection has the
+        // router's real peer population to draw from.
+        self.learn_bootstrap_peers(bootstrap, now_ms);
+
+        // The profile maintenance owner runs on the configured cadence under
+        // the service's child scope, so the task has an owner and a
+        // cancellation path.
+        let profiles = self.profiles.clone();
+        if let Err(error) = children.spawn(move |child_cancellation| async move {
+            let exit = crate::netdb_participation::run_profile_maintenance(
+                profiles,
+                child_cancellation,
+                period,
+            )
+            .await;
+            match exit {
+                crate::netdb_participation::ProfileMaintenanceExit::Cancelled => Ok(()),
+                crate::netdb_participation::ProfileMaintenanceExit::InvalidPeriod => {
+                    Err(i2pr_runtime::ChildTaskFailure::Explicit)
+                }
+            }
+        }) {
+            tracing::warn!("the NetDB participation maintenance owner was not registered: {error}");
+        }
+
+        // The routing-table owner runs on the same cadence: it refreshes the
+        // table from the daemon's own NetDB, advances the table's clock so
+        // the daily rotation can happen, and persists the peer-profile
+        // projection.
+        let participation = Arc::clone(self);
+        let bootstrap = bootstrap.cloned();
+        let projection_directory = projection_directory.to_path_buf();
+        if let Err(error) = children.spawn(move |child_cancellation| async move {
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = child_cancellation.cancelled() => return Ok(()),
+                    _ = ticker.tick() => {
+                        let now_ms = wall_clock_ms();
+                        // The clock moves first, so the peers the table
+                        // holds are indexed with today's date.
+                        participation.routing_table.advance_time(now_ms);
+                        participation.discovery.advance_time(now_ms);
+                        // Plan 513: the owner advances the discovery spine
+                        // on its existing cadence. The composed request
+                        // waits in a bounded slot for the transport owner.
+                        participation.drive_discovery(bootstrap.as_ref(), now_ms);
+                        let population =
+                            crate::netdb_participation::ValidatedStorePopulationSource::new(
+                                bootstrap.as_ref(),
+                                &participation.population_refusals,
+                            );
+                        participation.populate_routing_table(&population, &[]);
+                        participation.persist_projection(&projection_directory, now_ms);
+                    }
+                }
+            }
+        }) {
+            tracing::warn!("the NetDB routing-table owner was not registered: {error}");
+        }
+    }
+
+    /// Plan 513: advances the live NetDB discovery spine.
+    ///
+    /// The spine's cycle is bounded and one step at a time:
+    ///
+    /// 1. a RouterInfo-kind lookup that is in flight is awaited;
+    /// 2. an exploration that is in flight is awaited;
+    /// 3. a named peer an earlier exploration found is resolved;
+    /// 4. otherwise a new exploration starts.
+    ///
+    /// The order is not arbitrary. An exploration's answer is peer
+    /// **hashes**, and a hash the router cannot resolve is a name, not a
+    /// peer: so the resolution is the enabling half, and the exploration
+    /// that produces names to resolve comes first in the cycle.
+    ///
+    /// The composed request waits in a bounded slot for the transport
+    /// owner. A request that is still waiting when the next request starts
+    /// is dropped: the owner never queues without bound.
+    ///
+    /// The exploration needs an **inbound** exploratory tunnel to take the
+    /// reply. When the router holds none, the request is refused and the
+    /// refusal is counted by the spine.
+    fn drive_discovery(&self, bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>, now_ms: u64) {
+        let Some(bootstrap) = bootstrap else {
+            return;
+        };
+        let Ok(bootstrap) = bootstrap.lock() else {
+            return;
+        };
+        // One request at a time: a request the wire has not answered yet
+        // is awaited, never replaced.
+        if self.discovery.resolution_in_flight() || self.discovery.exploration_in_flight() {
+            return;
+        }
+        let store = bootstrap.store();
+        // Resolve a named peer an earlier exploration found. The router
+        // asks a floodfill it already knows for that peer's record.
+        if let Some(target) = self.discovery.pending_resolution_target(store) {
+            let routing_key =
+                match i2pr_netdb::daily_routing_key(&target, Date::from_millis(now_ms)) {
+                    Ok(hash) => RouterHash::from_hash(hash),
+                    Err(_) => return,
+                };
+            let dispatch = self
+                .discovery
+                .begin_peer_resolution(store, target, routing_key, None);
+            self.discovery.set_dispatch(dispatch);
+            return;
+        }
+        // Plan 514: the exploratory request is the operator's to switch.
+        // `netdb.exploration_enabled` says whether the router runs
+        // exploratory lookups; until this plan the key was read by
+        // nothing and the exploration ran whenever the routing table was
+        // on. The switch gates the **exploratory request** only — the
+        // RouterInfo-kind resolution above stays live, so the routing
+        // table keeps its production reader.
+        if !self.exploration_enabled {
+            return;
+        }
+        // Start an exploration. The request is an exploratory
+        // `DatabaseLookup` — wire lookup type `3` — whose key is a fresh
+        // random search key. It is addressed **directly** to the floodfill
+        // being asked, and Plan 514 picks that floodfill from the routing
+        // table's **closest** verified answer for the key's routing key.
+        let mut bytes = [0_u8; 32];
+        if i2pr_crypto::OsRng.try_fill_bytes(&mut bytes).is_err() {
+            return;
+        }
+        let search_key = RouterHash::from_hash(i2pr_proto::Hash::from_bytes(bytes));
+        let routing_key =
+            match i2pr_netdb::daily_routing_key(&search_key, Date::from_millis(now_ms)) {
+                Ok(hash) => RouterHash::from_hash(hash),
+                Err(_) => return,
+            };
+        let dispatch = self
+            .discovery
+            .begin_exploration(store, search_key, routing_key, None);
+        self.discovery.set_dispatch(dispatch);
+    }
+
+    /// Plan 513: returns the live NetDB discovery spine.
+    ///
+    /// The composition root hands this exact spine to the product, so the
+    /// product's tick delivers the request the owner composes and the two
+    /// owners share **one** routing table.
+    pub(crate) fn discovery(&self) -> Arc<crate::netdb_participation::NetDbDiscoverySpine> {
+        Arc::clone(&self.discovery)
+    }
+
+    /// Populates the routing table from the daemon's own NetDB.
+    ///
+    /// Every validated floodfill the NetDB holds is indexed with **its own
+    /// signed evidence**. A peer whose own record does not advertise `f` is
+    /// refused: the table never accepts one peer's advertisement of another
+    /// as evidence for it.
+    ///
+    /// Plan 539: the population is read through a **source**, and the read is
+    /// one self-contained read whose guard is released before it returns. The
+    /// indexing therefore happens with **no** NetDB lock held, so the router's
+    /// NetDB lock never wraps the routing table's own mutex.
+    ///
+    /// A peer a verified floodfill *suggested* is indexed as a suggestion,
+    /// never as signed evidence: the suggesting peer must itself be indexed
+    /// with signed evidence, or the table refuses the suggestion. The daemon
+    /// has no suggestion source yet — Plan 489's exploration is not
+    /// composed into the service graph — so the list is empty. The rule is
+    /// enforced here so that a suggestion is never mistaken for evidence
+    /// when that source arrives.
+    fn populate_routing_table(
+        &self,
+        source: &dyn crate::netdb_participation::RoutingTablePopulationSource,
+        suggestions: &[(RouterHash, RouterHash)],
+    ) {
+        // Plan 539: the read is taken through the source, and the source
+        // releases the router's NetDB lock **before the read returns**. The
+        // indexing below therefore runs with **no** NetDB lock held, and the
+        // router's NetDB lock never wraps the routing table's own mutex.
+        let Ok(advertisers) = source.advertisers() else {
+            // The source counted this refusal under its own reason, in the
+            // counter this owner handed it. The population is not skipped
+            // silently, and no NetDB lock is held here.
+            return;
+        };
+        for peer in &advertisers {
+            self.routing_table.index(peer);
+        }
+        for (peer, from) in suggestions {
+            self.routing_table.index_suggested(*peer, from);
+        }
+    }
+
+    /// Plan 505 — feeds the peer-profile store from the daemon's own NetDB.
+    ///
+    /// The exploratory build driver selects its peers through this store, so
+    /// the store must hold the router's **real** peer population. The
+    /// records come from the bootstrap snapshot — the same population the
+    /// routing table is populated from — so the driver's selection and its
+    /// peer-material resolver can never disagree about which peer exists.
+    ///
+    /// The snapshot is the bounded one the bootstrap already publishes, and
+    /// the batch is learned with **one** receipt, so a large NetDB cannot
+    /// churn the bounded receipt log.
+    fn learn_bootstrap_peers(
+        &self,
+        bootstrap: Option<&Arc<Mutex<bootstrap::Bootstrap>>>,
+        now_ms: u64,
+    ) {
+        let Some(bootstrap) = bootstrap else {
+            return;
+        };
+        // The snapshot is taken under the bootstrap's lock and the batch is
+        // learned outside it, so the two locks are never held at once.
+        let records = {
+            let Ok(bootstrap) = bootstrap.lock() else {
+                return;
+            };
+            bootstrap.validated_router_info_snapshot()
+        };
+        self.profiles.with(|profiles| {
+            profiles.advance_time(now_ms);
+            profiles.learn_all(records);
+        });
+    }
+
+    /// Loads the persisted peer-profile projection at startup.
+    ///
+    /// Plan 488 F4. A projection is applied only when it is **present** and
+    /// **current**: it must name the current UTC day and it must decode. A
+    /// corrupt projection, an oversized projection, or one built for a
+    /// different UTC day is **discarded and counted**; it is never applied,
+    /// and it never fails the router's startup.
+    fn load_projection(&self, directory: &Path, now_ms: u64) {
+        let Some(today) = projection_day(now_ms) else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.take(PROFILE_PROJECTION_SCAN_LIMIT) {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(day) = projection_day_of(name) else {
+                continue;
+            };
+            if day == today {
+                self.apply_projection(&entry.path());
+            } else {
+                // A projection built for another UTC day is stale: it is
+                // discarded and counted, and it is never applied.
+                self.discard_projection("stale-day");
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Applies one persisted projection, or discards and counts it.
+    fn apply_projection(&self, path: &Path) {
+        let Ok(bytes) = read_bounded(path, i2pr_netdb::DEFAULT_MAX_PROJECTION_BYTES) else {
+            self.discard_projection("unreadable");
+            return;
+        };
+        let outcome = self
+            .profiles
+            .with(|driver| driver.load_projection(&bytes))
+            .unwrap_or(
+                crate::netdb_participation::ProjectionLoadOutcome::Discarded {
+                    reason: "unavailable",
+                },
+            );
+        match outcome {
+            crate::netdb_participation::ProjectionLoadOutcome::Restored { .. } => {
+                self.restored_projections.fetch_add(1, Ordering::Relaxed);
+            }
+            crate::netdb_participation::ProjectionLoadOutcome::Discarded { reason } => {
+                self.discard_projection(reason);
+            }
+        }
+    }
+
+    /// Counts one projection the startup load refused to apply.
+    ///
+    /// The driver keeps its own decode-failure counter; this counter is the
+    /// daemon's own view of **every** projection the startup load refused,
+    /// whichever layer refused it.
+    fn discard_projection(&self, reason: &'static str) {
+        self.discarded_projections.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!("a persisted peer-profile projection was discarded: {reason}");
+    }
+
+    /// Persists the peer-profile projection for the current UTC day.
+    ///
+    /// The bytes are the store's own bounded encoding: the daemon adds no
+    /// framing of its own. The projection is written to a temporary file and
+    /// renamed into place, so a reader never sees a half-written
+    /// projection.
+    fn persist_projection(&self, directory: &Path, now_ms: u64) {
+        let Some(day) = projection_day(now_ms) else {
+            return;
+        };
+        let Some(bytes) = self
+            .profiles
+            .with(|driver| driver.encode_projection().ok())
+            .flatten()
+        else {
+            return;
+        };
+        if bytes.len() > i2pr_netdb::DEFAULT_MAX_PROJECTION_BYTES {
+            return;
+        }
+        if std::fs::create_dir_all(directory).is_err() {
+            return;
+        }
+        let path = directory.join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{day}{PROFILE_PROJECTION_FILE_SUFFIX}"
+        ));
+        let temporary = directory.join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{day}{PROFILE_PROJECTION_FILE_SUFFIX}.tmp"
+        ));
+        if std::fs::write(&temporary, &bytes).is_err() {
+            return;
+        }
+        if std::fs::rename(&temporary, &path).is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+    }
+
+    /// Reports the participation counters when the owner stops.
+    fn report(&self) {
+        let counters = self.routing_table.counters();
+        // Plan 542: the retention counts are the owner's, so they are
+        // reported with the owner's other counts. A pass that could not run
+        // is a count, never a silent skip.
+        let retention = self.retention_snapshot();
+        tracing::info!(
+            "NetDB participation owner stopped: restored_projections={} discarded_projections={} population_refusals={} routing_table_answered={} routing_table_fell_back={} retention_runs={} retention_removed={} retention_unavailable={} retention_not_applicable={}",
+            self.restored_projections.load(Ordering::Relaxed),
+            self.discarded_projections.load(Ordering::Relaxed),
+            self.population_refusals.load(Ordering::Relaxed),
+            counters.answered,
+            counters.fell_back(),
+            retention.runs,
+            retention.removed,
+            retention.unavailable,
+            retention.not_applicable,
+        );
+    }
+}
+
+/// Exports the router's own signed RouterInfo for an out-of-band peer handoff.
+///
+/// Plan 544. A two-host private-LAN qualification run has no floodfill to
+/// publish the router's record to, and the SSU2 publication path is
+/// loopback-clamped by design, so the record reaches the peer the way a lab
+/// handoff always does: the operator copies a file.
+///
+/// The file is written under **the name the peer's cache loader requires**,
+/// which is the lowercase hexadecimal router hash: the loader derives its
+/// expected key from the filename (`crates/i2pr-netdb-persist/src/cache_loader.rs`),
+/// so a record under any other name is refused as a key mismatch. Writing the
+/// hash here means the operator's step is a copy, and the name is not
+/// re-derived by hand.
+///
+/// The path is `<data_dir>/export/`. It is deliberately **not**
+/// `netdb/routers/`: that directory is the cache the router loads into its own
+/// store at startup, and a router that found itself there would hold its own
+/// record as a peer.
+///
+/// Returns `None` when the record carries no derivable hash, which is a
+/// local, counted condition rather than a failure of the export.
+///
+/// Public because Plan 544's lane (`tests/router_info_export.rs`) is an
+/// integration test: it must exercise the **same** helper production calls,
+/// not a re-implementation of the naming rule. The helper opens no socket,
+/// reads no configuration and touches nothing outside `data_dir`.
+pub fn export_local_router_info(
+    data_dir: &std::path::Path,
+    encoded: &[u8],
+) -> std::io::Result<Option<(String, std::path::PathBuf)>> {
+    let Ok(router_info) = i2pr_proto::RouterInfo::decode(encoded, encoded.len()) else {
+        return Ok(None);
+    };
+    let Ok(hash) = i2pr_netdb::router_hash(router_info.router_identity()) else {
+        return Ok(None);
+    };
+    let mut hex = String::with_capacity(64);
+    for byte in hash.as_bytes() {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    let directory = data_dir.join("export");
+    std::fs::create_dir_all(&directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let path = directory.join(&hex);
+    std::fs::write(&path, encoded)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(Some((hex, path)))
+}
+
+/// Returns the UTC day key of one instant, as `yyyyMMdd`.
+///
+/// The key is the routing table's own daily rotation key, so a projection
+/// and the table agree on what "today" is.
+fn projection_day(now_ms: u64) -> Option<String> {
+    let key = i2pr_netdb::format_daily_key(Date::from_millis(now_ms)).ok()?;
+    String::from_utf8(key.to_vec()).ok()
+}
+
+/// Returns the UTC day a projection file name names, if it names one.
+fn projection_day_of(name: &str) -> Option<String> {
+    let day = name
+        .strip_prefix(PROFILE_PROJECTION_FILE_PREFIX)?
+        .strip_suffix(PROFILE_PROJECTION_FILE_SUFFIX)?;
+    if day.len() == 8 && day.bytes().all(|byte| byte.is_ascii_digit()) {
+        Some(day.to_owned())
+    } else {
+        None
+    }
+}
+
+/// Reads at most `maximum` bytes from one file.
+///
+/// A file larger than the ceiling is refused rather than read: the
+/// projection is a bounded cache, and an oversized file is a hostile input.
+fn read_bounded(path: &Path, maximum: usize) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let limit = u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1);
+    let mut reader = file.take(limit);
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Registers the supervised NetDB participation owner (Plan 497).
+///
+/// The service is `Optional` and carries
+/// [`i2pr_core::StartupRequirement::Optional`]: a participation owner that
+/// cannot start degrades the routing table's feature and nothing else. The
+/// router still starts and still serves.
+///
+/// When `netdb.routing_table_enabled` is `false` — the default — the owner
+/// is deliberately **inert**: it populates nothing, it ticks nothing, and
+/// the shared consumer answers every request with
+/// [`RoutingTableFallback::Disabled`](crate::netdb_participation::RoutingTableFallback::Disabled),
+/// so the lookup path falls back to the flat store exactly as it does today.
+fn register_netdb_participation_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+    bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
+    participation: Arc<NetDbParticipation>,
+) -> Result<(), DaemonError> {
+    let enabled = config.netdb.routing_table_enabled;
+    // Plan 542: retention is a property of holding a NetDB, so its switch is
+    // the NetDB's own and **not** the routing table's.
+    let netdb_retention_enabled = config.netdb.enabled;
+    let period = Duration::from_millis(config.netdb.participation_maintenance_period_ms);
+    let projection_directory = config.router.data_dir.join(PROFILE_PROJECTION_DIRECTORY);
+    builder
+        .register(
+            service_spec(
+                NETDB_PARTICIPATION_SERVICE_NAME,
+                ServiceClassification::Optional,
+                move |ctx| {
+                    let participation = Arc::clone(&participation);
+                    let bootstrap = bootstrap.clone();
+                    let projection_directory = projection_directory.clone();
+                    let cancellation = ctx.cancellation().clone();
+                    let readiness = ctx.readiness();
+                    let children = ctx.children();
+                    Box::pin(async move {
+                        // Plan 360 readiness contract: readiness means the
+                        // participation owner is running. It deliberately
+                        // does not wait for the first maintenance pass, the
+                        // first table population, or the projection load:
+                        // each is bounded, local and failure-tolerant.
+                        if let Err(failure) =
+                            signal_running(NETDB_PARTICIPATION_SERVICE_NAME, &readiness)
+                        {
+                            return failure;
+                        }
+                        if enabled {
+                            participation.start(
+                                bootstrap.as_ref(),
+                                &projection_directory,
+                                &children,
+                                period,
+                            );
+                        }
+                        // Plan 542 — the router's retention policy is a
+                        // property of holding a NetDB, not of the routing
+                        // table. The step runs whenever the NetDB does, so a
+                        // router that runs no service-tunnel group still
+                        // turns its peer knowledge over instead of refusing
+                        // every new peer for ever once its store is full.
+                        // The routing table, the exploration job, the
+                        // profile feed and the discovery spine keep their
+                        // own switches: this does not make the router's
+                        // ability to *use* its NetDB the condition of its
+                        // ability to *forget*.
+                        if netdb_retention_enabled {
+                            participation.start_retention(bootstrap.as_ref(), &children, period);
+                        }
+                        cancellation.cancelled().await;
+                        participation.report();
+                        i2pr_runtime::ServiceResult::RequestedShutdown
+                    })
+                },
+            )
+            .startup_requirement(i2pr_core::StartupRequirement::Optional),
+        )
+        .map_err(|error| {
+            DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register NetDB participation service: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
 /// Bounded Plan 279 normal-path evaluation period.
 const NORMAL_FLOODFILL_EVALUATION_PERIOD: Duration = Duration::from_secs(30);
 /// Serving-NetDB record age ceiling for the normal path (mirrors the
@@ -1788,6 +2629,36 @@ struct Ntcp2IngressOwner {
     delivery: crate::router_i2np::Ntcp2RouterDeliveryRegistry,
 }
 
+/// Plan 502: installs the router's own coordinator facts into the transit
+/// owner.
+///
+/// The owner records creator-owned build replies and creator/service-owned
+/// tunnel ids in narrow typed sets. The facts come from the build
+/// coordinator that owns the router's pending attempts, so the router's
+/// own traffic is never claimed as transit work.
+///
+/// The sets only grow: a fact that was true stays true for the router's
+/// lifetime, and the number of facts is bounded by the coordinator's
+/// pending-build and tunnel-retention ceilings times the number of builds
+/// the router performs.
+fn install_transit_creator_correlation(
+    transit: &mut TransitLiveOwner<ChaCha8Rng>,
+    owner: &NormalSsu2Owner,
+    now_ms: u64,
+) {
+    let (builds, tunnel_ids) = owner.transit_creator_correlation();
+    for (peer, message_id) in builds {
+        transit.install_creator_build(peer, message_id, now_ms);
+    }
+    for tunnel_id in tunnel_ids {
+        transit.install_creator_data(tunnel_id, now_ms);
+        transit.install_creator_gateway(tunnel_id, now_ms);
+    }
+    // Plan 508: the sweep rides this tick, so the owner gains no second
+    // timer and the facts stay bounded over the router's lifetime.
+    transit.expire_creator_correlation(now_ms);
+}
+
 /// One inbound queue owner for the normal daemon. The group product wraps
 /// the same SSU2 handle; it never starts another transport or receiver.
 enum NormalSsu2Owner {
@@ -1803,10 +2674,68 @@ impl NormalSsu2Owner {
         }
     }
 
+    /// Plan 502: the router's own coordinator facts the transit owner
+    /// must bypass.
+    ///
+    /// The documented order is creator/service first, transit second,
+    /// unknown fail-closed. Without these facts the transit owner would
+    /// claim the router's **own** coordinator traffic as transit work.
+    ///
+    /// A router that owns no build coordinator owns no coordinator
+    /// traffic, so it has nothing to bypass and the correlation stays
+    /// empty.
+    fn transit_creator_correlation(&self) -> (Vec<(i2pr_transport::PeerId, u32)>, Vec<u32>) {
+        match self {
+            Self::Router(_) => (Vec::new(), Vec::new()),
+            Self::Groups(product) => (
+                product.transit_creator_builds(),
+                product.transit_creator_tunnel_ids(),
+            ),
+        }
+    }
+
+    fn qualification_observer(&self) -> Option<i2pr_runtime::Ssu2QualificationObserver> {
+        self.handle().qualification_observer()
+    }
+
     async fn next_inbound(&mut self) -> Option<i2pr_runtime::Ssu2InboundI2np> {
         match self {
             Self::Router(handle) => handle.next_inbound().await,
             Self::Groups(product) => product.next_inbound().await,
+        }
+    }
+
+    /// Plan 498: pulls the next authenticated inbound relay block without
+    /// waiting.
+    ///
+    /// The runtime's relay handoff is a second bounded channel beside the
+    /// I2NP handoff, and the daemon's live inbound loop drains it into the
+    /// introducer (Bob) role owner. The pull is non-blocking so the drain
+    /// can run on its own bounded tick.
+    fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
+        match self {
+            Self::Router(handle) => handle.try_next_relay_event(),
+            Self::Groups(product) => product.try_next_relay_event(),
+        }
+    }
+
+    /// Plan 531: pulls the next inbound requester event without waiting.
+    ///
+    /// The requester's events have their own bounded handoff beside the
+    /// relay handoff, and the daemon's live inbound loop drains it into
+    /// the requester (Alice) role owner. The pull is non-blocking so the
+    /// drain can run on its own bounded tick.
+    fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
+        match self {
+            Self::Router(handle) => handle.try_next_requester_event(),
+            Self::Groups(product) => product.try_next_requester_event(),
+        }
+    }
+
+    fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget> {
+        match self {
+            Self::Router(handle) => handle.try_next_target_event(),
+            Self::Groups(product) => product.try_next_target_event(),
         }
     }
 
@@ -1840,13 +2769,38 @@ impl NormalSsu2Owner {
     }
 }
 
+impl crate::ssu2_relay_drain::RelayEventSource for NormalSsu2Owner {
+    fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
+        NormalSsu2Owner::try_next_relay_event(self)
+    }
+}
+
+impl crate::ssu2_relay_drain::RequesterEventSource for NormalSsu2Owner {
+    fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
+        NormalSsu2Owner::try_next_requester_event(self)
+    }
+}
+
+impl crate::ssu2_relay_drain::TargetEventSource for NormalSsu2Owner {
+    fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget> {
+        NormalSsu2Owner::try_next_target_event(self)
+    }
+}
+
 struct FloodfillEvaluationContext<'a> {
     data_dir: &'a std::path::Path,
     config_path: Option<&'a std::path::Path>,
     controlled_profile: bool,
+    /// Plan 546: may the router publish its own bound SSU2 address?
+    bound_address_publishable: bool,
     controlled_ntcp2_endpoint: Option<std::net::SocketAddr>,
     local_router_info: &'a tokio::sync::watch::Sender<Option<Arc<Vec<u8>>>>,
     inspection: &'a Arc<InspectionHandles>,
+    /// Plan 479: shared shaper for the controlled capacity gate.
+    /// `None` preserves the legacy classless controlled form.
+    bandwidth: Option<i2pr_runtime::BandwidthGovernor>,
+    /// Configured shared-capacity fraction feeding class derivation.
+    bandwidth_share_percent: u8,
 }
 
 /// Runs one bounded Plan 279 evaluation tick for the router-owned
@@ -1865,9 +2819,12 @@ async fn run_floodfill_evaluation(
         data_dir,
         config_path,
         controlled_profile,
+        bound_address_publishable,
         controlled_ntcp2_endpoint,
         local_router_info,
         inspection,
+        bandwidth,
+        bandwidth_share_percent,
     } = context;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1901,6 +2858,11 @@ async fn run_floodfill_evaluation(
     );
     let readiness = crate::floodfill::NormalReadiness {
         material: material.as_ref(),
+        // Plan 546: the operator's own statement that this host is directly
+        // reachable at its bind. The runtime is the authority on whether the
+        // address may be published; this only says whether the floodfill role
+        // may accept the runtime's answer.
+        bound_address_publishable,
         wall_now_ms: now_ms,
         // The serving NetDB is constructed with the state and the
         // persistent cache passed revalidation in the bootstrap
@@ -1922,8 +2884,16 @@ async fn run_floodfill_evaluation(
     match step {
         crate::floodfill::FloodfillServiceStep::Idle => {}
         crate::floodfill::FloodfillServiceStep::Activate => {
+            // Plan 479: the capacity gate is issued fresh per tick so a
+            // replaced or degraded shaper cannot lend a stale class.
+            let capacity_eligibility = bandwidth.as_ref().and_then(|governor| {
+                crate::bandwidth_eligibility::CapacityEligibility::issue(
+                    Some(governor),
+                    bandwidth_share_percent,
+                )
+            });
             let activation = if controlled_profile {
-                match dual_router_info {
+                match dual_router_info.clone() {
                     Some(info) => match controlled_ntcp2_endpoint {
                         Some(endpoint) => {
                             state
@@ -1934,6 +2904,8 @@ async fn run_floodfill_evaluation(
                                     endpoint,
                                     &readiness,
                                     cancellation,
+                                    capacity_eligibility.as_ref(),
+                                    bandwidth.as_ref(),
                                 )
                                 .await
                         }
@@ -1946,41 +2918,101 @@ async fn run_floodfill_evaluation(
                     .apply_activation(handle, bundle, &readiness, cancellation)
                     .await
             };
-            match activation {
-                Ok(encoded) => {
-                    if controlled_profile {
-                        match i2pr_netdb::encode_router_info(&encoded) {
-                            Ok(info_b64) => match inspection
-                                .publish_local_router_info_b64(info_b64.trim_end_matches('='))
-                            {
-                                Ok(()) => tracing::info!(
-                                    router_info_bytes = encoded.len(),
-                                    "controlled floodfill RouterInfo inspection snapshot published"
+            // Below-floor tiers publish the addressed non-floodfill
+            // form exactly once instead of the floodfill activation.
+            // The role coordinator stays untouched; nothing is
+            // withdrawn later because nothing was advertised.
+            if controlled_profile
+                && !state.controlled_tiered_addressed_published()
+                && let Err(crate::floodfill::NormalActivationError::TierBelowFloodfillFloor(class)) =
+                    activation
+            {
+                let tiered = match dual_router_info.clone() {
+                    Some(info) => {
+                        match crate::floodfill::FloodfillServiceState::decode_controlled_dual_addresses(
+                            info.as_ref(),
+                        ) {
+                            Ok(addresses) => match controlled_ntcp2_endpoint {
+                                Some(endpoint) => state.publish_controlled_tiered_addressed(
+                                    handle,
+                                    bundle,
+                                    addresses,
+                                    class,
+                                    now_ms,
+                                    endpoint,
                                 ),
-                                Err(error) => tracing::warn!(
-                                    reason = %error,
-                                    "controlled floodfill RouterInfo inspection publication rejected"
+                                None => Err(
+                                    crate::floodfill::NormalActivationError::InvalidConfig,
                                 ),
                             },
-                            Err(error) => tracing::warn!(
-                                reason = %error,
-                                "controlled floodfill RouterInfo base64 encoding failed"
-                            ),
+                            Err(error) => Err(error),
+                        }
+                    }
+                    None => Err(crate::floodfill::NormalActivationError::InvalidConfig),
+                };
+                match tiered {
+                    Ok(encoded) => {
+                        if let Ok(info_b64) = i2pr_netdb::encode_router_info(&encoded)
+                            && inspection
+                                .publish_local_router_info_b64(info_b64.trim_end_matches('='))
+                                .is_err()
+                        {
+                            tracing::warn!(
+                                "tiered addressed RouterInfo inspection publication rejected"
+                            );
                         }
                         let _ = local_router_info.send(Some(Arc::new(encoded)));
+                        tracing::info!(
+                            requested = true,
+                            role = "Addressed",
+                            tier = %class.as_capability(),
+                            "controlled tiered addressed RouterInfo published without floodfill role"
+                        );
                     }
-                    tracing::info!(
+                    Err(error) => tracing::warn!(
                         requested = true,
-                        role = "Active",
-                        "floodfill qualification activated"
-                    );
+                        role = "Failed",
+                        reason = %error,
+                        "controlled tiered addressed publication failed closed"
+                    ),
                 }
-                Err(error) => tracing::warn!(
-                    requested = true,
-                    role = "Failed",
-                    reason = %error,
-                    "normal floodfill activation failed closed"
-                ),
+            } else {
+                match activation {
+                    Ok(encoded) => {
+                        if controlled_profile {
+                            match i2pr_netdb::encode_router_info(&encoded) {
+                                Ok(info_b64) => match inspection
+                                    .publish_local_router_info_b64(info_b64.trim_end_matches('='))
+                                {
+                                    Ok(()) => tracing::info!(
+                                        router_info_bytes = encoded.len(),
+                                        "controlled floodfill RouterInfo inspection snapshot published"
+                                    ),
+                                    Err(error) => tracing::warn!(
+                                        reason = %error,
+                                        "controlled floodfill RouterInfo inspection publication rejected"
+                                    ),
+                                },
+                                Err(error) => tracing::warn!(
+                                    reason = %error,
+                                    "controlled floodfill RouterInfo base64 encoding failed"
+                                ),
+                            }
+                            let _ = local_router_info.send(Some(Arc::new(encoded)));
+                        }
+                        tracing::info!(
+                            requested = true,
+                            role = "Active",
+                            "floodfill qualification activated"
+                        );
+                    }
+                    Err(error) => tracing::warn!(
+                        requested = true,
+                        role = "Failed",
+                        reason = %error,
+                        "normal floodfill activation failed closed"
+                    ),
+                }
             }
         }
         crate::floodfill::FloodfillServiceStep::Withdraw => {
@@ -2013,9 +3045,16 @@ async fn run_floodfill_evaluation(
                         }
                         let _ = local_router_info.send(Some(Arc::new(withdrawn)));
                     }
+                    // Plan 549: the withdrawal used to report the role and
+                    // nothing else, so a role that flapped every 30 s could be
+                    // read as a reachability lapse when the real cause was any
+                    // of the other readiness inputs. The categorical reasons
+                    // were already computed and stored; they are named here.
+                    let status = state.status();
                     tracing::info!(
                         requested = state.intent(),
                         role = "Disabled",
+                        reasons = ?status.reasons,
                         "floodfill advertisement withdrew"
                     );
                 }
@@ -2129,7 +3168,7 @@ fn register_ntcp2_service(
         Ntcp2RuntimeService,
     };
     use i2pr_storage::{IdentityStore, Ntcp2TransportIdentityStore, Ssu2TransportIdentityStore};
-    use std::net::SocketAddr;
+    use std::net::{IpAddr, SocketAddr};
     use zeroize::Zeroizing;
 
     let config = config.clone();
@@ -2188,17 +3227,21 @@ fn register_ntcp2_service(
             let readiness = ctx.readiness();
             let outbound_dial_rx = Arc::clone(&outbound_dial_rx);
             Box::pin(async move {
-                if !config.enabled
-                    || config.qualification_profile
-                        != crate::config::Ntcp2QualificationProfile::ControlledLoopback
-                    || !config.bind_address.is_loopback()
-                    || config.listen_port < 1024
-                {
-                    return ntcp2_service_failure(
-                        i2pr_core::ServiceFailureCategory::InvalidState,
-                        "NTCP2 requires the explicit controlled-loopback profile",
-                    );
-                }
+                // Plan 496: Plan 101's blanket "controlled-loopback only"
+                // refusal is replaced by a profile-aware gate. Every
+                // combination outside the two explicitly authorized profiles
+                // is still refused, and each refusal now names its own
+                // reason instead of one generic message. The address scope
+                // is derived from the profile and is never widened.
+                let dial_scope = match crate::ntcp2_activation::ntcp2_activation_scope(&config) {
+                    Ok(scope) => scope,
+                    Err(refusal) => {
+                        return ntcp2_service_failure(
+                            i2pr_core::ServiceFailureCategory::InvalidState,
+                            refusal.reason(),
+                        );
+                    }
+                };
                 let runtime = match Ntcp2RuntimeService::new_with_bandwidth(
                     runtime_config,
                     bandwidth.clone(),
@@ -2260,7 +3303,51 @@ fn register_ntcp2_service(
                         );
                     }
                 };
-                let router_info_bytes = if controlled_dual_transport {
+                // Plan 496: the guarded operator profile composes one
+                // dual-transport record whose two endpoints are the
+                // operator's RFC1918 IPv4 private LAN. The record is held
+                // locally and is never published to the NetDB; the
+                // operator hands it to a lab peer out of band.
+                let private_lan_dual_transport = config.qualification_profile
+                    == crate::config::Ntcp2QualificationProfile::PrivateLanQualification;
+                let dual_transport = controlled_dual_transport || private_lan_dual_transport;
+                let router_info_bytes = if private_lan_dual_transport {
+                    let configured_ssu2 = ssu2_config
+                        .bind_ipv4
+                        .or(ssu2_config.bind_ipv6)
+                        .map(|address| SocketAddr::new(address, ssu2_config.port));
+                    let Some(ssu2_endpoint) = configured_ssu2.filter(|endpoint| {
+                        endpoint.port() >= 1024
+                            && matches!(endpoint.ip(), IpAddr::V4(ip) if ip.is_private())
+                            && endpoint.is_ipv4() == listener.local_addr().is_ipv4()
+                    }) else {
+                        listener.shutdown();
+                        return ntcp2_service_failure(
+                            i2pr_core::ServiceFailureCategory::InvalidState,
+                            "private-LAN dual-transport profile has no matching fixed SSU2 endpoint",
+                        );
+                    };
+                    let ssu2_transport = match Ssu2TransportIdentityStore::in_data_dir(&data_dir)
+                        .load_or_generate(router_hash, &mut i2pr_crypto::OsRng)
+                    {
+                        Ok(material) => material,
+                        Err(_) => {
+                            listener.shutdown();
+                            return ntcp2_service_failure(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                "private-LAN dual-transport SSU2 identity-bound keys are unavailable",
+                            );
+                        }
+                    };
+                    crate::router_i2np::generate_private_lan_dual_transport_router_info(
+                        &bundle,
+                        ssu2_endpoint,
+                        &ssu2_transport,
+                        listener.local_addr(),
+                        &transport,
+                        network_id,
+                    )
+                } else if controlled_dual_transport {
                     let configured_ssu2 = ssu2_config
                         .bind_ipv4
                         .or(ssu2_config.bind_ipv6)
@@ -2315,16 +3402,15 @@ fn register_ntcp2_service(
                         );
                     }
                 };
-                if controlled_dual_transport
-                    && local_router_info.send(Some(Arc::clone(&router_info))).is_err()
+                if dual_transport && local_router_info.send(Some(Arc::clone(&router_info))).is_err()
                 {
                     listener.shutdown();
                     return ntcp2_service_failure(
                         i2pr_core::ServiceFailureCategory::Internal,
-                        "controlled dual-transport RouterInfo has no live SSU2 publisher",
+                        "dual-transport RouterInfo has no live SSU2 publisher",
                     );
                 }
-                let _clear_dual_router_info = controlled_dual_transport.then(|| {
+                let _clear_dual_router_info = dual_transport.then(|| {
                     ClearDualRouterInfoOnDrop(local_router_info.clone())
                 });
                 let local_router_info_rx = local_router_info.subscribe();
@@ -2349,6 +3435,7 @@ fn register_ntcp2_service(
                     let outbound_send_timeout = ntcp2_send_timeout;
                     let outbound_controlled_floodfill = config.qualification_profile
                         == crate::config::Ntcp2QualificationProfile::ControlledLoopback;
+                    let outbound_dial_scope = dial_scope;
                     let _ = children.spawn(move |task_cancel| async move {
                         let mut cursor = 0usize;
                         let mut health_tick = tokio::time::interval(Duration::from_secs(15));
@@ -2437,7 +3524,8 @@ fn register_ntcp2_service(
                                 return Ok(());
                             };
                             let mut link = match outbound_runtime
-                                .dial_authenticated_loopback_peer(
+                                .dial_authenticated_peer_in_scope(
+                                    outbound_dial_scope,
                                     &outbound_scope,
                                     candidate.router_info(),
                                     *candidate.key().as_bytes(),
@@ -2453,7 +3541,8 @@ fn register_ntcp2_service(
                                 Err(error) => {
                                     tracing::info!(
                                         error = ?error,
-                                        "controlled NTCP2 outbound peer dial attempt did not authenticate"
+                                        dial_scope = outbound_dial_scope.name(),
+                                        "NTCP2 outbound peer dial attempt did not authenticate"
                                     );
                                     continue;
                                 }
@@ -2483,14 +3572,27 @@ fn register_ntcp2_service(
                                             biased;
                                             _ = link_cancel.cancelled() => break,
                                             message = send_rx.recv() => {
-                                                let Some(message) = message else { break; };
-                                                if link.send_i2np_message(
-                                                    message,
-                                                    link_send_timeout,
-                                                    &link_cancel,
-                                                ).await.is_err() {
-                                                    break;
+                                                let Some(mut message) = message else { break; };
+                                                let sent = if message.completion.is_some() {
+                                                    match link.send_i2np_message_with_receipt(
+                                                        message.bytes,
+                                                        link_send_timeout,
+                                                        &link_cancel,
+                                                    ).await {
+                                                        Ok(receipt) => receipt.await.is_ok(),
+                                                        Err(_) => false,
+                                                    }
+                                                } else {
+                                                    link.send_i2np_message(
+                                                        message.bytes,
+                                                        link_send_timeout,
+                                                        &link_cancel,
+                                                    ).await.is_ok()
+                                                };
+                                                if let Some(completion) = message.completion.take() {
+                                                    let _ = completion.send(sent);
                                                 }
+                                                if !sent { break; }
                                             }
                                             received = link.recv_i2np_messages(&link_cancel) => {
                                                 let Ok(Some(messages)) = received else { break; };
@@ -2600,12 +3702,27 @@ fn register_ntcp2_service(
                                         biased;
                                         _ = task_cancel.cancelled() => break,
                                     message = send_rx.recv() => {
-                                        let Some(message) = message else { break; };
-                                        let _ = link.send_i2np_message(
-                                            message,
-                                            task_send_timeout,
-                                            &task_cancel,
-                                        ).await;
+                                        let Some(mut message) = message else { break; };
+                                        let sent = if message.completion.is_some() {
+                                            match link.send_i2np_message_with_receipt(
+                                                message.bytes,
+                                                task_send_timeout,
+                                                &task_cancel,
+                                            ).await {
+                                                Ok(receipt) => receipt.await.is_ok(),
+                                                Err(_) => false,
+                                            }
+                                        } else {
+                                            link.send_i2np_message(
+                                                message.bytes,
+                                                task_send_timeout,
+                                                &task_cancel,
+                                            ).await.is_ok()
+                                        };
+                                        if let Some(completion) = message.completion.take() {
+                                            let _ = completion.send(sent);
+                                        }
+                                        if !sent { break; }
                                     }
                                         received = link.recv_i2np_messages(&task_cancel) => {
                                             let Ok(Some(messages)) = received else { break; };
@@ -2648,6 +3765,202 @@ fn register_ntcp2_service(
     Ok(())
 }
 
+/// The router's own RouterInfo publication, on its **own task**.
+///
+/// Plan 519: the publication used to run inside the SSU2 service's
+/// `select!` loop, where its delivery awaited a session establishment and
+/// stalled the loop's relay drain and its inbound acknowledgement owner.
+/// The publication now has its **own** task, with its own ownership, its
+/// own cancellation and its own bounded delivery timeout, and the
+/// transport's service loop never awaits it.
+///
+/// The reference never blocks its transport's loop on a handshake: i2pd
+/// 2.61.0 posts the send and ignores the returned future
+/// (`libi2pd/Transports.cpp:483-496`), and Java I2P 2.13.0 runs the
+/// publication as a job on its own pool (`PublishLocalRouterInfoJob`,
+/// `JobQueue.java:163`) whose store is handed to a `FloodfillStoreJob`
+/// with its own `PUBLISH_TIMEOUT`
+/// (`FloodfillNetworkDatabaseFacade.java:174`).
+///
+/// The task owns the publication's whole world: the owner (the schedule,
+/// the cycle, the correlator and the cycle's record), the transport
+/// capability, the identity and the acknowledgement inbox. The transport's
+/// service loop holds **none** of it.
+async fn run_router_info_publication_task(
+    task: crate::router_info_publication_task::RouterInfoPublicationTask,
+    cancellation: i2pr_runtime::CancellationToken,
+) -> Result<(), i2pr_runtime::ChildTaskFailure> {
+    let crate::router_info_publication_task::RouterInfoPublicationTask {
+        mut publication_owner,
+        handle,
+        bundle,
+        bootstrap,
+        mut rng,
+        mut inbox,
+        dial_timeout,
+        qualification_profile,
+        self_publication,
+        self_publication_counters,
+        ntcp2_endpoint,
+        ntcp2_scope,
+    } = task;
+    // Plan 519: the publication's ticks are **its own**. The transport's
+    // service loop gains no timer: it carries none of the publication's
+    // ticks, and the publication's ticks carry none of the transport's
+    // work.
+    let mut publication_tick = tokio::time::interval(Duration::from_millis(
+        crate::router_info_publication::PUBLICATION_INTERVAL_MS,
+    ));
+    publication_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut publication_ladder_tick = tokio::time::interval(Duration::from_millis(
+        crate::router_info_publication_task::PUBLICATION_LADDER_TICK_MS,
+    ));
+    publication_ladder_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        // Plan 519: the acknowledgements the bounded handoff could not take
+        // are folded in under the **unmatched** reason, so none of them is
+        // dropped silently. The fold is a read-and-clear, so it is safe to
+        // run it on every wake of the task.
+        inbox.fold_overflow(&mut publication_owner);
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                // Plan 519: a cancelled publication stops at its next
+                // await, the cycle is halted, and the cancellation is
+                // counted under its own reason.
+                publication_owner.halt_cycle();
+                publication_owner.schedule_mut().record_cancelled();
+                break;
+            }
+            Some(message_id) = inbox.recv() => {
+                // Plan 516: the correlator matches the inbound
+                // `DeliveryStatus` to the attempt it names, and an
+                // acknowledgement that names no live attempt is refused
+                // and counted under its own reason.
+                //
+                // Plan 519: the correlation happens on the publication's
+                // **own** task, so the transport's service loop never
+                // waits for it.
+                match publication_owner.confirm(message_id) {
+                    crate::router_info_publication::PublicationConfirmation::Confirmed {
+                        request_id,
+                    } => {
+                        tracing::info!(
+                            request_id,
+                            "router RouterInfo publication acknowledged by the network"
+                        );
+                    }
+                    crate::router_info_publication::PublicationConfirmation::Unmatched => {
+                        tracing::debug!(
+                            "router RouterInfo publication acknowledgement matched no live attempt"
+                        );
+                    }
+                }
+            }
+            _ = publication_tick.tick() => {
+                // Plan 515: one republication, when the schedule says it
+                // is due. Every outcome is counted by reason, and a
+                // refusal never stops the router.
+                //
+                // Plan 517: the publication is a **cycle**, and a cycle
+                // that is already running is left alone -- the periodic
+                // tick must not start a second one over the first.
+                let now_ms = wall_clock_ms();
+                if publication_owner.is_due(now_ms) && publication_owner.begin_cycle() {
+                    // Plan 518: the cycle's record is re-dated and
+                    // re-signed **once**, here, so every rung of the cycle
+                    // publishes the same bytes. The reference dates the
+                    // record before each publish cycle
+                    // (`libi2pd/RouterContext.cpp:1474`) and its resend
+                    // rungs publish that same record.
+                    // Plan 520: the router's own published address is
+                    // decided **before** the cycle re-dates the record, so
+                    // the cycle publishes the addressed record and every
+                    // rung of the cycle publishes the same bytes. The
+                    // transport owns the decision; the owner only
+                    // installs and counts.
+                    let self_publication_outcome =
+                        self_publication.refresh(&bundle, handle.service(), now_ms);
+                    // Plan 525: publish the owner's counter snapshot so
+                    // the running router's own published-address posture
+                    // is observable through the inspection plane. The
+                    // counters carry counts and stable reason labels
+                    // only.
+                    if let Ok(mut cell) = self_publication_counters.lock() {
+                        *cell = self_publication.counters().snapshot();
+                    }
+                    if !matches!(
+                        self_publication_outcome,
+                        crate::self_publication::SelfPublicationOutcome::Disabled
+                    ) {
+                        tracing::info!(
+                            outcome = ?self_publication_outcome,
+                            "the router's own published address was refreshed"
+                        );
+                    }
+                    let local_record = crate::router_i2np::refresh_local_router_info_record(
+                        &bundle,
+                        &handle,
+                        now_ms,
+                        ntcp2_endpoint,
+                        ntcp2_scope,
+                    );
+                    // Plan 518: the cycle's record is decided **once**,
+                    // here, and every rung of the cycle publishes it. A
+                    // rung never reads a copy back out of the runtime, so
+                    // the record cannot change under the cycle.
+                    publication_owner.set_cycle_record(local_record);
+                    let outcome = crate::router_info_publication::refresh_router_info(
+                        &mut publication_owner,
+                        &handle,
+                        bootstrap.as_ref(),
+                        dial_timeout,
+                        qualification_profile,
+                        &mut rng,
+                        &cancellation,
+                        &wall_clock_ms,
+                    )
+                    .await;
+                    tracing::info!(
+                        transition = "router_info_publication",
+                        outcome = ?outcome,
+                        "router RouterInfo publication",
+                    );
+                }
+            }
+            _ = publication_ladder_tick.tick() => {
+                // Plan 517: the publication's confirmation deadline rides
+                // **this** tick -- the publication's own ladder tick -- so
+                // no new timer is introduced in the transport's service
+                // loop. A batch the network did not acknowledge within
+                // the reference's timeout is followed by the next batch,
+                // and a delivery refusal is followed at once.
+                let publication_now_ms = wall_clock_ms();
+                if publication_owner.cycle_expired(publication_now_ms)
+                    && let Some(outcome) =
+                        crate::router_info_publication::advance_publication_cycle(
+                            &mut publication_owner,
+                            &handle,
+                            bootstrap.as_ref(),
+                            dial_timeout,
+                            qualification_profile,
+                            &mut rng,
+                            &cancellation,
+                            &wall_clock_ms,
+                        )
+                        .await
+                {
+                    tracing::info!(
+                        transition = "router_info_publication_retry",
+                        outcome = ?outcome,
+                        "router RouterInfo publication retry",
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Registers the supervised loopback SSU2 router service in the
 /// supplied builder. Plan 184 owns the first daemon activation of
 /// the existing SSU2 runtime under the strict controlled profile
@@ -2673,12 +3986,19 @@ fn register_ssu2_service(
     ntcp2_delivery: crate::router_i2np::Ntcp2RouterDeliveryRegistry,
     local_router_info: tokio::sync::watch::Sender<Option<Arc<Vec<u8>>>>,
     local_router_info_rx: tokio::sync::watch::Receiver<Option<Arc<Vec<u8>>>>,
+    // Plan 505: the daemon's peer-profile handle. The exploratory build
+    // driver selects its peers through it and records its observations back
+    // into it, so the store is no longer empty in a live router.
+    peer_profiles: crate::netdb_participation::PeerParticipationHandle,
+    // Plan 513: the live NetDB discovery spine. The group's product tick
+    // delivers the request the NetDB participation owner composes.
+    discovery: Option<Arc<crate::netdb_participation::NetDbDiscoverySpine>>,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, decode_authenticated_router_i2np, floodfill_body_from_message,
         generate_controlled_identity_with_keys, generate_private_lan_identity_with_keys,
     };
-    use crate::transit_owner::controlled_transit_disabled_probe;
+    use crate::transit_owner::TransitLiveOwner;
     let ssu2_config = config.ssu2.clone();
     let data_dir = config.router.data_dir.clone();
     let router_info_store_config =
@@ -2693,14 +4013,50 @@ fn register_ssu2_service(
         == crate::config::FloodfillQualificationProfile::ControlledLoopback;
     let reply_token_probe_enabled = config.floodfill.send_reply_token_probe;
     let request_driven_lookup_probe_enabled = config.floodfill.send_initiator_lookup_probe;
+    let bandwidth_share_percent = config.bandwidth.share_percent;
+    // Plan 502: the transit composition derives its inputs from the
+    // normalized `[transit]` and `[bandwidth]` sections. They are copied
+    // here because the service closure is `'static` and the configuration
+    // reference does not outlive this call.
+    let transit_config = config.transit;
+    let transit_bandwidth_config = config.bandwidth;
     let ntcp2_max_active_links = config.transport.ntcp2.max_active_links;
-    let controlled_ntcp2_endpoint = controlled_floodfill.then(|| {
-        std::net::SocketAddr::new(
-            config.transport.ntcp2.bind_address,
-            config.transport.ntcp2.listen_port,
-        )
-    });
+    // Plan 496: the NTCP2 endpoint the local RouterInfo's NTCP2 address
+    // must match before the SSU2 owner will install it, and the address
+    // scope that endpoint is allowed to live in. The controlled floodfill
+    // profile keeps the loopback scope; the guarded operator profile
+    // carries the RFC1918 scope. The two are mutually exclusive: the
+    // controlled floodfill profile already requires the NTCP2
+    // controlled-loopback profile.
+    let ntcp2_endpoint_scope = match config.transport.ntcp2.qualification_profile {
+        crate::config::Ntcp2QualificationProfile::PrivateLanQualification => {
+            i2pr_runtime::Ntcp2DialScope::PrivateLan
+        }
+        _ => i2pr_runtime::Ntcp2DialScope::Loopback,
+    };
+    let controlled_ntcp2_endpoint = (controlled_floodfill
+        || config.transport.ntcp2.qualification_profile
+            == crate::config::Ntcp2QualificationProfile::PrivateLanQualification)
+        .then(|| {
+            std::net::SocketAddr::new(
+                config.transport.ntcp2.bind_address,
+                config.transport.ntcp2.listen_port,
+            )
+        });
     let floodfill_config_path = config.source_path.clone();
+    // Plan 505: the exploratory build posture is copied out of the
+    // configuration here, like every other configuration value the
+    // `'static` service closure below reads.
+    let exploratory_builds = config.exploratory.builds;
+    // Plan 506: the peer-knowledge reconcile reuses the **existing** NetDB
+    // participation maintenance period, so there is one source of truth for
+    // the router's peer cadence and no second configuration knob. The value
+    // is copied out of the configuration here, like every other
+    // configuration value the `'static` service closure below reads.
+    let reconcile_period_ms = config.netdb.participation_maintenance_period_ms;
+    // Plan 546: copied out like every other configuration value the `'static`
+    // service closure below reads.
+    let publish_bound_address = config.ssu2.publish_bound_address;
     let inspection = Arc::clone(inspection);
     let router_ingress = Arc::new(tokio::sync::Mutex::new(router_ingress));
     builder
@@ -2723,13 +4079,25 @@ fn register_ssu2_service(
                 let request_driven_lookup_probe_enabled = request_driven_lookup_probe_enabled;
                 let ntcp2_max_active_links = ntcp2_max_active_links;
                 let controlled_ntcp2_endpoint = controlled_ntcp2_endpoint;
+                let ntcp2_endpoint_scope = ntcp2_endpoint_scope;
                 let bandwidth = bandwidth.clone();
+                let bandwidth_share_percent = bandwidth_share_percent;
+                // Plan 479: reserved for the per-tick controlled
+                // capacity gate; the SSU2 owner below moves the
+                // enforcement handle into its construction.
+                let capacity_bandwidth = bandwidth.clone();
                 let service_tunnels = service_tunnels.clone();
                 let service_runtime_active = service_runtime_active;
                 let bootstrap = bootstrap.clone();
                 let addressbook = Arc::clone(&addressbook);
                 let group_lifecycle = group_lifecycle.clone();
                 let shared_service_manager = shared_service_manager.clone();
+                // Plan 505: the closure is `Fn`, so the peer-profile handle
+                // is cloned into the async block rather than consumed.
+                let peer_profiles = peer_profiles.clone();
+                // Plan 513: the closure is `Fn`, so the discovery spine is
+                // cloned into the async block rather than consumed.
+                let discovery = discovery.clone();
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 let readiness = ctx.readiness();
@@ -2822,23 +4190,26 @@ fn register_ssu2_service(
                             }
                         }
                     }
-                    // Strict profile is enforced twice: once at config
-                    // parse time and again here so a future bypass
-                    // cannot reach socket ownership.
-                    if ssu2_config.advertise
-                        || ssu2_config.introducer_service
-                    {
-                        let detail = i2pr_core::HealthDetail::new(
-                            "SSU2 service requires the strict controlled profile",
-                        )
-                        .ok();
-                        return i2pr_runtime::ServiceResult::Failed(
-                            i2pr_core::ServiceFailure::new(
-                                i2pr_core::ServiceFailureCategory::InvalidState,
-                                detail,
-                            ),
-                        );
-                    }
+                    // The SSU2 service's **profile** is enforced at the
+                    // socket boundary, which owns the socket: it refuses an
+                    // SSU2 service that is not enabled, and it refuses an
+                    // advertisement outside the controlled loopback
+                    // profile (`ssu2_socket_config_from`). The configuration
+                    // is parsed and refused for the same reasons before the
+                    // service is ever registered.
+                    //
+                    // Plan 526: the introducer (Bob) role is **no longer
+                    // refused here**. The blanket refusal that Plan 520
+                    // kept made the role owner this composition constructs
+                    // unreachable in **every** configuration -- with the
+                    // opt-in on, the service failed before the
+                    // construction was reached -- so the role could never
+                    // run, and Plan 499's claim that the daemon's live loop
+                    // constructs the role owner and the carriage was false
+                    // of the tree. The role's own explicit, default-off
+                    // `ssu2.introducer_service` opt-in is now the only
+                    // gate, and the role owner refuses every event with
+                    // `Disabled` while it is off.
                     let store = IdentityStore::in_data_dir(&data_dir);
                     let bundle = match store.load() {
                         Ok(bundle) => bundle,
@@ -2940,6 +4311,16 @@ fn register_ssu2_service(
                             );
                         }
                     };
+                    // Plan 498: the introducer (Bob) role owner needs this
+                    // router's own hash to bind the relay blocks it admits.
+                    // The identity is moved into the runtime service below,
+                    // so the hash is taken first.
+                    let local_router_hash = *identity.router_hash.as_bytes();
+                    // Plan 502: the transit composition needs the same
+                    // bandwidth governor the SSU2 owner enforces against.
+                    // The governor is moved into the SSU2 service below, so
+                    // the composition keeps its own handle.
+                    let transit_bandwidth = bandwidth.clone();
                     let daemon_service = match Ssu2DaemonService::new_with_bandwidth(
                         &ssu2_config,
                         identity,
@@ -3137,6 +4518,22 @@ fn register_ssu2_service(
                         .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     let mut group_tick = tokio::time::interval(Duration::from_millis(250));
                     group_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    // Plan 498: the relay handoff drain tick. The runtime's
+                    // relay channel is bounded at
+                    // `max_inbound_relay_queue` (default 16); the tick
+                    // bounds how long a relay block waits for the
+                    // introducer (Bob) role owner.
+                    let mut relay_tick = tokio::time::interval(Duration::from_millis(100));
+                    relay_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    // Plan 519: the publication has its **own task**, and
+                    // this loop holds **none** of the publication's state.
+                    // The only thing that crosses the boundary is the
+                    // inbound acknowledgement, and it crosses it over a
+                    // **bounded** channel that this loop never blocks on.
+                    let (publication_handoff, publication_inbox) =
+                        crate::router_info_publication_task::publication_acknowledgement_channel(
+                            crate::router_info_publication_task::PUBLICATION_ACKNOWLEDGEMENT_CAPACITY,
+                        );
                     let pump_started = tokio::time::Instant::now();
                     let mut reply_token_probe_sent = HashSet::new();
                     let mut pending_reply_token_probes = HashMap::new();
@@ -3146,6 +4543,42 @@ fn register_ssu2_service(
                     // including when the only way to create one is
                     // I2PControl. See `service_tunnels_active`.
                     let has_enabled_groups = service_runtime_active;
+                    // Plan 547: the router's own peer test is owned beside
+                    // the SSU2 service, **not** inside the destination-group
+                    // product. The product exists only when a destination
+                    // group can exist at all, so a router that runs only
+                    // SSU2 had no owner and could never corroborate its own
+                    // reachability. The owner is built from the operator's
+                    // opt-in alone and is off by default, and the daemon's
+                    // own inbound path is its single consumer, so a probe is
+                    // answered exactly once.
+                    let mut peer_test =
+                        crate::peer_test_runtime::PeerTestRuntime::new(ssu2_config.peer_test);
+                    // Plan 521: publish the live peer-test counters so the
+                    // running router's own peer-test posture is observable
+                    // through the inspection plane. The counters carry
+                    // counts only.
+                    inspection.publish_peer_test_counters(peer_test.counters_cell());
+                    // Plan 506: the product needs the **live** bootstrap
+                    // handle so its reconcile can snapshot the router's
+                    // real peer population. The handle is cloned before
+                    // the borrow below so the product owns it.
+                    let live_bootstrap = bootstrap.clone();
+                    // Plan 534: the local observation table.
+                    //
+                    // The establishment's task records into it — the router
+                    // reached a peer through a relay — and the exploratory
+                    // driver takes from it and builds toward the peer it
+                    // names. The table is present only when the operator
+                    // has asked for the requester role, so an ordinary
+                    // router records nothing and names nothing.
+                    let relay_sessions = if ssu2_config.relay_requester {
+                        Some(
+                            crate::relay_session_peer::RelaySessionPeerOwner::new(true).into_handle(),
+                        )
+                    } else {
+                        None
+                    };
                     let mut owner = if has_enabled_groups {
                         let Some(bootstrap) = bootstrap.as_ref() else {
                             handle.shutdown();
@@ -3160,8 +4593,13 @@ fn register_ssu2_service(
                                 ),
                             );
                         };
+                        // Plan 541: the destination coordinator's store is
+                        // the **authority** the router's floodfill selection
+                        // reads, so it is seeded with the router's floodfill
+                        // advertisers and not with the group provider's
+                        // hash-ordered prefix.
                         let router_infos = match bootstrap.lock() {
-                            Ok(bootstrap) => bootstrap.validated_router_info_snapshot(),
+                            Ok(bootstrap) => bootstrap.floodfill_advertiser_snapshot(),
                             Err(_) => {
                                 handle.shutdown();
                                 let detail = i2pr_core::HealthDetail::new(
@@ -3189,6 +4627,30 @@ fn register_ssu2_service(
                                 ),
                             );
                         };
+                        // Plan 505: build the exploratory build driver when
+                        // the operator has enabled the `[exploratory]`
+                        // posture. The driver's peer selection and its
+                        // peer-material resolver both read the daemon's own
+                        // peer-profile store, so they can never disagree
+                        // about which peer exists.
+                        let exploratory_driver = if exploratory_builds {
+                            let profiles = peer_profiles.clone();
+                            let resolver = std::sync::Arc::new(
+                                crate::exploratory_driver::ProfileStorePeerResolver::new(
+                                    profiles.clone(),
+                                ),
+                            );
+                            Some(
+                                crate::exploratory_driver::ExploratoryDriver::with_relay_sessions(
+                                    true,
+                                    profiles,
+                                    resolver,
+                                    relay_sessions.clone(),
+                                ),
+                            )
+                        } else {
+                            None
+                        };
                         let spec = crate::service_product::ServiceProductSpec {
                             data_dir: data_dir.clone(),
                             ssu2_bind,
@@ -3205,12 +4667,43 @@ fn register_ssu2_service(
  extra_bootstrap_peers: Vec::new(),
                             options: crate::service_product::ServiceProductOptions {
                                 ssu2_qualification_profile: ssu2_config.qualification_profile,
+                                // Plan 524: the router's relay-tag request
+                                // is an explicit opt-in and it is off by
+                                // default.
+                                introducer_request: ssu2_config.introducer_request,
                                 ..Default::default()
                             },
                             addressbook: addressbook.shared(),
                             // Plan 337: the one shared manager, also held
                             // by the I2PControl control state.
                             shared_manager: shared_service_manager.clone(),
+                            // Plan 505: the exploratory build driver, when
+                            // the operator has enabled the `[exploratory]`
+                            // posture. The driver selects its peers through
+                            // the daemon's own peer-profile store and
+                            // records its observations back into it, so the
+                            // store is no longer empty in a live router and
+                            // the Plan 504 liveness scheduler finally has
+                            // a population to watch.
+                            exploratory_driver,
+                            // Plan 506: the live bootstrap handle and the
+                            // live peer-profile handle the reconcile needs.
+                            // The bootstrap handle lets the reconcile
+                            // snapshot the router's real peer population;
+                            // the profile handle lets it learn that
+                            // population into the store Plan 505's driver
+                            // selects from. The cadence is the **existing**
+                            // NetDB participation maintenance period, so
+                            // there is one source of truth and no second
+                            // configuration knob.
+                            bootstrap: live_bootstrap.clone(),
+                            peer_profiles: Some(peer_profiles.clone()),
+                            reconcile_period_ms,
+                            // Plan 513: the live NetDB discovery spine. The
+                            // product's tick delivers the request the NetDB
+                            // participation owner composes, and the two
+                            // owners share one routing table.
+                            discovery: discovery.clone(),
                         };
                         match crate::service_product::ServiceProduct::start_over_existing_daemon(
                             spec,
@@ -3223,7 +4716,51 @@ fn register_ssu2_service(
                         )
                         .await
                         {
-                            Ok(product) => NormalSsu2Owner::Groups(Box::new(product)),
+                            Ok(product) => {
+                                // Plan 503: publish the live peer-eligibility
+                                // receipt owner so the running router's
+                                // peer-eligibility decisions are observable
+                                // through the inspection plane. The owner
+                                // carries counts and stable reason labels
+                                // only.
+                                inspection.publish_version_eligibility(
+                                    product.version_eligibility(),
+                                );
+                                // Plan 504: publish the live tunnel-liveness
+                                // counter cell so the running router's
+                                // liveness posture is observable through the
+                                // inspection plane. The cell carries counts
+                                // only: no peer, tunnel or payload.
+                                // Plan 505: publish the live
+                                // exploratory-build driver counters so the
+                                // running router's exploratory posture is
+                                // observable through the inspection plane.
+                                // The counters carry counts and stable
+                                // reason labels only.
+                                inspection.publish_exploratory_driver_counters(
+                                    product.exploratory_driver_counters_cell(),
+                                );
+                                inspection.publish_liveness_counters(
+                                    product.liveness_counters_cell(),
+                                );
+                                // Plan 506: publish the live peer-knowledge
+                                // reconcile counters so the running router's
+                                // peer-knowledge posture is observable through
+                                // the inspection plane. The counters carry
+                                // counts and stable reason labels only.
+                                inspection.publish_peer_reconcile_counters(
+                                    product.peer_reconcile_counters_cell(),
+                                );
+                                // Plan 524: publish the live relay-tag
+                                // request counters so the running router's
+                                // introducer-acquisition posture is
+                                // observable through the inspection plane.
+                                // The counters carry counts only.
+                                inspection.publish_introducer_request_counters(
+                                    product.introducer_request_counters_cell(),
+                                );
+                                NormalSsu2Owner::Groups(Box::new(product))
+                            }
                             Err(error) => {
                                 let detail = i2pr_core::HealthDetail::new(format!(
                                     "Destination-group product failed before readiness: {error}"
@@ -3240,6 +4777,370 @@ fn register_ssu2_service(
                     } else {
                         NormalSsu2Owner::Router(handle)
                     };
+                    // Plan 519: the publication runs on its **own task**.
+                    //
+                    // The task is spawned under the service's own child
+                    // scope, so it is owned, cancelled and joined with the
+                    // service: there is no ownerless task and no detached
+                    // one. The transport's service loop never awaits it.
+                    // The router's own identity hash is already validated
+                    // by the composition root, so the publication's owner
+                    // is always built and the task is always spawned.
+                    // Plan 525: the self-publication counters become
+                    // observable on a running router. The cell carries
+                    // counts and stable reason labels only.
+                    let self_publication_counters: Arc<
+                        crate::i2pcontrol_inspection::SelfPublicationCounterCell,
+                    > = Arc::new(std::sync::Mutex::new(
+                        crate::self_publication::SelfPublicationCounterSnapshot::default(),
+                    ));
+                    inspection.publish_self_publication_counters(Arc::clone(
+                        &self_publication_counters,
+                    ));
+                    let publication_task =
+                        crate::router_info_publication_task::RouterInfoPublicationTask {
+                            publication_owner:
+                                crate::router_info_publication::RouterInfoPublicationOwner::new(
+                                    i2pr_netdb::RouterHash::from_hash(router_hash),
+                                    crate::router_info_publication::PUBLICATION_INTERVAL_MS,
+                                ),
+                            handle: owner.handle().publication_handle(),
+                            bundle: Arc::clone(&bundle),
+                            bootstrap: live_bootstrap.clone(),
+                            rng: match ChaCha8Rng::try_from_os_rng() {
+                                Ok(rng) => rng,
+                                // The publication's message id is the only
+                                // randomness it needs, and a router that
+                                // cannot reach the operating system's entropy
+                                // still publishes; it simply never reuses
+                                // an id.
+                                Err(_) => ChaCha8Rng::seed_from_u64(0),
+                            },
+                            inbox: publication_inbox,
+                            dial_timeout:
+                                crate::service_product::ServiceProductOptions::default().dial_timeout,
+                            qualification_profile: ssu2_config.qualification_profile,
+                            // Plan 520: the router's own published address
+                            // is behind the operator's explicit opt-in.
+                            self_publication: crate::self_publication::SelfPublicationOwner::new(
+                                ssu2_config.advertise,
+                            ),
+                            self_publication_counters,
+                            // Plan 547: the re-dated record's NTCP2 address
+                            // must name the router's separately bound
+                            // listener before the SSU2 owner will install
+                            // it, and the endpoint must fall inside the
+                            // scope the operator's profile admits.
+                            ntcp2_endpoint: controlled_ntcp2_endpoint,
+                            ntcp2_scope: ntcp2_endpoint_scope,
+                        };
+                    if children
+                        .spawn(move |cancellation| async move {
+                            run_router_info_publication_task(publication_task, cancellation).await
+                        })
+                        .is_err()
+                    {
+                        owner.shutdown().await;
+                        let detail = i2pr_core::HealthDetail::new(
+                            "the RouterInfo publication task could not be spawned",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::Internal,
+                                detail,
+                            ),
+                        );
+                    }
+                    // Plan 522: the outbound peer-session pool runs on
+                    // its **own task**, for the same reason the
+                    // publication does: a session establishment is an
+                    // await, and the daemon's `select!` loop must never
+                    // block on a handshake. The task is spawned under the
+                    // service's own child scope, so it is owned,
+                    // cancelled and joined with the service.
+                    //
+                    // The pool is an explicit, default-off opt-in, so a
+                    // router that has not asked for it spawns no task
+                    // at all and generates no handshake traffic.
+                    if ssu2_config.peer_pool {
+                        let peer_pool_counters: Arc<
+                            crate::i2pcontrol_inspection::PeerPoolCounterCell,
+                        > = Arc::new(std::sync::Mutex::new(
+                            crate::peer_pool::PeerPoolCounters::default(),
+                        ));
+                        inspection.publish_peer_pool_counters(Arc::clone(
+                            &peer_pool_counters,
+                        ));
+                        let peer_pool_task =
+                            crate::peer_pool_task::PeerPoolTask {
+                                owner: crate::peer_pool::PeerPoolOwner::new(true),
+                                handle: owner.handle().publication_handle(),
+                                bootstrap: live_bootstrap.clone(),
+                                local_hash: Some(i2pr_netdb::RouterHash::from_hash(
+                                    router_hash,
+                                )),
+                                dial_timeout: crate::service_product::
+                                    ServiceProductOptions::default()
+                                    .dial_timeout,
+                                qualification_profile: ssu2_config.qualification_profile,
+                                counters_cell: peer_pool_counters,
+                            };
+                        if children
+                            .spawn(move |cancellation| async move {
+                                crate::peer_pool_task::run_peer_pool_task(
+                                    peer_pool_task,
+                                    cancellation,
+                                )
+                                .await
+                            })
+                            .is_err()
+                        {
+                            owner.shutdown().await;
+                            let detail = i2pr_core::HealthDetail::new(
+                                "the outbound peer-session pool task could not be spawned",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::Internal,
+                                    detail,
+                                ),
+                            );
+                        }
+                    }
+                    // Plan 502: the router hashes the transit owner holds an
+                    // index entry for. The set is bounded by the live
+                    // session set and by the transit peer index's own
+                    // capacity.
+                    let mut transit_peers: BTreeSet<i2pr_proto::Hash> = BTreeSet::new();
+                    // Plan 502: the transit data-plane owner.
+                    //
+                    // Every input is derived by the composition from the
+                    // normalized configuration, the router identity bundle,
+                    // and the transport seams this service already owns. The
+                    // owner is constructed **only** when the operator opted
+                    // in; the default product constructs nothing at all.
+                    //
+                    // A construction failure leaves the router running
+                    // **without** an owner: it never falls back to
+                    // something that implies participation.
+                    let transit_inputs =
+                        crate::transit_composition::TransitCompositionInputs {
+                            transit: transit_config,
+                            bandwidth: transit_bandwidth_config,
+                            governor: transit_bandwidth.as_ref(),
+                            delivery: Some(owner.handle().delivery().clone()),
+                            cancellation: Some(cancellation.clone()),
+                            identity: Some(bundle.as_ref()),
+                        };
+                    let mut transit_owner: Option<TransitLiveOwner<ChaCha8Rng>> =
+                        match crate::transit_composition::build_transit_owner(&transit_inputs) {
+                            Ok(owner) => owner,
+                            Err(error) => {
+                                tracing::warn!(
+                                    reason = %error,
+                                    "the transit data-plane owner was not installed; the router \
+                                     keeps running without transit participation"
+                                );
+                                None
+                            }
+                        };
+                    // Plan 502: the participation posture is published only
+                    // when the owner exists, and it carries the **service's
+                    // own** volume handle. A router that installed no owner
+                    // keeps the `Disabled` posture the composition root
+                    // published: the Disabled posture owns no counters, so
+                    // the selectors report zeros because there is nothing to
+                    // read, not because a zero was substituted.
+                    if let Some(counters) = transit_owner
+                        .as_mut()
+                        .and_then(|owner| owner.volume_counters())
+                    {
+                        inspection.publish_transit_participation(
+                            crate::transit_volume::TransitParticipation::Enabled(counters),
+                        );
+                    }
+                    // Plan 498: the SSU2 introducer (Bob) role owner.
+                    //
+                    // The role is constructed only when the operator opted
+                    // in with `ssu2.introducer_service`; the key is default
+                    // off, so an ordinary deployment constructs no role
+                    // owner and drains nothing.
+                    //
+                    // The resolver answers a requester's signing key only
+                    // from the NetDB's validated store. A peer this NetDB
+                    // does not hold yields `None`, and the role owner then
+                    // refuses the block rather than guessing.
+                    let mut introducer = if ssu2_config.introducer_service {
+                        let Some(bootstrap) = bootstrap.as_ref() else {
+                            owner.shutdown().await;
+                            let detail = i2pr_core::HealthDetail::new(
+                                "validated bootstrap store unavailable for the SSU2 introducer role",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_runtime::ServiceFailure::new(
+                                    i2pr_runtime::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        };
+                        let signers =
+                            crate::ssu2_introducer::NetDbSignerResolver::new(Arc::clone(bootstrap));
+                        let owner_handle = crate::ssu2_introducer::Ssu2IntroducerService::new(
+                            crate::ssu2_introducer::Ssu2IntroducerConfig {
+                                enabled: true,
+                                ..Default::default()
+                            },
+                            owner.handle().service().clone(),
+                            local_router_hash,
+                        );
+                        // Plan 499: the carriage puts the role owner's
+                        // produced block on the session with the peer it is
+                        // for. It holds the same runtime — the one that owns
+                        // the live sessions — so the block reaches the wire
+                        // through the runtime's own bounded control queue.
+                        let carriage = crate::ssu2_relay_drain::RuntimeRelayCarriage::new(
+                            owner.handle().service().clone(),
+                        );
+                        Some((owner_handle, signers, carriage))
+                    } else {
+                        None
+                    };
+                    // Plan 531: the SSU2 requester (Alice) role owner.
+                    //
+                    // The role is constructed only when the operator opted
+                    // in with `ssu2.relay_requester`; the key is default
+                    // off, so an ordinary deployment constructs no role
+                    // owner, sends no relay request and drains nothing.
+                    //
+                    // The resolver answers the **target's** signing key
+                    // only from the NetDB's validated store, exactly as
+                    // the introducer's resolver does. A target this
+                    // NetDB does not hold yields `None`, and the owner
+                    // refuses the event rather than guessing.
+                    let requester_signers = bootstrap.as_ref().map(|bootstrap| {
+                        crate::ssu2_introducer::NetDbSignerResolver::new(Arc::clone(bootstrap))
+                    });
+                    let mut requester_rng = if ssu2_config.relay_requester {
+                        rand_chacha::ChaCha8Rng::try_from_os_rng().ok()
+                    } else {
+                        None
+                    };
+                    let mut requester = match (
+                        ssu2_config.relay_requester,
+                        requester_signers.as_ref(),
+                        requester_rng.as_mut(),
+                    ) {
+                        (true, Some(_), Some(rng)) => {
+                            let signer = std::sync::Arc::new(
+                                crate::relay_requester::LocalIdentitySigner::new(Arc::clone(
+                                    &bundle,
+                                )),
+                            );
+                            let _ = rng;
+                            Some(crate::relay_requester::RelayRequesterOwner::new(
+                                true,
+                                owner.handle().service().clone(),
+                                signer,
+                            ))
+                        }
+                        _ => None,
+                    };
+                    // Plan 532: the SSU2 target (Charlie) role owner.
+                    //
+                    // The role is constructed only when the operator opted
+                    // in with `ssu2.relay_target`; the key is default
+                    // off, so an ordinary deployment constructs no role
+                    // owner, answers no introduction and stages no hole
+                    // punch.
+                    //
+                    // Plan 533: the role needs no randomness of its own.
+                    // The accept's establishment token is issued by the
+                    // runtime's responder table, and the runtime owns both
+                    // the table and the entropy.
+                    let mut target = if ssu2_config.relay_target {
+                        // The router's **own** identity key signs the
+                        // accept, so the target owner and the
+                        // requester owner share one signer and one
+                        // implementation of the router's signing.
+                        let signer = std::sync::Arc::new(
+                            crate::relay_requester::LocalIdentitySigner::new(Arc::clone(
+                                &bundle,
+                            )),
+                        );
+                        Some(crate::relay_target::RelayTargetOwner::new(
+                            true,
+                            owner.handle().service().clone(),
+                            signer,
+                        ))
+                    } else {
+                        None
+                    };
+                    // Plan 533: the relay establishment's handoff.
+                    //
+                    // The requester owner publishes one establishment per
+                    // completed exchange and the establishment's task takes
+                    // them. The handoff is bounded, and a handoff that is
+                    // full returns the material to the owner rather than
+                    // dropping it.
+                    //
+                    // The task is spawned only when the requester role is
+                    // on: the establishment is part of that role, and a
+                    // router that has not asked to reach a peer through a
+                    // relay dials nothing.
+                    let (establishment_tx, establishment_rx) =
+                        tokio::sync::mpsc::channel(crate::relay_establishment::RELAY_ESTABLISHMENT_QUEUE);
+                    if ssu2_config.relay_requester {
+                        let establishment_counters: Arc<
+                            crate::relay_establishment::RelayEstablishmentCounterCell,
+                        > = Arc::new(std::sync::Mutex::new(
+                            crate::relay_establishment::RelayEstablishmentCounters::default(),
+                        ));
+                        inspection.publish_relay_establishment_counters(Arc::clone(
+                            &establishment_counters,
+                        ));
+                        // Plan 534: the local observation table is published
+                        // so the running router's relayed-peer posture is
+                        // observable. The seam reads the counts only.
+                        if let Some(handle) = relay_sessions.as_ref() {
+                            inspection.publish_relay_session_peers(Arc::clone(handle));
+                        }
+                        let establishment_task = crate::relay_establishment_task::RelayEstablishmentTask {
+                            owner: crate::relay_establishment::RelayEstablishmentOwner::new(true),
+                            service: owner.handle().service().clone(),
+                            bootstrap: live_bootstrap.clone(),
+                            qualification_profile: ssu2_config.qualification_profile,
+                            dial_timeout: crate::service_product::ServiceProductOptions::default()
+                                .dial_timeout,
+                            receiver: establishment_rx,
+                            counters_cell: establishment_counters,
+                            relay_sessions: relay_sessions.clone(),
+                        };
+                        if children
+                            .spawn(move |cancellation| async move {
+                                crate::relay_establishment_task::run_relay_establishment_task(
+                                    establishment_task,
+                                    cancellation,
+                                )
+                                .await
+                            })
+                            .is_err()
+                        {
+                            owner.shutdown().await;
+                            let detail = i2pr_core::HealthDetail::new(
+                                "the relay establishment task could not be spawned",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_runtime::ServiceFailure::new(
+                                    i2pr_runtime::ServiceFailureCategory::Internal,
+                                    detail,
+                                ),
+                            );
+                        }
+                    }
                     if !owner
                         .handle()
                         .delivery()
@@ -3287,6 +5188,50 @@ fn register_ssu2_service(
                             ),
                         );
                     }
+                    // Plan 476: the sanitized local receipt export is
+                    // opt-in through an operator-designated destination
+                    // under an explicit qualification profile. It is a
+                    // private local readout for the guarded per-host
+                    // executor; it never listens, never advertises, and
+                    // carries no key, address, or payload.
+                    let mut receipt_exporter = match ssu2_config.qualification_receipt_path.clone() {
+                        None => None,
+                        Some(destination) => {
+                            let profile = match ssu2_config.qualification_profile {
+                                crate::config::Ssu2QualificationProfile::ControlledLoopback => {
+                                    crate::ssu2_qualification_receipts::LocalQualificationProfile::ControlledLoopback
+                                }
+                                crate::config::Ssu2QualificationProfile::PrivateLan => {
+                                    crate::ssu2_qualification_receipts::LocalQualificationProfile::PrivateLan
+                                }
+                            };
+                            match crate::ssu2_qualification_export::LocalReceiptExporter::new(
+                                crate::ssu2_qualification_receipts::LocalQualificationPermit {
+                                    profile,
+                                    consent: true,
+                                },
+                                destination,
+                            ) {
+                                Ok(exporter) => Some(exporter),
+                                Err(reason) => {
+                                    owner.shutdown().await;
+                                    let detail = i2pr_core::HealthDetail::new(format!(
+                                        "SSU2 local receipt export refused: {reason}"
+                                    ))
+                                    .ok();
+                                    return i2pr_runtime::ServiceResult::Failed(
+                                        i2pr_core::ServiceFailure::new(
+                                            i2pr_core::ServiceFailureCategory::InvalidState,
+                                            detail,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    };
+                    let mut receipt_export_tick = tokio::time::interval(Duration::from_millis(500));
+                    receipt_export_tick
+                        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     if request_driven_lookup_probe_enabled {
                         tracing::info!("controlled request-driven NTCP2 lookup worker scheduled");
                         spawn_controlled_request_driven_lookup(
@@ -3302,11 +5247,21 @@ fn register_ssu2_service(
                         tokio::select! {
                             biased;
                             _ = token.cancelled() => {
+                                // Plan 502: the transit owner is cancelled and
+                                // drained deterministically on shutdown, using
+                                // the same outer cancellation token the
+                                // service owns.
+                                if let Some(transit) = transit_owner.as_mut() {
+                                    transit.cancel();
+                                }
                                 owner.shutdown().await;
                                 return i2pr_runtime::ServiceResult::RequestedShutdown;
                             }
                             changed = local_router_info_rx.changed() => {
                                 if changed.is_err() {
+                                    if let Some(transit) = transit_owner.as_mut() {
+                                        transit.cancel();
+                                    }
                                     owner.shutdown().await;
                                     return i2pr_runtime::ServiceResult::RequestedShutdown;
                                 }
@@ -3321,10 +5276,11 @@ fn register_ssu2_service(
                                             .unwrap_or(0);
                                         let installed_result = match controlled_ntcp2_endpoint {
                                             Some(endpoint) => owner.handle()
-                                                .install_controlled_dual_router_info(
+                                                .install_scoped_dual_router_info(
                                                     info.as_ref().clone(),
                                                     now_ms,
                                                     endpoint,
+                                                    ntcp2_endpoint_scope,
                                                 ),
                                             None => owner.handle().service()
                                                 .install_local_router_info(
@@ -3347,18 +5303,43 @@ fn register_ssu2_service(
                                     }
                                 }
                                 match i2pr_netdb::encode_router_info(info.as_ref()) {
-                                    Ok(encoded) => match inspection
-                                        .publish_local_router_info_b64(encoded.trim_end_matches('='))
-                                    {
-                                        Ok(()) => tracing::info!(
-                                            router_info_bytes = info.len(),
-                                            "updated local RouterInfo inspection snapshot published"
-                                        ),
-                                        Err(error) => tracing::warn!(
-                                            reason = %error,
-                                            "updated local RouterInfo inspection publication rejected"
-                                        ),
-                                    },
+                                    Ok(encoded) => {
+                                        // Plan 544: a two-host private-LAN run needs the
+                                        // router's **own** signed record handed to the peer
+                                        // out of band, because an isolated network has no
+                                        // floodfill to publish it to and the SSU2
+                                        // publication path is loopback-clamped. The record
+                                        // is written under the name the peer's cache loader
+                                        // requires -- the lowercase hex router hash -- so the
+                                        // operator's step is a copy, never a decode.
+                                        match export_local_router_info(
+                                            data_dir.as_path(),
+                                            info.as_ref(),
+                                        ) {
+                                            Ok(Some((hash_hex, path))) => tracing::info!(
+                                                router_hash = %hash_hex,
+                                                path = %path.display(),
+                                                "local RouterInfo exported for out-of-band peer handoff"
+                                            ),
+                                            Ok(None) => {}
+                                            Err(error) => tracing::warn!(
+                                                reason = %error,
+                                                "local RouterInfo export failed"
+                                            ),
+                                        }
+                                        match inspection
+                                            .publish_local_router_info_b64(encoded.trim_end_matches('='))
+                                        {
+                                            Ok(()) => tracing::info!(
+                                                router_info_bytes = info.len(),
+                                                "updated local RouterInfo inspection snapshot published"
+                                            ),
+                                            Err(error) => tracing::warn!(
+                                                reason = %error,
+                                                "updated local RouterInfo inspection publication rejected"
+                                            ),
+                                        }
+                                    }
                                     Err(error) => tracing::warn!(
                                         reason = %error,
                                         "updated local RouterInfo base64 encoding failed"
@@ -3381,6 +5362,9 @@ fn register_ssu2_service(
                                 }
                             } => {
                                 let Some(inbound) = inbound else {
+                                    if let Some(transit) = transit_owner.as_mut() {
+                                        transit.cancel();
+                                    }
                                     owner.shutdown().await;
                                     return i2pr_runtime::ServiceResult::RequestedShutdown;
                                 };
@@ -3404,6 +5388,7 @@ fn register_ssu2_service(
                                 };
                                 let outcome = decoded.outcome();
                                 let message = decoded.message();
+                                let mut product_effect = false;
                                 if let (
                                     Some(bootstrap),
                                     Some(i2pr_proto::I2npBody::DatabaseStore(store)),
@@ -3415,17 +5400,23 @@ fn register_ssu2_service(
                                         Ok(mut bootstrap) => match bootstrap
                                             .ingest_authenticated_router_store(store, now_ms)
                                         {
-                                            Ok(outcome) => tracing::info!(
-                                            transport_family = match transport {
-                                                AuthenticatedRouterTransport::Ntcp2 => "ntcp2",
-                                                AuthenticatedRouterTransport::Ssu2 => "ssu2",
-                                            },
-                                                inserted = matches!(
-                                                    outcome,
+                                            Ok(store_outcome) => {
+                                                product_effect |= matches!(
+                                                    store_outcome,
                                                     i2pr_netdb::UnsolicitedStoreOutcome::Inserted(_)
-                                                ),
-                                                "authenticated RouterInfo store applied to bootstrap peer store"
-                                            ),
+                                                );
+                                                tracing::info!(
+                                                    transport_family = match transport {
+                                                        AuthenticatedRouterTransport::Ntcp2 => "ntcp2",
+                                                        AuthenticatedRouterTransport::Ssu2 => "ssu2",
+                                                    },
+                                                    inserted = matches!(
+                                                        store_outcome,
+                                                        i2pr_netdb::UnsolicitedStoreOutcome::Inserted(_)
+                                                    ),
+                                                    "authenticated RouterInfo store applied to bootstrap peer store"
+                                                );
+                                            }
                                             Err(error) => tracing::debug!(
                                                 reason = %error,
                                                 "authenticated unsolicited DatabaseStore refused"
@@ -3478,6 +5469,53 @@ fn register_ssu2_service(
                                         link_generation = inbound.link_id.value(),
                                         "controlled NTCP2 RouterInfo DeliveryStatus correlation completed"
                                     );
+                                }
+                                // Plan 516: the publication's acknowledgement.
+                                // The store the publication put on the wire
+                                // carries the correlator's minted reply
+                                // token, so the floodfill answers with a
+                                // `DeliveryStatus` that carries it back --
+                                // and the router learns that the **network
+                                // holds** its record, which is a different
+                                // fact from the transport having accepted
+                                // the store.
+                                //
+                                // The controlled NTCP2 probe path above
+                                // keeps its own table and its own
+                                // behaviour. This is a **separate** match,
+                                // scoped to the transport the publication
+                                // actually uses, so neither path can consume
+                                // the other's answer. An answer that matches
+                                // no live attempt is refused and counted
+                                // under its own reason; it never confirms
+                                // anything.
+                                if transport == AuthenticatedRouterTransport::Ssu2
+                                    && let Some(i2pr_proto::I2npBody::DeliveryStatus(status)) =
+                                        message.map(i2pr_proto::I2npMessage::body)
+                                {
+                                    // Plan 516: the store the publication
+                                    // put on the wire carries the
+                                    // correlator's minted reply token, so
+                                    // the floodfill answers with a
+                                    // `DeliveryStatus` that carries it back
+                                    // -- and the router learns that the
+                                    // **network holds** its record, which is
+                                    // a different fact from the transport
+                                    // having accepted the store.
+                                    //
+                                    // Plan 519: the acknowledgement crosses
+                                    // a **bounded** channel to the
+                                    // publication's task, which owns the
+                                    // correlator. This loop never awaits
+                                    // it: a full channel counts the
+                                    // acknowledgement as unmatched rather
+                                    // than blocking the loop or dropping it
+                                    // silently.
+                                    if !publication_handoff.acknowledge(status.message_id) {
+                                        tracing::debug!(
+                                            "router RouterInfo publication acknowledgement could not be handed over"
+                                        );
+                                    }
                                 }
                                 let mut served = false;
                                 if let Some(state) = floodfill.as_mut() {
@@ -3612,33 +5650,61 @@ fn register_ssu2_service(
                                         Err(_) => {}
                                     }
                                 }
-                                if !served
-                                    && let Some(i2pr_proto::I2npBody::DatabaseStore(store)) =
-                                        message.map(i2pr_proto::I2npMessage::body)
-                                    && let Some(bootstrap) = bootstrap.as_ref()
-                                {
-                                    match bootstrap.lock() {
-                                        Ok(mut bootstrap) => match bootstrap
-                                            .ingest_authenticated_router_store(store, now_ms)
-                                        {
-                                            Ok(outcome) => tracing::debug!(
-                                                ?outcome,
-                                                "authenticated NTCP2/SSU2 RouterInfo store applied"
-                                            ),
-                                            Err(error) => tracing::debug!(
-                                                reason = %error,
-                                                "authenticated unsolicited DatabaseStore refused"
-                                            ),
-                                        },
-                                        Err(_) => tracing::warn!(
-                                            "bootstrap NetDB lock poisoned; authenticated RouterInfo store refused"
-                                        ),
-                                    }
+                                product_effect |= served;
+                                // Plan 506: the unsolicited store is ingested
+                                // **once** per message. The ingest above
+                                // already applied it, and its condition --
+                                // a `DatabaseStore` body with a bootstrap
+                                // store -- is a strict superset of the
+                                // `!served` case this block used to cover.
+                                // The second write was a real double write
+                                // on every accepted unsolicited store: it
+                                // re-validated the record and re-applied it
+                                // to the store, yielding
+                                // `InsertOutcome::Idempotent`.
+                                // Plan 502: refresh the transit owner's
+                                // creator correlation **before** the router's
+                                // own coordinator consumes the message. The
+                                // coordinator removes a pending attempt when
+                                // it claims the reply, so the facts have to be
+                                // read while the attempt is still pending.
+                                //
+                                // Without this the transit owner would claim
+                                // the router's own build replies as transit
+                                // work and spend the participation budget on
+                                // the router's own coordinator traffic.
+                                if let Some(transit) = transit_owner.as_mut() {
+                                    install_transit_creator_correlation(transit, &owner, now_ms);
                                 }
-                                if owner.process_group_inbound(&inbound, outcome, message).await.is_err() {
+                                // Plan 547: the router's own peer test is
+                                // handled here, on the daemon's own inbound
+                                // path, in **every** posture.
+                                //
+                                // The owner used to live inside the
+                                // destination-group product, so a router that
+                                // ran only SSU2 had no owner and no
+                                // corroboration. The owner is now beside the
+                                // transport it measures, and this is its
+                                // **single** consumer: two consumers would
+                                // answer the same probe twice and double the
+                                // counters.
+                                //
+                                // The message was decoded exactly once, above,
+                                // and the classified outcome is read here, so
+                                // the responder runs no decoder of its own.
+                                peer_test.accept_inbound(&outcome, owner.handle(), &token, now_ms);
+                                if let Err(error) =
+                                    owner.process_group_inbound(&inbound, outcome, message).await
+                                {
+                                    tracing::warn!(
+                                        reason = %error,
+                                        transition = "destination_group_pool_advancement_failed",
+                                        "destination-group pool advancement failed"
+                                    );
                                     owner.shutdown().await;
-                                    let detail = i2pr_core::HealthDetail::new(
-                                        "Destination-group pool advancement failed",
+                                    let detail = i2pr_core::HealthDetail::new(format!(
+                                        "Destination-group pool advancement failed: {error}"
+                                    ),
                                     )
                                     .ok();
                                     return i2pr_runtime::ServiceResult::Failed(
@@ -3648,21 +5714,58 @@ fn register_ssu2_service(
                                         ),
                                     );
                                 }
+                                if product_effect
+                                    && transport == AuthenticatedRouterTransport::Ssu2
+                                    && let (Some(observer), Some(message_id)) = (
+                                        owner.qualification_observer(),
+                                        outcome.message_id(),
+                                    )
+                                {
+                                    let _ = observer.record_product_effect(
+                                        inbound.peer,
+                                        inbound.link_id,
+                                        message_id,
+                                    );
+                                }
                                 if !served {
-                                    // Bounded dispatch: success and failure
-                                    // both release the inbound bytes with the
-                                    // call frame. Unsupported bodies are an
-                                    // explicit disposition, not an error.
-                                    // Controlled transit stays disabled in
-                                    // ordinary product profiles: the live
-                                    // transit owner is consulted only as a
-                                    // disabled probe so the production
-                                    // caller references the live-owner
-                                    // module without dispatching.
-                                    let _ = controlled_transit_disabled_probe(&outcome);
+                                    // Plan 502: the production inbound path
+                                    // dispatches through the transit
+                                    // composition. The installed owner is
+                                    // consulted first; the controlled
+                                    // disabled probe is the fallback for the
+                                    // no-owner case only, so the two can
+                                    // never run beside each other.
+                                    let _ = crate::transit_composition::dispatch_transit_inbound(
+                                        &mut transit_owner,
+                                        &outcome,
+                                        &inbound,
+                                        now_ms,
+                                        now_ms / 1_000,
+                                    );
                                 }
                             }
                             _ = evaluation.tick() => {
+                                // Plan 502: reconcile the transit owner's peer
+                                // index against the live authenticated session
+                                // set and sweep expired registrations. The
+                                // pass is bounded, and it runs on this existing
+                                // periodic tick — never per message and never
+                                // on a new task.
+                                if let Some(transit) = transit_owner.as_mut() {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                        })
+                                        .unwrap_or(0);
+                                    let live = owner.handle().service().active_peer_hashes();
+                                    crate::transit_composition::reconcile_transit_peers(
+                                        transit,
+                                        &mut transit_peers,
+                                        &live,
+                                        now_ms / 1_000,
+                                    );
+                                }
                                 if let Some(state) = floodfill.as_mut() {
                                     run_floodfill_evaluation(
                                         state,
@@ -3672,20 +5775,61 @@ fn register_ssu2_service(
                                             data_dir: &data_dir,
                                             config_path: floodfill_config_path.as_deref(),
                                             controlled_profile: controlled_floodfill,
+                                            bound_address_publishable: publish_bound_address,
                                             controlled_ntcp2_endpoint,
                                             local_router_info: &local_router_info,
                                             inspection: &inspection,
+                                            bandwidth: capacity_bandwidth.clone(),
+                                            bandwidth_share_percent,
                                         },
                                         &token,
                                     )
                                     .await;
                                 }
                             }
+                            _ = receipt_export_tick.tick() => {
+                                if let Some(exporter) = receipt_exporter.as_mut()
+                                    && let Some(observer) = owner.qualification_observer()
+                                    && let Err(error) = exporter.export(&observer)
+                                {
+                                    tracing::warn!(
+                                        reason = %error,
+                                        transition = "ssu2_local_receipt_export_failed",
+                                        "SSU2 local receipt export failed"
+                                    );
+                                }
+                            }
                             _ = group_tick.tick() => {
-                                if owner.advance_groups().await.is_err() {
+                                // Plan 547: the router's own peer test
+                                // rides this tick, in **every** posture.
+                                //
+                                // The owner holds no task, no timer and no
+                                // listener: the tick starts one probe on a
+                                // bounded cadence and expires the probes
+                                // that aged out, and the live inbound path
+                                // answers the peer's own test.
+                                {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration
+                                                .as_millis()
+                                                .min(u128::from(u64::MAX))
+                                                as u64
+                                        })
+                                        .unwrap_or(0);
+                                    peer_test.drive(owner.handle(), &token, now_ms);
+                                }
+                                if let Err(error) = owner.advance_groups().await {
+                                    tracing::warn!(
+                                        reason = %error,
+                                        transition = "destination_group_pool_advancement_failed",
+                                        "destination-group pool advancement failed"
+                                    );
                                     owner.shutdown().await;
-                                    let detail = i2pr_core::HealthDetail::new(
-                                        "Destination-group pool advancement failed",
+                                    let detail = i2pr_core::HealthDetail::new(format!(
+                                        "Destination-group pool advancement failed: {error}"
+                                    ),
                                     )
                                     .ok();
                                     return i2pr_runtime::ServiceResult::Failed(
@@ -3694,6 +5838,217 @@ fn register_ssu2_service(
                                             detail,
                                         ),
                                     );
+                                }
+                            }
+
+                            _ = relay_tick.tick() => {
+                                // Plan 498: drain the runtime's bounded
+                                // relay handoff into the introducer (Bob)
+                                // role owner. A refusal is a counted
+                                // outcome, never an error: the drain never
+                                // fails the loop.
+                                //
+                                // Plan 499: a block the role owner produced
+                                // is carried onto the session with the peer
+                                // it is for, so the introduction completes
+                                // on the wire instead of stopping at the
+                                // role owner's decision.
+                                if let Some((introducer, signers, carriage)) = introducer.as_mut()
+                                {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                        })
+                                        .unwrap_or(0);
+                                    let drained = crate::ssu2_relay_drain::drain_relay_events(
+                                        &mut owner,
+                                        introducer,
+                                        &*signers,
+                                        &*carriage,
+                                        now_ms,
+                                        now_ms / 1_000,
+                                    );
+                                    if drained.drained > 0 {
+                                        // Counts only: the refusal keys are
+                                        // stable reason labels, and no peer
+                                        // identity is logged.
+                                        let carriage_refused: u64 =
+                                            drained.carriage_refusals.values().copied().sum();
+                                        tracing::debug!(
+                                            drained = drained.drained,
+                                            admitted = drained.admitted,
+                                            refused = drained.refused,
+                                            carried = drained.carried,
+                                            carriage_refused = carriage_refused,
+                                            "SSU2 introducer relay handoff drained"
+                                        );
+                                    }
+                                }
+                                // Plan 531: the requester (Alice) role.
+                                //
+                                // The requester's inbound events have their
+                                // own bounded handoff and its outbound
+                                // step runs on the same tick, so both halves
+                                // of the exchange share one cadence. The
+                                // owner holds no task, no timer, no
+                                // listener and no socket: the tick is the
+                                // only thing that moves it.
+                                if let Some(requester) = requester.as_mut()
+                                    && let Some(signers) = requester_signers.as_ref()
+                                {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                        })
+                                        .unwrap_or(0);
+                                    let now_secs = now_ms / 1_000;
+                                    // The outbound half: one bounded
+                                    // window over the NetDB's peers. It
+                                    // reads only validated material and
+                                    // every refusal is counted under its
+                                    // own reason.
+                                    let live: Vec<i2pr_transport::PeerId> = owner
+                                        .handle()
+                                        .service()
+                                        .active_peer_hashes()
+                                        .into_iter()
+                                        .map(i2pr_transport::PeerId::from_hash)
+                                        .collect();
+                                    let local_endpoint =
+                                        owner.handle().service().local_bound_endpoint();
+                                    if let Some(rng) = requester_rng.as_mut() {
+                                        // Plan 537: the material is read
+                                        // under the router's NetDB lock and
+                                        // the lock is **released before**
+                                        // each read returns, so the
+                                        // signature and the transport's
+                                        // writes happen with no lock held.
+                                        // A router that holds no usable
+                                        // store refuses under its own typed
+                                        // reason, and the refusal is
+                                        // counted: it is never a silent
+                                        // skip.
+                                        let material_source =
+                                            crate::relay_requester::ValidatedStoreRequesterSource::new(
+                                                bootstrap.as_ref(),
+                                            );
+                                        let decision = crate::relay_requester::drive_relay_request(
+                                            requester,
+                                            &material_source,
+                                            &live,
+                                            rng,
+                                            local_endpoint,
+                                            now_ms,
+                                            now_secs,
+                                        );
+                                        if let Some(decision) = decision
+                                            && matches!(
+                                                decision,
+                                                crate::relay_requester::RelayRequesterDecision::Refuse(_)
+                                            )
+                                        {
+                                            tracing::debug!(
+                                                transition = "relay_request_refused",
+                                                "the router asked nobody for a relay"
+                                            );
+                                        }
+                                    }
+                                    // The inbound half: the requester's
+                                    // own handoff.
+                                    let drained =
+                                        crate::ssu2_relay_drain::drain_requester_events(
+                                            &mut owner,
+                                            requester,
+                                            signers,
+                                            now_ms,
+                                            now_secs,
+                                        );
+                                    if drained.drained > 0 {
+                                        tracing::debug!(
+                                            drained = drained.drained,
+                                            handled = drained.handled,
+                                            refused = drained.refused,
+                                            deferred = drained.deferred,
+                                            firewalled = drained.firewalled,
+                                            "SSU2 requester relay handoff drained"
+                                        );
+                                    }
+                                    // Plan 533: the completed exchange's
+                                    // establishment is handed to the task
+                                    // that performs it. The handoff is
+                                    // bounded, and a full handoff returns
+                                    // the material to the owner under a
+                                    // counted reason -- it is never
+                                    // dropped silently.
+                                    if let Some((nonce, establishment)) =
+                                        requester.take_establishment()
+                                        && let Err(error) =
+                                            establishment_tx.try_send(establishment)
+                                    {
+                                        let returned = match error {
+                                            tokio::sync::mpsc::error::TrySendError::Full(
+                                                item,
+                                            ) => item,
+                                            tokio::sync::mpsc::error::TrySendError::Closed(
+                                                item,
+                                            ) => item,
+                                        };
+                                        requester.return_establishment(nonce, returned, now_ms);
+                                    }
+                                }
+                                // Plan 532: the target (Charlie) role.
+                                //
+                                // The target's inbound introductions have
+                                // their own bounded handoff and its answer
+                                // runs on the same tick, so both halves of
+                                // the exchange share one cadence. The owner
+                                // holds no task, no timer, no listener and
+                                // no socket: the tick is the only thing that
+                                // moves it.
+                                if let Some(target) = target.as_mut() {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u128::from(u64::MAX)) as u64
+                                        })
+                                        .unwrap_or(0);
+                                    let now_secs = now_ms / 1_000;
+                                    // Plan 536: the drain is never skipped.
+                                    //
+                                    // The material is read under the
+                                    // router's NetDB lock and the lock is
+                                    // released **before** the read
+                                    // returns, so the accept is signed and
+                                    // staged with no lock held. A router
+                                    // that holds no validated store
+                                    // refuses the introduction under its
+                                    // own typed reason, and the refusal is
+                                    // counted: it is never a silent skip.
+                                    let material_source =
+                                        crate::relay_target::ValidatedStoreMaterialSource::new(
+                                            bootstrap.as_ref(),
+                                        );
+                                    let drained = crate::ssu2_relay_drain::drain_target_events(
+                                        &mut owner,
+                                        target,
+                                        &material_source,
+                                        now_secs,
+                                        now_ms,
+                                    );
+                                    if drained.drained > 0 {
+                                        // Counts only: the refusal keys are
+                                        // stable reason labels, and no peer
+                                        // identity is logged.
+                                        tracing::debug!(
+                                            drained = drained.drained,
+                                            answered = drained.answered,
+                                            refused = drained.refused,
+                                            replays = drained.replays,
+                                            "SSU2 target relay handoff drained"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -4559,6 +6914,7 @@ mod tests {
             CONSOLE_SERVICE_NAME,
             ADDRESSBOOK_REFRESH_SERVICE_NAME,
             SIGNED_NEWS_REFRESH_SERVICE_NAME,
+            NETDB_PARTICIPATION_SERVICE_NAME,
             SSU2_SERVICE_NAME,
         ] {
             let expectation = readiness_expectation(service);
@@ -4571,5 +6927,381 @@ mod tests {
                 "{service} expectation exceeds the bounded health-detail limit"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 497: the daemon's NetDB participation owner.
+    // -----------------------------------------------------------------------
+
+    /// A minimal configuration with the routing table off, which is the
+    /// shipped default.
+    const PARTICIPATION_DEFAULT_CONFIG: &str =
+        "schema_version = 1\n[router]\ndata_dir = \"./state\"\n";
+
+    /// A configuration with the routing table on.
+    const PARTICIPATION_ENABLED_CONFIG: &str = "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[netdb]\nrouting_table_enabled = true\n";
+
+    /// Builds a validated floodfill RouterInfo.
+    fn participation_floodfill(seed: u64) -> i2pr_netdb::ValidatedRouterInfo {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_proto::Mapping;
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let signer = RouterIdentityBundle::generate(&mut rng).expect("deterministic test identity");
+        let published = Date::from_millis(1_000);
+        let mut options = Mapping::builder();
+        options.insert("caps".to_owned(), "Nf".to_owned()).unwrap();
+        let info = signer
+            .sign_router_info(published, Vec::new(), Vec::new(), options.build().unwrap())
+            .expect("sign");
+        i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            ValidationContext::new(published),
+        )
+        .expect("validate")
+    }
+
+    /// Builds the participation state for one configuration.
+    fn participation_for(text: &str) -> (Config, NetDbParticipation) {
+        let config = Config::parse(text).expect("valid configuration");
+        let participation =
+            NetDbParticipation::new(&config, RouterHash::from_bytes([7u8; 32]), 1_000);
+        (config, participation)
+    }
+
+    /// Plan 514: the operator's switch is real.
+    ///
+    /// `netdb.exploration_enabled` says whether the router runs exploratory
+    /// lookups. Until this plan the key was read by **nothing** — it was
+    /// parsed, defaulted and cross-validated, and the exploration ran
+    /// whenever the routing table was on.
+    #[test]
+    fn the_operator_switch_starts_and_stops_the_exploratory_request() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let base = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[netdb]\nrouting_table_enabled = true\n",
+            path.to_string_lossy()
+        );
+
+        /// A bootstrap that holds one validated floodfill, so the routing
+        /// table has a peer to name.
+        fn bootstrap_with_a_floodfill(config: &Config) -> Arc<Mutex<bootstrap::Bootstrap>> {
+            let mut bootstrap =
+                bootstrap::Bootstrap::new(RouterInfoStoreConfig::default(), config.reseed.clone());
+            let _ = bootstrap
+                .store_mut()
+                .insert(participation_floodfill(0x5140_0001));
+            Arc::new(Mutex::new(bootstrap))
+        }
+
+        // The switch off — the documented default: no exploratory request.
+        let config = Config::parse(&base).expect("valid configuration");
+        assert!(
+            !config.netdb.exploration_enabled,
+            "the exploration must be off by default"
+        );
+        let bootstrap = bootstrap_with_a_floodfill(&config);
+        let (_config, participation) = participation_for(&base);
+        let population = crate::netdb_participation::ValidatedStorePopulationSource::new(
+            Some(&bootstrap),
+            &participation.population_refusals,
+        );
+        participation.populate_routing_table(&population, &[]);
+        participation.drive_discovery(Some(&bootstrap), 1_000);
+        assert!(
+            participation.discovery.take_dispatch().is_none(),
+            "the operator switched the exploration off, so no request is composed"
+        );
+
+        // The switch on: the exploratory request is composed.
+        let enabled = format!("{base}exploration_enabled = true\n");
+        let config = Config::parse(&enabled).expect("valid configuration");
+        assert!(config.netdb.exploration_enabled);
+        let bootstrap = bootstrap_with_a_floodfill(&config);
+        let (_, participation) = participation_for(&enabled);
+        participation.discovery.set_reply_path(Some(
+            i2pr_netdb::ReplyPath::new(RouterHash::from_bytes([0x52; 32]), 0x0051_4007)
+                .expect("reply path"),
+        ));
+        let population = crate::netdb_participation::ValidatedStorePopulationSource::new(
+            Some(&bootstrap),
+            &participation.population_refusals,
+        );
+        participation.populate_routing_table(&population, &[]);
+        participation.drive_discovery(Some(&bootstrap), 1_000);
+        let dispatch = participation
+            .discovery
+            .take_dispatch()
+            .expect("the switched-on exploration must compose a request");
+        assert!(
+            matches!(
+                dispatch,
+                crate::netdb_participation::DiscoveryDispatch::Send { .. }
+            ),
+            "the request must be dispatchable: {dispatch:?}"
+        );
+        assert_eq!(
+            participation.discovery.counters().explorations_started,
+            1,
+            "one exploratory request must have been composed"
+        );
+    }
+
+    /// Plan 497: with the routing table off — the shipped default — the
+    /// shared consumer answers every request with `Disabled` and nothing
+    /// else happens: no table population, no maintenance tick, and no
+    /// counter other than the disabled fallback moves.
+    #[test]
+    fn the_default_off_netdb_participation_owner_is_inert() {
+        let (config, participation) = participation_for(PARTICIPATION_DEFAULT_CONFIG);
+        assert!(
+            !config.netdb.routing_table_enabled,
+            "the routing table must be off by default"
+        );
+        let consumer = Arc::clone(&participation.routing_table);
+        assert!(!consumer.is_enabled());
+        assert!(consumer.is_empty(), "an inert owner must populate no table");
+        assert_eq!(consumer.len(), 0);
+        assert_eq!(
+            consumer.counters(),
+            crate::netdb_participation::RoutingTableCounters::default(),
+            "an inert owner must not move any counter"
+        );
+        assert_eq!(
+            participation
+                .profiles
+                .with(|driver| driver.receipt_count())
+                .unwrap_or(0),
+            0,
+            "an inert owner must run no maintenance pass"
+        );
+        assert_eq!(
+            participation
+                .profiles
+                .with(|driver| driver.store().len())
+                .unwrap_or(0),
+            0,
+            "an inert owner must learn no peer"
+        );
+
+        let store = RouterInfoStore::with_config(RouterInfoStoreConfig::default());
+        let key = RouterHash::from_bytes([3u8; 32]);
+        assert_eq!(
+            consumer.candidates(&store, &key, &[]),
+            crate::netdb_participation::RoutingTableCandidates::Fallback(
+                crate::netdb_participation::RoutingTableFallback::Disabled
+            )
+        );
+        let counters = consumer.counters();
+        assert_eq!(counters.answered, 0);
+        assert_eq!(counters.fell_back_no_candidate, 0);
+        assert_eq!(counters.fell_back_disabled, 1);
+        assert_eq!(counters.fell_back(), 1);
+    }
+
+    /// Plan 497: with the routing table on, the consumer indexes a
+    /// validated floodfill with its own signed evidence and then answers
+    /// with the closest-first table, falling back with a counted reason for
+    /// a key it cannot serve.
+    #[test]
+    fn the_enabled_netdb_participation_owner_indexes_and_answers() {
+        let (config, participation) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        assert!(config.netdb.routing_table_enabled);
+        let consumer = Arc::clone(&participation.routing_table);
+        assert!(consumer.is_enabled());
+
+        let peer = participation_floodfill(0x4970_0001);
+        let peer_key = peer.key();
+        assert_eq!(
+            consumer.index(&peer),
+            Some(i2pr_netdb::TableInsertOutcome::Inserted),
+            "a validated floodfill enters the table with its own signed evidence"
+        );
+        assert_eq!(consumer.len(), 1);
+
+        // The NetDB holds the peer, so the table can answer with it.
+        let mut store = RouterInfoStore::with_config(RouterInfoStoreConfig::default());
+        store.insert(peer.clone());
+        let routing_key = i2pr_netdb::daily_routing_key(&peer_key, Date::from_millis(1_000))
+            .map(RouterHash::from_hash)
+            .expect("routing key");
+        match consumer.candidates(&store, &routing_key, &[]) {
+            crate::netdb_participation::RoutingTableCandidates::Table(candidates) => {
+                assert_eq!(candidates, vec![peer_key]);
+            }
+            other => panic!("the table must answer with its candidate: {other:?}"),
+        }
+        assert_eq!(consumer.counters().answered, 1);
+
+        // A key the table cannot serve — the peer is not in the NetDB, so it
+        // is pending rather than queryable — falls back with its reason.
+        let empty = RouterInfoStore::with_config(RouterInfoStoreConfig::default());
+        assert_eq!(
+            consumer.candidates(&empty, &routing_key, &[]),
+            crate::netdb_participation::RoutingTableCandidates::Fallback(
+                crate::netdb_participation::RoutingTableFallback::NoCandidate
+            )
+        );
+        let counters = consumer.counters();
+        assert_eq!(counters.answered, 1);
+        assert_eq!(counters.fell_back_no_candidate, 1);
+        assert_eq!(counters.fell_back_disabled, 0);
+        assert_eq!(counters.fell_back(), 1);
+    }
+
+    /// Plan 497: a peer whose own record does not advertise `f` never
+    /// enters the table on its own evidence.
+    #[test]
+    fn the_netdb_participation_owner_refuses_a_peer_that_is_not_a_floodfill() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_proto::Mapping;
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+
+        let (_config, participation) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        let consumer = Arc::clone(&participation.routing_table);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x4970_0002);
+        let signer = RouterIdentityBundle::generate(&mut rng).expect("deterministic test identity");
+        let published = Date::from_millis(1_000);
+        let mut options = Mapping::builder();
+        options.insert("caps".to_owned(), "N".to_owned()).unwrap();
+        let info = signer
+            .sign_router_info(published, Vec::new(), Vec::new(), options.build().unwrap())
+            .expect("sign");
+        let plain = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            ValidationContext::new(published),
+        )
+        .expect("validate");
+        assert_eq!(
+            consumer.index(&plain),
+            Some(i2pr_netdb::TableInsertOutcome::RejectedNotFloodfill)
+        );
+        assert!(consumer.is_empty());
+    }
+
+    /// Plan 488 F4: a corrupt projection and a projection built for another
+    /// UTC day are discarded and counted, and neither is ever applied.
+    #[test]
+    fn the_netdb_participation_owner_discards_a_corrupt_projection() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let now_ms = 1_700_000_000_000;
+        let day = projection_day(now_ms).expect("a UTC day");
+        let path = directory.path().join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{day}{PROFILE_PROJECTION_FILE_SUFFIX}"
+        ));
+        std::fs::write(&path, b"not a projection").expect("write projection");
+
+        let (_config, participation) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        participation.load_projection(directory.path(), now_ms);
+        assert_eq!(
+            participation.discarded_projections.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            participation.restored_projections.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            participation
+                .profiles
+                .with(|driver| driver.store().len())
+                .unwrap_or(0),
+            0,
+            "a discarded projection must never be applied"
+        );
+    }
+
+    /// Plan 488 F4: a projection built for another UTC day is stale. It is
+    /// discarded and counted, and it is never applied.
+    #[test]
+    fn the_netdb_participation_owner_discards_a_projection_from_another_day() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let now_ms = 1_700_000_000_000;
+        let stale_day = projection_day(now_ms - 24 * 60 * 60 * 1_000).expect("a UTC day");
+        assert_ne!(stale_day, projection_day(now_ms).expect("a UTC day"));
+        let path = directory.path().join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{stale_day}{PROFILE_PROJECTION_FILE_SUFFIX}"
+        ));
+        std::fs::write(&path, b"a stale projection").expect("write projection");
+
+        let (_config, participation) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        participation.load_projection(directory.path(), now_ms);
+        assert_eq!(
+            participation.discarded_projections.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            participation.restored_projections.load(Ordering::Relaxed),
+            0
+        );
+        assert!(!path.exists(), "a stale projection must not be left behind");
+    }
+
+    /// Plan 488 F4: a projection of the current UTC day is applied, and the
+    /// round trip survives a restart.
+    #[test]
+    fn the_netdb_participation_owner_applies_a_current_projection() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let now_ms = 1_700_000_000_000;
+        let day = projection_day(now_ms).expect("a UTC day");
+        let peer = participation_floodfill(0x4970_0003);
+        let peer_key = peer.key();
+
+        // Build a projection whose peer answered, and persist it.
+        let (_config, writer) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        writer.profiles.with(|driver| driver.advance_time(now_ms));
+        writer.profiles.with(|driver| driver.learn(peer.clone()));
+        writer
+            .profiles
+            .with(|driver| driver.observe_answered(&peer_key));
+        writer.persist_projection(directory.path(), now_ms);
+        let path = directory.path().join(format!(
+            "{PROFILE_PROJECTION_FILE_PREFIX}{day}{PROFILE_PROJECTION_FILE_SUFFIX}"
+        ));
+        assert!(path.exists(), "the projection must be persisted");
+
+        // A fresh owner that already holds the peer applies the projection
+        // and the peer's profile state comes back with it.
+        let (_config, reader) = participation_for(PARTICIPATION_ENABLED_CONFIG);
+        reader.profiles.with(|driver| driver.advance_time(now_ms));
+        reader.profiles.with(|driver| driver.learn(peer.clone()));
+        let state_before = reader
+            .profiles
+            .with(|driver| {
+                driver
+                    .store()
+                    .profile(&peer_key)
+                    .map(|profile| profile.state())
+            })
+            .flatten();
+        assert_eq!(
+            state_before,
+            Some(i2pr_netdb::ProfileState::NeverTried),
+            "a freshly learned peer has never been contacted"
+        );
+
+        reader.load_projection(directory.path(), now_ms);
+        assert_eq!(reader.restored_projections.load(Ordering::Relaxed), 1);
+        assert_eq!(reader.discarded_projections.load(Ordering::Relaxed), 0);
+        let state_after = reader
+            .profiles
+            .with(|driver| {
+                driver
+                    .store()
+                    .profile(&peer_key)
+                    .map(|profile| profile.state())
+            })
+            .flatten();
+        assert_eq!(
+            state_after,
+            Some(i2pr_netdb::ProfileState::Answered),
+            "the current projection must be applied"
+        );
     }
 }

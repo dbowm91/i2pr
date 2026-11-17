@@ -9,8 +9,11 @@
 //! 155 source refresh. The SSU2 specification page defines the packet
 //! layer; RouterAddress option shapes follow the deployed `SSU2`
 //! address conventions shared with NTCP2 (`v`, `s`, `i`, `host`,
-//! `port`, `mtu`, `caps`) plus SSU2 introducer groups
-//! (`ihostN`/`iportN`/`ikeyN`/`itagN`). Where the spec leaves
+//! `port`, `mtu`, `caps`) plus the SSU2 introducer groups the
+//! specification defines for SSU2 (`ihN`/`iexpN`/`itagN`). The SSU 1
+//! introducer groups (`ihostN`/`iportN`/`ikeyN`) are **not** part of the
+//! SSU2 address and are refused here, exactly as any other unknown
+//! option is. Where the spec leaves
 //! publication details implementation-defined, this parser is strict:
 //! unknown options are rejected (no deployed extra option is
 //! currently accepted; any future one needs an explicit allowlist
@@ -120,11 +123,18 @@ pub enum Ssu2AddressError {
     /// One introducer group is missing a required field.
     #[error("missing SSU2 RouterAddress introducer field {option}{index}")]
     MissingIntroducerField {
-        /// The introducer field prefix (`ihost`, `iport`, `ikey`, `itag`).
+        /// The introducer field prefix (`ih`, `iexp`, `itag`).
         option: &'static str,
         /// The zero-based introducer group index.
         index: usize,
     },
+    /// An address carries both a direct endpoint and introducers.
+    ///
+    /// The SSU2 specification forbids publishing a host or a port in an
+    /// address that publishes introducers: the direct form and the
+    /// introducer-only form are exclusive.
+    #[error("SSU2 RouterAddress carries both an endpoint and introducers")]
+    HostPortWithIntroducers,
     /// An endpoint-dependent operation was attempted without host and port.
     #[error("SSU2 RouterAddress has no complete endpoint")]
     MissingEndpoint,
@@ -464,53 +474,52 @@ impl Ssu2Capabilities {
     }
 }
 
-/// One bounded introducer group (`ihostN`/`iportN`/`ikeyN`/`itagN`).
+/// One bounded SSU2 introducer group (`ihN`/`iexpN`/`itagN`).
+///
+/// The SSU2 specification's introducer tuple is the **introducer's router
+/// hash**, its expiry and its relay tag. The SSU 1 tuple — a host, a port
+/// and an introduction key — is not used for SSU2: a peer resolves an
+/// introducer by hash through the network database, and an SSU2 address
+/// must not publish a host or a port alongside its introducers.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Ssu2Introducer {
-    endpoint: Ssu2Endpoint,
-    intro_key: IntroKey,
+    peer_hash: [u8; 32],
+    expires_secs: u64,
     relay_tag: u32,
 }
 
 impl Ssu2Introducer {
     /// Constructs an introducer from validated parts.
+    ///
+    /// The relay tag is nonzero by construction: zero is reserved.
     pub fn new(
-        endpoint: Ssu2Endpoint,
-        intro_key: IntroKey,
+        peer_hash: [u8; 32],
+        expires_secs: u64,
         relay_tag: u32,
     ) -> Result<Self, Ssu2AddressError> {
         if relay_tag == 0 {
             return Err(Ssu2AddressError::InvalidIntroducer { index: 0 });
         }
         Ok(Self {
-            endpoint,
-            intro_key,
+            peer_hash,
+            expires_secs,
             relay_tag,
         })
     }
 
-    /// Returns the introducer's literal endpoint.
-    pub const fn endpoint(self) -> Ssu2Endpoint {
-        self.endpoint
+    /// Returns the introducer's router hash (`ihN`).
+    pub const fn peer_hash(&self) -> &[u8; 32] {
+        &self.peer_hash
     }
 
-    /// Returns the introducer's literal IP address.
-    pub const fn ip(self) -> IpAddr {
-        self.endpoint.ip()
-    }
-
-    /// Returns the introducer's UDP port.
-    pub const fn port(self) -> u16 {
-        self.endpoint.port()
-    }
-
-    /// Returns the introducer's introduction key.
-    pub const fn intro_key(self) -> IntroKey {
-        self.intro_key
+    /// Returns the introducer's expiry in seconds since the epoch
+    /// (`iexpN`). Zero means the expiry was not published.
+    pub const fn expires_secs(&self) -> u64 {
+        self.expires_secs
     }
 
     /// Returns the nonzero relay tag (`itagN`).
-    pub const fn relay_tag(self) -> u32 {
+    pub const fn relay_tag(&self) -> u32 {
         self.relay_tag
     }
 }
@@ -519,9 +528,8 @@ impl fmt::Debug for Ssu2Introducer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Ssu2Introducer")
-            .field("family", &self.endpoint.family())
-            .field("endpoint", &"<redacted>")
-            .field("intro_key", &"<redacted>")
+            .field("peer_hash", &"<redacted>")
+            .field("expires_secs", &"<redacted>")
             .field("relay_tag", &"<redacted>")
             .finish()
     }
@@ -535,8 +543,6 @@ impl fmt::Debug for Ssu2Introducer {
 pub enum Ssu2AddressClass {
     /// A direct endpoint with no introducer material.
     Direct,
-    /// A direct endpoint that additionally publishes introducers.
-    DirectWithIntroducers,
     /// No direct endpoint; contact only via published introducers.
     IntroducerOnly,
     /// Static-key-only form with no endpoint and no introducers.
@@ -674,11 +680,15 @@ impl Ssu2RouterAddress {
     /// Classifies which contact material is present. This never
     /// implies reachability or publication approval.
     pub fn address_class(&self) -> Ssu2AddressClass {
-        match (self.endpoint, self.introducers.is_empty()) {
-            (Some(_), true) => Ssu2AddressClass::Direct,
-            (Some(_), false) => Ssu2AddressClass::DirectWithIntroducers,
-            (None, false) => Ssu2AddressClass::IntroducerOnly,
-            (None, true) => Ssu2AddressClass::UnpublishedStatic,
+        // The parser refuses an address that carries both a direct
+        // endpoint and introducers, so the two forms are exclusive and
+        // this classification is total.
+        if !self.introducers.is_empty() {
+            Ssu2AddressClass::IntroducerOnly
+        } else if self.endpoint.is_some() {
+            Ssu2AddressClass::Direct
+        } else {
+            Ssu2AddressClass::UnpublishedStatic
         }
     }
 
@@ -745,6 +755,13 @@ impl Ssu2RouterAddress {
         };
 
         let introducers = parse_introducers(&options.introducer_fields)?;
+        if endpoint.is_some() && !introducers.is_empty() {
+            // The specification forbids publishing a host or a port in an
+            // address that publishes introducers. The two forms are
+            // exclusive, so the combination is refused rather than
+            // resolved by a preference.
+            return Err(Ssu2AddressError::HostPortWithIntroducers);
+        }
 
         let intro_key = match (endpoint, introducers.is_empty(), options.intro_key) {
             (None, true, None) => None,
@@ -962,9 +979,8 @@ struct ParsedOptions<'a> {
 
 #[derive(Clone, Copy, Default)]
 struct IntroducerFields<'a> {
-    hosts: [Option<&'a str>; constants::MAX_SSU2_INTRODUCERS],
-    ports: [Option<&'a str>; constants::MAX_SSU2_INTRODUCERS],
-    keys: [Option<&'a str>; constants::MAX_SSU2_INTRODUCERS],
+    hashes: [Option<&'a str>; constants::MAX_SSU2_INTRODUCERS],
+    expiries: [Option<&'a str>; constants::MAX_SSU2_INTRODUCERS],
     tags: [Option<&'a str>; constants::MAX_SSU2_INTRODUCERS],
     overflow: bool,
 }
@@ -998,13 +1014,22 @@ impl<'a> ParsedOptions<'a> {
     }
 }
 
-const IHOST_PREFIX: &str = "ihost";
-const IPORT_PREFIX: &str = "iport";
-const IKEY_PREFIX: &str = "ikey";
-const ITAG_PREFIX: &str = "itag";
+/// The introducer's router hash (`ihN`), in I2P base64.
+const INTRODUCER_HASH_PREFIX: &str = "ih";
+/// The introducer's expiry (`iexpN`), in seconds since the epoch.
+const INTRODUCER_EXPIRY_PREFIX: &str = "iexp";
+/// The introducer's relay tag (`itagN`).
+const INTRODUCER_TAG_PREFIX: &str = "itag";
+
+/// The exact byte length of an introducer's router hash.
+const INTRODUCER_HASH_LENGTH: usize = 32;
 
 fn parse_introducer_index(key: &str) -> Option<(usize, &'static str)> {
-    for prefix in [IHOST_PREFIX, IPORT_PREFIX, IKEY_PREFIX, ITAG_PREFIX] {
+    for prefix in [
+        INTRODUCER_HASH_PREFIX,
+        INTRODUCER_EXPIRY_PREFIX,
+        INTRODUCER_TAG_PREFIX,
+    ] {
         if let Some(suffix) = key.strip_prefix(prefix)
             && suffix.len() == 1
             && suffix.bytes().all(|byte| byte.is_ascii_digit())
@@ -1028,10 +1053,9 @@ impl<'a> IntroducerFields<'a> {
             return Err(Ssu2AddressError::TooManyIntroducers);
         }
         let slot = match prefix {
-            IHOST_PREFIX => &mut self.hosts[index],
-            IPORT_PREFIX => &mut self.ports[index],
-            IKEY_PREFIX => &mut self.keys[index],
-            ITAG_PREFIX => &mut self.tags[index],
+            INTRODUCER_HASH_PREFIX => &mut self.hashes[index],
+            INTRODUCER_EXPIRY_PREFIX => &mut self.expiries[index],
+            INTRODUCER_TAG_PREFIX => &mut self.tags[index],
             _ => return Err(Ssu2AddressError::UnknownOption),
         };
         if slot.replace(value).is_some() {
@@ -1062,30 +1086,30 @@ fn parse_introducers(
     let mut ended = false;
     for index in 0..constants::MAX_SSU2_INTRODUCERS {
         let group = (
-            fields.hosts[index],
-            fields.ports[index],
-            fields.keys[index],
+            fields.hashes[index],
+            fields.expiries[index],
             fields.tags[index],
         );
         match group {
-            (None, None, None, None) => {
+            (None, None, None) => {
                 ended = true;
             }
-            (Some(host), Some(port), Some(key), Some(tag)) => {
+            // The expiry is optional in the specification's address table;
+            // the hash and the tag are not.
+            (Some(hash), expiry, Some(tag)) => {
                 if ended {
                     return Err(Ssu2AddressError::ConflictingOptions {
-                        first: IHOST_PREFIX,
+                        first: INTRODUCER_HASH_PREFIX,
                         second: HOST_OPTION,
                     });
                 }
-                introducers.push(parse_introducer(index, host, port, key, tag)?);
+                introducers.push(parse_introducer(index, hash, expiry, tag)?);
             }
             _ => {
                 let (field, _) = [
-                    (IHOST_PREFIX, fields.hosts[index]),
-                    (IPORT_PREFIX, fields.ports[index]),
-                    (IKEY_PREFIX, fields.keys[index]),
-                    (ITAG_PREFIX, fields.tags[index]),
+                    (INTRODUCER_HASH_PREFIX, fields.hashes[index]),
+                    (INTRODUCER_EXPIRY_PREFIX, fields.expiries[index]),
+                    (INTRODUCER_TAG_PREFIX, fields.tags[index]),
                 ]
                 .into_iter()
                 .find(|(_, value)| value.is_none())
@@ -1102,20 +1126,38 @@ fn parse_introducers(
 
 fn parse_introducer(
     index: usize,
-    host: &str,
-    port: &str,
-    key: &str,
+    hash: &str,
+    expiry: Option<&str>,
     tag: &str,
 ) -> Result<Ssu2Introducer, Ssu2AddressError> {
-    let ip = IpAddr::from_str(host).map_err(|_| Ssu2AddressError::InvalidIntroducer { index })?;
-    let port = parse_port(port).map_err(|_| Ssu2AddressError::InvalidIntroducer { index })?;
-    let endpoint =
-        Ssu2Endpoint::new(ip, port).map_err(|_| Ssu2AddressError::InvalidIntroducer { index })?;
-    let intro_key =
-        decode_intro_key(key).map_err(|_| Ssu2AddressError::InvalidIntroducer { index })?;
-    let tag = parse_relay_tag(tag).ok_or(Ssu2AddressError::InvalidIntroducer { index })?;
-    Ssu2Introducer::new(endpoint, intro_key, tag)
+    let peer_hash = decode_i2p_base64::<INTRODUCER_HASH_LENGTH>(hash, INTRODUCER_HASH_PREFIX)
+        .map_err(|_| Ssu2AddressError::InvalidIntroducer { index })?;
+    if peer_hash.iter().all(|byte| *byte == 0) {
+        return Err(Ssu2AddressError::InvalidIntroducer { index });
+    }
+    let expires_secs = match expiry {
+        Some(value) => {
+            parse_introducer_expiry(value).ok_or(Ssu2AddressError::InvalidIntroducer { index })?
+        }
+        None => 0,
+    };
+    let relay_tag = parse_relay_tag(tag).ok_or(Ssu2AddressError::InvalidIntroducer { index })?;
+    Ssu2Introducer::new(peer_hash, expires_secs, relay_tag)
         .map_err(|_| Ssu2AddressError::InvalidIntroducer { index })
+}
+
+/// Parses an introducer's expiry: ASCII digits, seconds since the epoch.
+///
+/// The value is canonical decimal, exactly like the relay tag: no leading
+/// zeros, no sign, no whitespace, and a bounded width.
+fn parse_introducer_expiry(value: &str) -> Option<u64> {
+    if value.is_empty() || value.len() > 20 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if value.len() > 1 && value.starts_with('0') {
+        return None;
+    }
+    value.parse::<u64>().ok()
 }
 
 fn parse_relay_tag(value: &str) -> Option<u32> {
@@ -1244,8 +1286,8 @@ fn i2p_base64_digit(byte: u8) -> Option<u8> {
 /// Encodes bytes with the I2P base64 alphabet (`A-Za-z0-9-~`, `=` pad).
 ///
 /// Used by the Plan 159 publication snapshot builder to emit canonical
-/// `s`/`i`/`ikeyN` option values; parsing stays strict in
-/// [`decode_i2p_base64`].
+/// `s`/`i` option values, and by Plan 523 for the `ihN` introducer hash;
+/// parsing stays strict in [`decode_i2p_base64`].
 pub(crate) fn encode_i2p_base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
     let mut output = String::new();
@@ -1341,6 +1383,10 @@ mod tests {
         [0x42; SSU2_STATIC_PUBLIC_KEY_LENGTH];
     /// Deterministic test-only intro key. Never operational.
     const TEST_INTRO_KEY: [u8; SSU2_INTRO_KEY_LENGTH] = [0x24; SSU2_INTRO_KEY_LENGTH];
+    /// Deterministic test-only introducer router hash. Never operational.
+    const TEST_INTRODUCER_HASH: [u8; 32] = [0x5A; 32];
+    /// A second deterministic test-only introducer router hash.
+    const TEST_INTRODUCER_HASH_B: [u8; 32] = [0x6B; 32];
 
     fn encode_i2p_base64(bytes: &[u8]) -> String {
         super::encode_i2p_base64(bytes)
@@ -1430,9 +1476,8 @@ mod tests {
             (INTRO_KEY_OPTION, encode_i2p_base64(&TEST_INTRO_KEY)),
             (VERSION_OPTION, "2".to_owned()),
             (CAPS_OPTION, "BC".to_owned()),
-            ("ihost0", "192.0.2.10".to_owned()),
-            ("iport0", "23456".to_owned()),
-            ("ikey0", encode_i2p_base64(&TEST_INTRO_KEY)),
+            ("ih0", encode_i2p_base64(&TEST_INTRODUCER_HASH)),
+            ("iexp0", "1800000000".to_owned()),
             ("itag0", "987654321".to_owned()),
         ];
         let parsed = parse(&entries).expect("introducer-only address");
@@ -1440,8 +1485,8 @@ mod tests {
         assert_eq!(parsed.address_class(), Ssu2AddressClass::IntroducerOnly);
         assert_eq!(parsed.introducers().len(), 1);
         let introducer = parsed.introducers()[0];
-        assert_eq!(introducer.ip(), "192.0.2.10".parse::<IpAddr>().unwrap());
-        assert_eq!(introducer.port(), 23456);
+        assert_eq!(introducer.peer_hash(), &TEST_INTRODUCER_HASH);
+        assert_eq!(introducer.expires_secs(), 1_800_000_000);
         assert_eq!(introducer.relay_tag(), 987654321);
         assert_eq!(
             parsed.configured_listen(),
@@ -1450,16 +1495,52 @@ mod tests {
     }
 
     #[test]
-    fn parses_direct_with_introducers_and_unpublished_static() {
+    fn an_introducer_expiry_is_optional() {
+        let entries = vec![
+            (STATIC_KEY_OPTION, encode_i2p_base64(&TEST_STATIC_KEY)),
+            (INTRO_KEY_OPTION, encode_i2p_base64(&TEST_INTRO_KEY)),
+            (VERSION_OPTION, "2".to_owned()),
+            ("ih0", encode_i2p_base64(&TEST_INTRODUCER_HASH)),
+            ("itag0", "7".to_owned()),
+        ];
+        let parsed = parse(&entries).expect("introducer without an expiry");
+        assert_eq!(parsed.introducers().len(), 1);
+        assert_eq!(parsed.introducers()[0].expires_secs(), 0);
+    }
+
+    #[test]
+    fn the_ssu1_introducer_options_are_refused_in_an_ssu2_address() {
+        // The specification says of `ihost`/`iport`/`ikey`: "The following
+        // options are for SSU only and are not used for SSU2." They are
+        // refused, not ignored.
+        for option in ["ihost0", "iport0", "ikey0"] {
+            let entries = vec![
+                (STATIC_KEY_OPTION, encode_i2p_base64(&TEST_STATIC_KEY)),
+                (INTRO_KEY_OPTION, encode_i2p_base64(&TEST_INTRO_KEY)),
+                (VERSION_OPTION, "2".to_owned()),
+                (option, "192.0.2.10".to_owned()),
+                ("itag0", "7".to_owned()),
+            ];
+            assert_eq!(
+                parse(&entries),
+                Err(Ssu2AddressError::UnknownOption),
+                "option {option:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_a_direct_endpoint_with_introducers_and_parses_unpublished_static() {
+        // The specification forbids publishing a host or a port in an
+        // address that publishes introducers: the two forms are
+        // exclusive, so the combination is refused.
         let mut entries = direct_entries();
-        entries.push(("ihost0", "192.0.2.10".to_owned()));
-        entries.push(("iport0", "23456".to_owned()));
-        entries.push(("ikey0", encode_i2p_base64(&TEST_INTRO_KEY)));
+        entries.push(("ih0", encode_i2p_base64(&TEST_INTRODUCER_HASH)));
+        entries.push(("iexp0", "1800000000".to_owned()));
         entries.push(("itag0", "7".to_owned()));
-        let parsed = parse(&entries).expect("direct with introducers");
         assert_eq!(
-            parsed.address_class(),
-            Ssu2AddressClass::DirectWithIntroducers
+            parse(&entries),
+            Err(Ssu2AddressError::HostPortWithIntroducers)
         );
 
         let unpublished = vec![
@@ -1591,34 +1672,72 @@ mod tests {
             (STATIC_KEY_OPTION, encode_i2p_base64(&TEST_STATIC_KEY)),
             (INTRO_KEY_OPTION, encode_i2p_base64(&TEST_INTRO_KEY)),
             (VERSION_OPTION, "2".to_owned()),
-            ("ihost0", "192.0.2.10".to_owned()),
-            ("iport0", "23456".to_owned()),
-            ("ikey0", encode_i2p_base64(&TEST_INTRO_KEY)),
+            ("ih0", encode_i2p_base64(&TEST_INTRODUCER_HASH)),
+            ("iexp0", "1800000000".to_owned()),
         ];
         assert_eq!(
             parse(&partial),
             Err(Ssu2AddressError::MissingIntroducerField {
-                option: ITAG_PREFIX,
+                option: INTRODUCER_TAG_PREFIX,
+                index: 0,
+            })
+        );
+
+        // Partial introducer group: missing ih0.
+        let no_hash = vec![
+            (STATIC_KEY_OPTION, encode_i2p_base64(&TEST_STATIC_KEY)),
+            (INTRO_KEY_OPTION, encode_i2p_base64(&TEST_INTRO_KEY)),
+            (VERSION_OPTION, "2".to_owned()),
+            ("itag0", "7".to_owned()),
+        ];
+        assert_eq!(
+            parse(&no_hash),
+            Err(Ssu2AddressError::MissingIntroducerField {
+                option: INTRODUCER_HASH_PREFIX,
                 index: 0,
             })
         );
 
         // Zero relay tag is rejected.
         let mut zero_tag = direct_entries();
-        zero_tag.push(("ihost0", "192.0.2.10".to_owned()));
-        zero_tag.push(("iport0", "23456".to_owned()));
-        zero_tag.push(("ikey0", encode_i2p_base64(&TEST_INTRO_KEY)));
+        zero_tag.push(("ih0", encode_i2p_base64(&TEST_INTRODUCER_HASH)));
         zero_tag.push(("itag0", "0".to_owned()));
         assert_eq!(
             parse(&zero_tag),
             Err(Ssu2AddressError::InvalidIntroducer { index: 0 })
         );
 
+        // A malformed introducer hash is rejected.
+        let mut bad_hash = direct_entries();
+        bad_hash.push(("ih0", "not base64".to_owned()));
+        bad_hash.push(("itag0", "7".to_owned()));
+        assert_eq!(
+            parse(&bad_hash),
+            Err(Ssu2AddressError::InvalidIntroducer { index: 0 })
+        );
+
+        // An all-zero introducer hash is rejected.
+        let mut zero_hash = direct_entries();
+        zero_hash.push(("ih0", encode_i2p_base64(&[0; 32])));
+        zero_hash.push(("itag0", "7".to_owned()));
+        assert_eq!(
+            parse(&zero_hash),
+            Err(Ssu2AddressError::InvalidIntroducer { index: 0 })
+        );
+
+        // A malformed expiry is rejected.
+        let mut bad_expiry = direct_entries();
+        bad_expiry.push(("ih0", encode_i2p_base64(&TEST_INTRODUCER_HASH)));
+        bad_expiry.push(("iexp0", "01800000000".to_owned()));
+        bad_expiry.push(("itag0", "7".to_owned()));
+        assert_eq!(
+            parse(&bad_expiry),
+            Err(Ssu2AddressError::InvalidIntroducer { index: 0 })
+        );
+
         // Index beyond the bound is rejected.
         let mut overflow = direct_entries();
-        overflow.push(("ihost3", "192.0.2.10".to_owned()));
-        overflow.push(("iport3", "23456".to_owned()));
-        overflow.push(("ikey3", encode_i2p_base64(&TEST_INTRO_KEY)));
+        overflow.push(("ih3", encode_i2p_base64(&TEST_INTRODUCER_HASH_B)));
         overflow.push(("itag3", "7".to_owned()));
         assert_eq!(parse(&overflow), Err(Ssu2AddressError::TooManyIntroducers));
     }

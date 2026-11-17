@@ -101,5 +101,46 @@ class Plan476ExecutorTests(unittest.TestCase):
                     plan476.reconcile_receipts(self.hosts, candidate)
 
 
+    def test_local_observed_positive_with_and_without_product(self) -> None:
+        rows = (
+            ("permit_checked", 1), ("router_started", 2),
+            ("peer_authenticated", 1), ("request_received", 2),
+            ("product_effect_observed", 1),
+        )
+        result = plan476.validate_local_observed(self.hosts[0], rows)
+        self.assertEqual(result["result"], "local-observation-passed")
+        self.assertTrue(result["product_observed"])
+        self.assertEqual(result["live_qualification"], "not-run")
+        result = plan476.validate_local_observed(self.hosts[0], rows[:4])
+        self.assertEqual(result["result"], "local-observation-passed")
+        self.assertFalse(result["product_observed"])
+
+    def test_local_observed_negative_matrix(self) -> None:
+        good = (
+            ("permit_checked", 1), ("router_started", 1),
+            ("peer_authenticated", 1), ("request_received", 1),
+        )
+        cases = (
+            (good, "permit_checked", "receipt-sequence-incomplete", lambda rows: tuple(r for r in rows if r[0] != "permit_checked")),
+            (good, "peer_authenticated", "receipt-sequence-incomplete", lambda rows: tuple(r for r in rows if r[0] != "peer_authenticated")),
+            (good, "zero-session", "authenticated-session-unobserved", lambda rows: tuple((p, 0) if p == "peer_authenticated" else (p, c) for p, c in rows)),
+            (good, "zero-request", "product-request-unobserved", lambda rows: tuple((p, 0) if p == "request_received" else (p, c) for p, c in rows)),
+            (good, "unknown-phase", "receipt-phase-invalid", lambda rows: rows + (("invented_stage", 1),)),
+            (good, "out-of-order", "receipt-phase-order-invalid", lambda rows: (rows[1], rows[0]) + rows[2:]),
+            (good, "duplicate-phase", "receipt-replay", lambda rows: rows + (rows[2],)),
+            (good, "bool-count", "receipt-row-invalid", lambda rows: tuple((p, True) if p == "peer_authenticated" else (p, c) for p, c in rows)),
+            (good, "negative-count", "receipt-row-invalid", lambda rows: tuple((p, -1) if p == "peer_authenticated" else (p, c) for p, c in rows)),
+            (good, "triple-row", "receipt-row-invalid", lambda rows: rows + (("router_stopped", 1, "extra"),)),
+        )
+        for rows, _label, expected, mutate in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(plan476.ExecutorError, expected):
+                    plan476.validate_local_observed(self.hosts[0], mutate(rows))
+        with self.assertRaisesRegex(plan476.ExecutorError, "authorization-revoked"):
+            plan476.validate_local_observed(replace(self.hosts[0], consent=False), good)
+        with self.assertRaisesRegex(plan476.ExecutorError, "receipt-empty"):
+            plan476.validate_local_observed(self.hosts[0], ())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -980,7 +980,11 @@ pub fn verify_su3_archive(
         let mut file = zip
             .by_index(index)
             .map_err(|_| ReseedParseError::ZipDecode)?;
-        let raw_name = file.name().to_owned();
+        // Plan 487 WP6 (zip 9): the entry name is now fallible.
+        let raw_name = file
+            .name()
+            .map_err(|_| ReseedParseError::ZipDecode)?
+            .into_owned();
         if raw_name.contains('/') || raw_name.contains('\\') || raw_name.contains(':') {
             return Err(ReseedParseError::InvalidPath { name: raw_name });
         }
@@ -1248,7 +1252,9 @@ mod tests {
         {
             let cursor = std::io::Cursor::new(&mut buf);
             let mut zip = zip::ZipWriter::new(cursor);
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            // Plan 487 WP6 (zip 9): `FileOptions` gained a second
+            // lifetime parameter (the name borrow).
+            let opts: zip::write::FileOptions<'_, '_, ()> = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             for (name, payload) in records {
                 zip.start_file(*name, opts).expect("start file");

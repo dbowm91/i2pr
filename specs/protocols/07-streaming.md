@@ -123,12 +123,73 @@ Compare packet signatures/options, MTU calculation, SYN retransmission, ACK/NACK
 - Feature behavior that cannot be negotiated and is not broadly deployed: compatibility tests first, disabled by default.
 - Zero-copy API promises: deferred until correctness and buffer-lifetime semantics are stable.
 
+## Settled decisions
+
+### S5 — Stream persistence and recovery across tunnel-pool rebuilds and router restart
+
+*Resolved by Plan 487; see `docs/adr/0040-stream-recovery-across-tunnel-rebuild-and-router-restart.md`.
+This closes open decision 5 below.*
+
+A stream is bound to a **destination**, never to a tunnel. The destination's
+published LeaseSet2 names a set of inbound tunnels; those tunnels expire and
+are replaced. The recovery semantics are therefore split by what is being
+recovered, and the client-observable result is defined for each case.
+
+**Case 1 — destination tunnel-pool rebuild** (lease rotation, tunnel expiry,
+tunnel-pool replenishment). The stream **survives**. The ECIES session key,
+the local and remote stream ids, the send and receive windows, and the
+retransmission state are unaffected by a lease rotation: a rotation changes
+the *transport path* under a stream, not the stream itself. Bytes already
+handed to the streaming layer are retransmitted across the new path, and the
+peer observes neither a reset nor a reordering.
+
+Client-observable result: **nothing**. No SAM reply, no stream event, no
+error, and no session attribute change. The only observable effect is
+latency across the rebuild, and a transfer in progress continues to
+completion.
+
+**Case 2 — router (daemon) restart.** The **stream does not survive**, and
+neither does the SAM session: the ECIES session, the streaming connection,
+the windows, the retransmission state, the SAM session registry, and the
+per-destination tunnel pools are process state.
+
+Client-observable result: the SAM TCP connection is closed. The client
+observes EOF or an I/O error, and must reconnect and re-create the session. The
+reconnect establishes a **new** stream: a new ECIES session, new stream ids, and
+a new retransmission state.
+
+What survives the restart is the **router's own persisted identity**: the router
+identity and the transport static key are written under the data directory, so
+the router's hash is unchanged and the peers' published view of this router
+stays valid. A **persistent destination** — a configured service, whose identity
+record the storage layer persists — keeps its destination hash across the
+restart, so a reconnect can target the same destination and the peer's published
+LeaseSet2 for it remains valid at the floodfill until that record's own expiry.
+A **SAM session's destination is not persisted**: `DEST GENERATE` mints an
+ephemeral destination that lives only for the session, so a client that
+reconnects after a restart creates a new session and reaches a new destination,
+resolved through the ordinary LeaseSet2 lookup exactly like any first
+connection.
+
+**Not claimed.** No stream resumption, no byte-offset replay, and no
+cross-restart session continuity. A restarted router does not resume a
+transfer; it offers the same router back, and the same destination where that
+destination is persistent.
+
+**Rotation mechanics.** A rotation advances the LeaseSet2 `published`
+timestamp by at least one second, so the floodfill replaces the record instead
+of silently keeping the older one, and the advertised expiry is derived from
+the newest lease so the record never outlives the destination's own tunnels.
+The rotation is driven by the approaching-expiry margin rather than by a
+wall-clock timer. The substrate is `LeaseSetLifecycle`
+(`crates/i2pr-client/src/leaseset.rs`).
+
 ## Open decisions
 
 1. Congestion-control algorithm and which behavior is required for practical parity with Java I2P/i2pd.
 2. Initial packet MTU calculation across current LeaseSet/ECIES/tunnel formats.
 3. Sequence-space and receive-window data structures with bounded memory.
 4. Whether destinations permit application-selected ports/protocol values at the first checkpoint.
-5. Stream persistence/recovery semantics across destination tunnel-pool rebuilds and router restart.
+5. ~~Stream persistence/recovery semantics across destination tunnel-pool rebuilds and router restart.~~ **Settled** — see "Settled decisions / S5" above and ADR 0040.
 6. Exact internal API cancellation behavior for pending connect, accept, read and close.
 7. How pacing integrates with Tokio without one timer task per packet or stream.

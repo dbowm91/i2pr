@@ -85,6 +85,7 @@ mod lease2;
 mod mapping;
 mod router_address;
 mod router_info;
+mod version;
 
 pub use base32::*;
 pub use certificate::*;
@@ -98,6 +99,7 @@ pub use lease2::*;
 pub use mapping::*;
 pub use router_address::*;
 pub use router_info::*;
+pub use version::*;
 
 #[cfg(test)]
 mod tests {

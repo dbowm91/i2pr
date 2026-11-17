@@ -52,11 +52,13 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use i2pr_netdb::{
-    LookupAction, LookupId, LookupPolicy, PublicationAttemptRecord, PublicationCoordinator,
-    ReplyPath, ResponseOutcome, RouterHash, RouterInfoStore, RouterInfoStoreConfig,
-    ValidationContext, select_floodfill_candidates,
+    FloodfillTargetSelection, LookupAction, LookupId, LookupPolicy, PublicationAttemptRecord,
+    PublicationCoordinator, ReplyPath, ResponseOutcome, RouterHash, RouterInfoStore,
+    RouterInfoStoreConfig, ValidationContext, dsm_target_eligibility, published_version_of,
+    select_floodfill_candidates,
 };
 use i2pr_proto::{
     Date, Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE,
@@ -90,6 +92,14 @@ pub enum NetDbTunnelError {
     /// No eligible floodfill candidate exists in the authoritative store.
     #[error("no eligible floodfill candidate")]
     NoEligibleCandidates,
+    /// The floodfill target is refused by the DSM minimum-version floor.
+    ///
+    /// Plan 491. The specification's API-version table attaches "minimum
+    /// floodfill peers will send DSM to" to the level this router declares.
+    /// The reason label names which case occurred: `unknown-version`,
+    /// `uncomparable-version`, or `below-floor`.
+    #[error("floodfill target refused by the DSM API version floor ({0})")]
+    FloodfillRefusedByVersionFloor(&'static str),
     /// The lookup identifier is unknown.
     #[error("unknown NetDB lookup")]
     UnknownLookup,
@@ -141,6 +151,9 @@ pub struct NetDbTunnelCounters {
     pub publications_started: u64,
     /// Publications acknowledged via protocol-derived evidence.
     pub publications_acked: u64,
+    /// Publications refused because the floodfill target does not satisfy the
+    /// DSM minimum-version floor.
+    pub publications_refused_by_version_floor: u64,
     /// Search-reply suggestions merged (bounded).
     pub search_replies_merged: u64,
     /// Mismatched key/store responses rejected.
@@ -251,6 +264,90 @@ pub struct NetDbTunnelCoordinator {
     next_request_id: u64,
     now_ms: u64,
     counters: NetDbTunnelCounters,
+    /// Plan 497: the floodfill-indexed routing table this coordinator asks
+    /// for its lookup candidates. `None` — the default — keeps the flat
+    /// store as the sole source of candidates.
+    routing_table: Option<Arc<crate::netdb_participation::RoutingTableConsumer>>,
+}
+
+/// Plan 513: composes one outbound `DatabaseLookup` dispatch through the
+/// supplied outbound exploratory role and proves the dispatch traversed the
+/// tunnel path.
+///
+/// This is the coordinator's own outbound composition, factored out of
+/// [`NetDbTunnelCoordinator::compose_lookup_via_tunnel`] so Plan 513's live
+/// discovery spine can compose its outbound exploratory dispatch **without**
+/// constructing the coordinator. There is one composition, not two, and no
+/// second delivery path is introduced: the dispatch travels the canonical
+/// [`crate::outbound_lookup::compose_outbound_lookup`] cells.
+///
+/// Direct SSU2 `DatabaseLookup` delivery is never a counted path. The proof
+/// exists so a caller cannot substitute a direct-transport send for a
+/// counted row.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_lookup_via_outbound_tunnel<R: CryptoRng + RngCore>(
+    action: &LookupAction,
+    role: &OutboundGatewayRole,
+    message_id: u32,
+    expiration_ms: u64,
+    deadline: Deadline,
+    rng: &mut R,
+    now_ms: u64,
+) -> Result<
+    (
+        crate::outbound_lookup::OutboundLookupDispatch,
+        TunnelPathProof,
+    ),
+    NetDbTunnelError,
+> {
+    let (peer, lookup_key) = match action {
+        LookupAction::SendDatabaselookup { peer, message, .. } => {
+            (*peer, Hash::from_bytes(*message.key.as_bytes()))
+        }
+        _ => return Err(NetDbTunnelError::Outbound("not a send action".to_owned())),
+    };
+    let dispatch = crate::outbound_lookup::compose_outbound_lookup(
+        action,
+        role,
+        message_id,
+        expiration_ms,
+        deadline,
+        rng,
+        now_ms,
+    )
+    .map_err(|e| NetDbTunnelError::Outbound(e.to_string()))?;
+    // Prove the dispatch traversed the tunnel path: every delivery
+    // must decode as a complete short-transport TunnelData cell,
+    // the delivery target must equal the role's first hop, and the
+    // nested DatabaseLookup key must remain K.
+    let first = dispatch
+        .first()
+        .ok_or_else(|| NetDbTunnelError::Outbound("no delivery in dispatch".to_owned()))?;
+    let outer = I2npMessage::decode_short_transport(first.message_bytes(), MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|e| NetDbTunnelError::Outbound(format!("{e:?}")))?;
+    match outer.body() {
+        I2npBody::TunnelData(_) => {}
+        other => {
+            return Err(NetDbTunnelError::Outbound(format!(
+                "outer is not TunnelData: {:?}",
+                other.message_type()
+            )));
+        }
+    }
+    let expected_first = role.established().first_hop_router().hash();
+    if first.target() != i2pr_transport::PeerId::from_hash(expected_first) {
+        return Err(NetDbTunnelError::Outbound(
+            "delivery target is not the outbound first hop".to_owned(),
+        ));
+    }
+    let proof = TunnelPathProof {
+        cell_count: dispatch.cell_count,
+        first_hop: expected_first,
+        floodfill: Hash::from_bytes(*peer.as_bytes()),
+        lookup_key,
+        via_tunnel: true,
+    };
+    Ok((dispatch, proof))
 }
 
 impl NetDbTunnelCoordinator {
@@ -267,7 +364,27 @@ impl NetDbTunnelCoordinator {
             next_request_id: INITIAL_NETDB_REQUEST_ID,
             now_ms: 0,
             counters: NetDbTunnelCounters::default(),
+            routing_table: None,
         }
+    }
+
+    /// Attaches the floodfill-indexed routing table.
+    ///
+    /// Plan 497. With a table attached, a lookup first asks the table for
+    /// its closest-first verified floodfills. A table that cannot answer
+    /// falls back to the flat store's selection, and the fallback is
+    /// counted by reason — the flat store stays the authority.
+    pub fn with_routing_table(
+        mut self,
+        routing_table: Arc<crate::netdb_participation::RoutingTableConsumer>,
+    ) -> Self {
+        self.routing_table = Some(routing_table);
+        self
+    }
+
+    /// Returns the routing table this coordinator consults, if any.
+    pub fn routing_table(&self) -> Option<&Arc<crate::netdb_participation::RoutingTableConsumer>> {
+        self.routing_table.as_ref()
     }
 
     /// Returns the authoritative bounded store.
@@ -405,13 +522,34 @@ impl NetDbTunnelCoordinator {
             self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
             return Err(NetDbTunnelError::NoEligibleCandidates);
         }
+        // Plan 497: ask the floodfill-indexed routing table how it would
+        // order these candidates. The table is a cache of derived state
+        // and the flat store stays the authority, so the table's answer
+        // may only *reorder* the selection above — it can never remove a
+        // candidate the flat store could serve, and it can never add one
+        // the flat store would not have served. A table that cannot
+        // answer falls back to the flat store's selection, and the
+        // consumer counts the fallback by reason.
+        let preferred = match self.routing_table.as_ref() {
+            Some(table) => match table.candidates(&self.store, routing_key, &[]) {
+                crate::netdb_participation::RoutingTableCandidates::Table(preferred) => {
+                    Some(preferred)
+                }
+                crate::netdb_participation::RoutingTableCandidates::Fallback(_) => None,
+            },
+            None => None,
+        };
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.checked_add(1).expect("request id");
         self.seam
             .set_reply_path_provider(Box::new(StaticReplyProvider { path: reply_path }));
-        let action = self
-            .seam
-            .begin_lookup(&self.store, request_id, target, routing_key);
+        let action = self.seam.begin_lookup_with_preferred(
+            &self.store,
+            request_id,
+            target,
+            routing_key,
+            preferred.as_deref(),
+        );
         match action {
             LookupAction::SendDatabaselookup { lookup_id, .. } => {
                 let deadline_ms = self.now_ms.saturating_add(DEFAULT_LOOKUP_DEADLINE_MS);
@@ -443,6 +581,11 @@ impl NetDbTunnelCoordinator {
     /// supplied outbound role. The helper is the only counted lookup
     /// path; direct SSU2 `DatabaseLookup` delivery is never a counted
     /// success (see [`Self::note_direct_transport_attempt`]).
+    ///
+    /// The body is the coordinator's own composition, factored into
+    /// [`compose_lookup_via_outbound_tunnel`] so Plan 513's live discovery
+    /// spine can compose its outbound exploratory dispatch **without**
+    /// constructing this coordinator. There is one composition, not two.
     #[allow(clippy::too_many_arguments)]
     pub fn compose_lookup_via_tunnel<R: CryptoRng + RngCore>(
         &self,
@@ -460,13 +603,7 @@ impl NetDbTunnelCoordinator {
         ),
         NetDbTunnelError,
     > {
-        let (peer, lookup_key) = match action {
-            LookupAction::SendDatabaselookup { peer, message, .. } => {
-                (*peer, Hash::from_bytes(*message.key.as_bytes()))
-            }
-            _ => return Err(NetDbTunnelError::Outbound("not a send action".to_owned())),
-        };
-        let dispatch = crate::outbound_lookup::compose_outbound_lookup(
+        compose_lookup_via_outbound_tunnel(
             action,
             role,
             message_id,
@@ -475,40 +612,6 @@ impl NetDbTunnelCoordinator {
             rng,
             now_ms,
         )
-        .map_err(|e| NetDbTunnelError::Outbound(e.to_string()))?;
-        // Prove the dispatch traversed the tunnel path: every delivery
-        // must decode as a complete short-transport TunnelData cell,
-        // the delivery target must equal the role's first hop, and the
-        // nested DatabaseLookup key must remain K.
-        let first = dispatch
-            .first()
-            .ok_or_else(|| NetDbTunnelError::Outbound("no delivery in dispatch".to_owned()))?;
-        let outer =
-            I2npMessage::decode_short_transport(first.message_bytes(), MAX_I2NP_PAYLOAD_SIZE)
-                .map_err(|e| NetDbTunnelError::Outbound(format!("{e:?}")))?;
-        match outer.body() {
-            I2npBody::TunnelData(_) => {}
-            other => {
-                return Err(NetDbTunnelError::Outbound(format!(
-                    "outer is not TunnelData: {:?}",
-                    other.message_type()
-                )));
-            }
-        }
-        let expected_first = role.established().first_hop_router().hash();
-        if first.target() != i2pr_transport::PeerId::from_hash(expected_first) {
-            return Err(NetDbTunnelError::Outbound(
-                "delivery target is not the outbound first hop".to_owned(),
-            ));
-        }
-        let proof = TunnelPathProof {
-            cell_count: dispatch.cell_count,
-            first_hop: expected_first,
-            floodfill: Hash::from_bytes(*peer.as_bytes()),
-            lookup_key,
-            via_tunnel: true,
-        };
-        Ok((dispatch, proof))
     }
 
     /// Ingests one recovered `DatabaseStore` envelope into the lookup
@@ -710,15 +813,44 @@ impl NetDbTunnelCoordinator {
         self.publication.nearest_floodfills(&self.store)
     }
 
+    /// Returns the eligible DSM publication targets and the counted
+    /// API-version refusals.
+    ///
+    /// Plan 491. A floodfill whose published API version is unknown,
+    /// uncomparable, or below the DSM floor is never a publication target,
+    /// and each refusal is counted by reason.
+    pub fn nearest_eligible_floodfills(&self) -> FloodfillTargetSelection {
+        self.publication.nearest_eligible_floodfills(&self.store)
+    }
+
     /// Begins one publication attempt against the supplied floodfill
     /// peer. The peer must be an eligible floodfill in the
     /// authoritative store.
+    ///
+    /// Plan 491: the peer must also satisfy the DSM minimum-version floor.
+    /// A peer that publishes no comparable API version, or one below the
+    /// floor, is refused with
+    /// [`NetDbTunnelError::FloodfillRefusedByVersionFloor`]; the DSM is
+    /// never sent to it.
     pub fn begin_publication(
         &mut self,
         peer: RouterHash,
     ) -> Result<PublicationAttemptRecord, NetDbTunnelError> {
         if !self.is_floodfill(&peer) {
             return Err(NetDbTunnelError::NoEligibleCandidates);
+        }
+        let Some(record) = self.store.get(&peer) else {
+            return Err(NetDbTunnelError::NoEligibleCandidates);
+        };
+        let eligibility = dsm_target_eligibility(published_version_of(record));
+        if !eligibility.is_eligible() {
+            self.counters.publications_refused_by_version_floor = self
+                .counters
+                .publications_refused_by_version_floor
+                .saturating_add(1);
+            return Err(NetDbTunnelError::FloodfillRefusedByVersionFloor(
+                eligibility.reason_label(),
+            ));
         }
         let record = self
             .publication
@@ -874,6 +1006,61 @@ mod tests {
         assert_eq!(coord.pending_len(), 0);
     }
 
+    /// Plan 491: a floodfill below the DSM minimum-version floor is refused
+    /// with the matching typed reason, and the refusal is counted.
+    #[test]
+    fn a_floodfill_below_the_dsm_floor_is_refused() {
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_proto::{Date, Mapping};
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(0xE001);
+        let signer = RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let mut options = Mapping::builder();
+        options.insert("caps".to_owned(), "f".to_owned()).unwrap();
+        options
+            .insert("router.version".to_owned(), "0.9.61".to_owned())
+            .unwrap();
+        let info = signer
+            .sign_router_info(
+                Date::from_millis(60_000),
+                Vec::new(),
+                Vec::new(),
+                options.build().expect("options"),
+            )
+            .expect("sign");
+        let bytes = info
+            .encode_to_vec(MAX_COMMON_STRUCTURE_SIZE)
+            .expect("encode");
+
+        let mut coord =
+            NetDbTunnelCoordinator::new(LookupPolicy::default(), RouterInfoStoreConfig::default());
+        let key = coord
+            .bootstrap_reference_router_info(&bytes, Date::from_millis(60_000))
+            .expect("bootstrap");
+        assert!(coord.is_floodfill(&key));
+
+        // The DSM is never sent to a floodfill below the floor.
+        let error = coord.begin_publication(key).expect_err("must refuse");
+        assert_eq!(
+            error,
+            NetDbTunnelError::FloodfillRefusedByVersionFloor("below-floor")
+        );
+        assert_eq!(coord.counters().publications_refused_by_version_floor, 1);
+        assert_eq!(coord.counters().publications_started, 0);
+
+        // The floodfill is also not a publication target.
+        let local_signer = RouterIdentityBundle::generate(&mut rng).expect("local identity");
+        let local = i2pr_netdb::LocalRouterInfoBuilder::new(&local_signer)
+            .build_default(Date::from_millis(60_000))
+            .expect("local");
+        coord.register_local(local);
+        let selection = coord.nearest_eligible_floodfills();
+        assert!(selection.is_empty(), "{:?}", selection.targets());
+        assert_eq!(selection.refusals().below_floor, 1);
+    }
+
     #[test]
     fn direct_transport_is_never_counted() {
         let mut coord =
@@ -883,5 +1070,111 @@ mod tests {
             .expect_err("direct must reject");
         assert_eq!(error, NetDbTunnelError::DirectTransportRejected);
         assert_eq!(coord.counters().direct_rejections, 1);
+    }
+
+    /// Plan 497: the routing table may only **reorder** the flat store's
+    /// selection, never narrow it.
+    ///
+    /// The lane holds two floodfills. The routing table holds one of
+    /// them, so the table's peer leads the lookup. The other peer is
+    /// in the flat store only, and the lookup must still reach it: the
+    /// table changed the order, not the set.
+    #[test]
+    fn the_routing_table_reorders_the_selection_without_narrowing_it() {
+        use crate::netdb_participation::{
+            RoutingTableConfig, RoutingTableConsumer, RoutingTableDriver,
+        };
+        use i2pr_crypto::RouterIdentityBundle;
+        use i2pr_netdb::router_hash;
+        use i2pr_proto::{Date, Mapping};
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+        use std::sync::Arc;
+
+        const T0: u64 = 1_000;
+
+        fn signer(seed: u64) -> RouterIdentityBundle {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            RouterIdentityBundle::generate(&mut rng).expect("identity")
+        }
+
+        fn floodfill_bytes(signer: &RouterIdentityBundle) -> Vec<u8> {
+            let mut options = Mapping::builder();
+            options.insert("caps".to_owned(), "f".to_owned()).unwrap();
+            let info = signer
+                .sign_router_info(
+                    Date::from_millis(T0),
+                    Vec::new(),
+                    Vec::new(),
+                    options.build().expect("options"),
+                )
+                .expect("sign");
+            info.encode_to_vec(MAX_COMMON_STRUCTURE_SIZE)
+                .expect("encode")
+        }
+
+        let local = signer(0x4970_0001);
+        let alpha = signer(0x4970_0002);
+        let zeta = signer(0x4970_0003);
+        let theta = signer(0x4970_0004);
+        let alpha_key = router_hash(alpha.identity()).expect("hash");
+        let zeta_key = router_hash(zeta.identity()).expect("hash");
+        let theta_key = router_hash(theta.identity()).expect("hash");
+
+        let mut coord =
+            NetDbTunnelCoordinator::new(LookupPolicy::default(), RouterInfoStoreConfig::default());
+        coord.advance_time(T0);
+        coord
+            .bootstrap_reference_router_info(&floodfill_bytes(&alpha), Date::from_millis(T0))
+            .expect("alpha is admitted");
+        coord
+            .bootstrap_reference_router_info(&floodfill_bytes(&zeta), Date::from_millis(T0))
+            .expect("zeta is admitted");
+
+        // The routing table holds alpha only. The routing key is zeta's
+        // own key, so the flat store's nearest-first choice is zeta.
+        let mut driver = RoutingTableDriver::new(
+            router_hash(local.identity()).expect("hash"),
+            Date::from_millis(T0),
+            RoutingTableConfig::default(),
+        );
+        driver.advance_time(T0);
+        let record = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            i2pr_proto::RouterInfo::decode(&floodfill_bytes(&alpha), MAX_COMMON_STRUCTURE_SIZE)
+                .expect("decode"),
+            None,
+            i2pr_netdb::ValidationContext::new(Date::from_millis(T0)),
+        )
+        .expect("validate");
+        driver.index(&record);
+        let consumer = Arc::new(RoutingTableConsumer::new(driver, true));
+        let mut coord = coord.with_routing_table(Arc::clone(&consumer));
+
+        let path =
+            i2pr_netdb::ReplyPath::new(RouterHash::from_bytes([0x49; 32]), 7).expect("reply path");
+        let (_, action) = coord
+            .begin_tunnel_lookup(theta_key, &zeta_key, path)
+            .expect("the lookup is dispatchable");
+        let LookupAction::SendDatabaselookup { peer, .. } = action else {
+            panic!("expected SendDatabaselookup");
+        };
+        assert_eq!(
+            peer, alpha_key,
+            "the routing table's peer must lead the lookup"
+        );
+
+        // The store-only peer is still reachable: the table reordered
+        // the selection, it did not narrow it.
+        let store = &coord.store;
+        let action = coord.seam.advance_after_path(store, &zeta_key);
+        let LookupAction::SendDatabaselookup { peer, .. } = action else {
+            panic!("expected SendDatabaselookup");
+        };
+        assert_eq!(
+            peer, zeta_key,
+            "the store-only peer must still be asked after the table's peer"
+        );
+        assert_eq!(consumer.counters().answered, 1);
+        assert_eq!(consumer.counters().fell_back(), 0);
     }
 }

@@ -57,6 +57,14 @@ fn floodfill_info(
 ) -> i2pr_proto::RouterInfo {
     let mut options = Mapping::builder();
     options.insert("caps".to_owned(), "f".to_owned()).unwrap();
+    // Plan 491: a publication target must publish a comparable API version
+    // at or above the DSM minimum-version floor.
+    options
+        .insert(
+            "router.version".to_owned(),
+            i2pr_netdb::CONTROLLED_ROUTER_VERSION.to_owned(),
+        )
+        .unwrap();
     signer
         .sign_router_info(
             Date::from_millis(published_ms),

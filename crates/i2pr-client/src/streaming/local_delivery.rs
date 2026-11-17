@@ -1063,6 +1063,7 @@ mod tests {
             sequence: 0,
             send_stream_id: 0,
             receive_stream_id: 0,
+            kind: crate::streaming::transport::OutboundPacketKind::Datagram,
         }
     }
 

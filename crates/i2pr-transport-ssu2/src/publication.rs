@@ -25,6 +25,9 @@
 //! - introducers are included only when the policy explicitly allows
 //!   validated introducers (Plan 160 owns that evidence; the default
 //!   denies non-empty lists rather than silently dropping them);
+//! - an address that publishes introducers omits host/port and carries
+//!   the family capability the specification demands alongside them
+//!   (Plan 490);
 //! - output option entries are canonical (sorted by key) and
 //!   deterministic for identical inputs;
 //! - the snapshot carries the evidence expiry: publication must
@@ -95,6 +98,9 @@ pub enum PublicationError {
     /// The supplied introducers exceed the protocol bound.
     #[error("SSU2 publication carries too many introducers")]
     TooManyIntroducers,
+    /// The capability string cannot carry the required family flag.
+    #[error("SSU2 publication capabilities are invalid")]
+    InvalidCapabilities,
 }
 
 /// Why a snapshot build withheld publication.
@@ -120,6 +126,10 @@ impl fmt::Display for WithholdReason {
 pub enum PublicationOutcome {
     /// Publish a direct SSU2 address (host/port present).
     Direct(Ssu2PublicationSnapshot),
+    /// Publish the introducer-only form: no host/port, the introducer
+    /// groups, and the family capability the specification demands
+    /// alongside them (Plan 490).
+    IntroducerOnly(Ssu2PublicationSnapshot),
     /// Publish the firewalled form (no fabricated direct address).
     Firewalled(Ssu2PublicationSnapshot),
     /// Publish nothing for the supplied inputs.
@@ -161,10 +171,7 @@ impl Ssu2PublicationSnapshot {
 
     /// Returns whether a direct endpoint is present.
     pub const fn has_direct_endpoint(&self) -> bool {
-        matches!(
-            self.class,
-            Ssu2AddressClass::Direct | Ssu2AddressClass::DirectWithIntroducers
-        )
+        matches!(self.class, Ssu2AddressClass::Direct)
     }
 }
 
@@ -237,6 +244,22 @@ pub fn build_publication_snapshot(
     let direct_allowed = policy.allow_direct()
         && reachability.state == ReachabilityState::Reachable
         && endpoint.is_some();
+    // Plan 490: an address that publishes introducers omits host/port and
+    // carries the `4`/`6` family capability the specification demands
+    // alongside them. The rule follows the published introducer set, not
+    // a caller boolean; the reachability state still gates the direct
+    // form and the evidence expiry above.
+    if !introducers.is_empty() {
+        let family_caps = caps_with_family(caps, reachability.family)?;
+        return Ok(PublicationOutcome::IntroducerOnly(introducer_snapshot(
+            static_key,
+            intro_public,
+            mtu,
+            &family_caps,
+            introducers,
+            evidence_expires_secs,
+        )));
+    }
     if direct_allowed {
         let endpoint = endpoint.expect("checked");
         return Ok(PublicationOutcome::Direct(direct_snapshot(
@@ -245,7 +268,6 @@ pub fn build_publication_snapshot(
             endpoint,
             mtu,
             caps,
-            introducers,
             evidence_expires_secs,
         )));
     }
@@ -269,7 +291,6 @@ fn direct_snapshot(
     endpoint: Ssu2Endpoint,
     mtu: u16,
     caps: &Ssu2Capabilities,
-    introducers: &[Ssu2Introducer],
     evidence_expires_secs: u64,
 ) -> Ssu2PublicationSnapshot {
     let mut options = Vec::new();
@@ -278,30 +299,91 @@ fn direct_snapshot(
     }
     options.push(("host".to_owned(), endpoint.ip().to_string()));
     options.push(("i".to_owned(), encode_i2p_base64(&intro_public)));
-    for (index, introducer) in introducers.iter().enumerate() {
-        options.push((format!("ihost{index}"), introducer.ip().to_string()));
-        options.push((
-            format!("ikey{index}"),
-            encode_i2p_base64(introducer.intro_key().as_bytes()),
-        ));
-        options.push((format!("iport{index}"), introducer.port().to_string()));
-        options.push((format!("itag{index}"), introducer.relay_tag().to_string()));
-    }
     options.push(("mtu".to_owned(), mtu.to_string()));
     options.push(("port".to_owned(), endpoint.port().to_string()));
     options.push(("s".to_owned(), encode_i2p_base64(static_key.as_bytes())));
     options.push(("v".to_owned(), constants::SSU2_VERSION.to_string()));
     options.sort_by(|left, right| left.0.cmp(&right.0));
-    let class = if introducers.is_empty() {
-        Ssu2AddressClass::Direct
-    } else {
-        Ssu2AddressClass::DirectWithIntroducers
-    };
     Ssu2PublicationSnapshot {
-        class,
+        class: Ssu2AddressClass::Direct,
         options,
         evidence_expires_secs,
     }
+}
+
+/// Builds the specification's introducer-only address form.
+///
+/// The form omits `host`/`port` entirely, publishes the introducer
+/// groups the specification defines **for SSU2** (`ihN`/`iexpN`/`itagN`)
+/// together with the local intro and static keys, and carries the
+/// family capability the specification demands alongside introducers.
+/// The introducer order is the caller's validated order and is
+/// therefore deterministic.
+///
+/// The SSU 1 introducer groups (`ihostN`/`iportN`/`ikeyN`) are not used
+/// for SSU2: the introducer is identified by its router hash and
+/// resolved through the network database.
+fn introducer_snapshot(
+    static_key: StaticPublicKey,
+    intro_public: [u8; 32],
+    mtu: u16,
+    caps: &Ssu2Capabilities,
+    introducers: &[Ssu2Introducer],
+    evidence_expires_secs: u64,
+) -> Ssu2PublicationSnapshot {
+    let mut options = Vec::new();
+    if !caps.as_str().is_empty() {
+        options.push(("caps".to_owned(), caps.as_str().to_owned()));
+    }
+    options.push(("i".to_owned(), encode_i2p_base64(&intro_public)));
+    for (index, introducer) in introducers.iter().enumerate() {
+        options.push((
+            format!("ih{index}"),
+            encode_i2p_base64(introducer.peer_hash()),
+        ));
+        // The expiry is optional in the specification's address table. A
+        // zero expiry means "not published" and is omitted rather than
+        // written as the epoch, which would read as already expired.
+        if introducer.expires_secs() != 0 {
+            options.push((
+                format!("iexp{index}"),
+                introducer.expires_secs().to_string(),
+            ));
+        }
+        options.push((format!("itag{index}"), introducer.relay_tag().to_string()));
+    }
+    options.push(("mtu".to_owned(), mtu.to_string()));
+    options.push(("s".to_owned(), encode_i2p_base64(static_key.as_bytes())));
+    options.push(("v".to_owned(), constants::SSU2_VERSION.to_string()));
+    options.sort_by(|left, right| left.0.cmp(&right.0));
+    Ssu2PublicationSnapshot {
+        class: Ssu2AddressClass::IntroducerOnly,
+        options,
+        evidence_expires_secs,
+    }
+}
+
+/// Returns the caller's capabilities with the reachability family's
+/// capability flag guaranteed present.
+///
+/// The builder adds only the family flag the specification requires
+/// alongside introducers; it never invents a role capability (`B`, `C`)
+/// and never drops a flag the caller asked for.
+fn caps_with_family(
+    caps: &Ssu2Capabilities,
+    family: i2pr_transport::AddressFamily,
+) -> Result<Ssu2Capabilities, PublicationError> {
+    let required = match family {
+        i2pr_transport::AddressFamily::Ipv4 | i2pr_transport::AddressFamily::Unknown => '4',
+        i2pr_transport::AddressFamily::Ipv6 => '6',
+    };
+    if caps.as_str().contains(required) {
+        return Ok(caps.clone());
+    }
+    let mut value = String::with_capacity(caps.as_str().len() + 1);
+    value.push(required);
+    value.push_str(caps.as_str());
+    Ssu2Capabilities::parse(&value).map_err(|_| PublicationError::InvalidCapabilities)
 }
 
 fn firewalled_snapshot(
@@ -488,9 +570,7 @@ mod tests {
 
     #[test]
     fn unvalidated_introducers_are_rejected_not_dropped() {
-        let introducer =
-            Ssu2Introducer::new(endpoint(), AddressIntroKey::new(INTRO).expect("intro"), 7)
-                .expect("introducer");
+        let introducer = Ssu2Introducer::new([0x5A; 32], 1_800_000_000, 7).expect("introducer");
         let outcome = build_publication_snapshot(PublicationRequest {
             policy: PublicationPolicy::new(true, false),
             static_public: STATIC,
@@ -588,6 +668,178 @@ mod tests {
         };
         for (key, _value) in firewalled_snapshot.option_entries() {
             assert_ne!(key, "pq", "i2pr must never publish pq");
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Plan 490 — the specification's introducer-only address form.
+    // -------------------------------------------------------------------
+
+    /// One SSU2 introducer: the introducer's router hash, its expiry and
+    /// its relay tag. The SSU 1 tuple has no place in an SSU2 address.
+    fn introducer(index: u8, tag: u32) -> Ssu2Introducer {
+        Ssu2Introducer::new([0x30 + index; 32], 1_800_000_000 + u64::from(index), tag)
+            .expect("introducer")
+    }
+
+    fn build_with_introducers(
+        policy: PublicationPolicy,
+        state: ReachabilitySnapshot,
+        caps: &Ssu2Capabilities,
+        introducers: &[Ssu2Introducer],
+    ) -> Result<PublicationOutcome, PublicationError> {
+        build_publication_snapshot(PublicationRequest {
+            policy,
+            static_public: STATIC,
+            intro_public: INTRO,
+            endpoint: Some(endpoint()),
+            reachability: state,
+            mtu: 1280,
+            caps,
+            introducers,
+            now_secs: 100,
+            evidence_expires_secs: 3600,
+        })
+    }
+
+    #[test]
+    fn the_introducer_only_form_omits_host_and_port() {
+        let introducers = [introducer(1, 11), introducer(2, 12)];
+        let outcome = build_with_introducers(
+            PublicationPolicy::new(true, true),
+            unconfirmed_snapshot(),
+            &Ssu2Capabilities::empty(),
+            &introducers,
+        )
+        .expect("build");
+        let PublicationOutcome::IntroducerOnly(snapshot) = outcome else {
+            panic!("expected the introducer-only form");
+        };
+        assert_eq!(snapshot.address_class(), Ssu2AddressClass::IntroducerOnly);
+        assert!(!snapshot.has_direct_endpoint());
+        let keys: Vec<&str> = snapshot
+            .option_entries()
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert!(!keys.contains(&"host"), "an introducer address omits host");
+        assert!(!keys.contains(&"port"), "an introducer address omits port");
+        assert!(keys.contains(&"caps"));
+        assert!(keys.contains(&"i"));
+        assert!(keys.contains(&"s"));
+        assert!(keys.contains(&"v"));
+        for index in 0..introducers.len() {
+            assert!(keys.contains(&format!("ih{index}").as_str()));
+            assert!(keys.contains(&format!("iexp{index}").as_str()));
+            assert!(keys.contains(&format!("itag{index}").as_str()));
+        }
+        // The SSU 1 introducer options are not part of an SSU2 address.
+        for key in keys {
+            assert!(
+                !key.starts_with("ihost") && !key.starts_with("iport") && !key.starts_with("ikey"),
+                "an SSU2 address carries no SSU 1 introducer option: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_introducer_only_form_carries_the_family_capability() {
+        let introducers = [introducer(1, 11)];
+        let outcome = build_with_introducers(
+            PublicationPolicy::new(true, true),
+            unconfirmed_snapshot(),
+            &Ssu2Capabilities::empty(),
+            &introducers,
+        )
+        .expect("build");
+        let PublicationOutcome::IntroducerOnly(snapshot) = outcome else {
+            panic!("expected the introducer-only form");
+        };
+        let caps = snapshot
+            .option_entries()
+            .iter()
+            .find(|(key, _)| key == "caps")
+            .map(|(_, value)| value.clone())
+            .expect("caps option");
+        assert!(caps.contains('4'), "the IPv4 posture publishes `4`");
+        assert!(!caps.contains('6'));
+        let parsed = parse_snapshot(&snapshot).expect("parse");
+        assert!(parsed.capabilities().supports_ipv4());
+        assert!(!parsed.capabilities().supports_ipv6());
+    }
+
+    #[test]
+    fn the_introducer_only_form_round_trips_through_the_strict_parser() {
+        let introducers = [introducer(1, 11), introducer(2, 12), introducer(3, 13)];
+        let outcome = build_with_introducers(
+            PublicationPolicy::new(true, true),
+            unconfirmed_snapshot(),
+            &Ssu2Capabilities::empty(),
+            &introducers,
+        )
+        .expect("build");
+        let PublicationOutcome::IntroducerOnly(snapshot) = outcome else {
+            panic!("expected the introducer-only form");
+        };
+        let parsed = parse_snapshot(&snapshot).expect("parse");
+        assert_eq!(parsed.address_class(), Ssu2AddressClass::IntroducerOnly);
+        assert_eq!(parsed.endpoint(), None);
+        assert_eq!(parsed.introducers().len(), 3);
+        // The deterministic order is the validated order.
+        for (index, introducer) in parsed.introducers().iter().enumerate() {
+            assert_eq!(introducer.relay_tag(), introducers[index].relay_tag());
+            assert_eq!(introducer.peer_hash(), introducers[index].peer_hash());
+            assert_eq!(introducer.expires_secs(), introducers[index].expires_secs());
+        }
+    }
+
+    #[test]
+    fn the_introducer_only_form_refuses_more_than_three_introducers() {
+        let introducers = [
+            introducer(1, 11),
+            introducer(2, 12),
+            introducer(3, 13),
+            introducer(4, 14),
+        ];
+        let outcome = build_with_introducers(
+            PublicationPolicy::new(true, true),
+            unconfirmed_snapshot(),
+            &Ssu2Capabilities::empty(),
+            &introducers,
+        );
+        assert_eq!(outcome, Err(PublicationError::TooManyIntroducers));
+    }
+
+    #[test]
+    fn the_introducer_only_form_is_deterministic() {
+        let introducers = [introducer(1, 11), introducer(2, 12)];
+        let policy = PublicationPolicy::new(true, true);
+        let caps = Ssu2Capabilities::empty();
+        let first = build_with_introducers(policy, unconfirmed_snapshot(), &caps, &introducers)
+            .expect("build");
+        let second = build_with_introducers(policy, unconfirmed_snapshot(), &caps, &introducers)
+            .expect("build");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn the_introducer_only_form_never_publishes_a_floodfill_capability() {
+        let introducers = [introducer(1, 11)];
+        let outcome = build_with_introducers(
+            PublicationPolicy::new(true, true),
+            unconfirmed_snapshot(),
+            &Ssu2Capabilities::empty(),
+            &introducers,
+        )
+        .expect("build");
+        let PublicationOutcome::IntroducerOnly(snapshot) = outcome else {
+            panic!("expected the introducer-only form");
+        };
+        for (key, value) in snapshot.option_entries() {
+            assert_ne!(key, "pq");
+            if key == "caps" {
+                assert!(!value.contains('f'), "i2pr never publishes caps=f");
+            }
         }
     }
 }

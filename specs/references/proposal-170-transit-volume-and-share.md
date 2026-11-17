@@ -100,19 +100,21 @@ share and is labelled as such wherever it is published.
 
 ## 4. The posture owner, and why the zeros are not a fabrication
 
-Ordinary product profiles never construct a transit data-plane owner. Production
-composition consults `crate::transit_owner::controlled_transit_disabled_probe` so
-the live-owner module has a production caller without dispatching, and
-`scripts/check-m11-transit-boundaries.sh` rule 10 pins that shape. A production
-i2pr router therefore relays nothing.
+The **default** product profile never constructs a transit data-plane owner.
+The composition root publishes `TransitParticipation::Disabled`, which holds
+no counters, so the honest answer for all three selectors is `0`, `0`, and
+`0.0`. Plan 502 made the *participating* profile reachable: when the
+operator opts in, the SSU2 service installs the owner and republishes the
+posture as `Enabled` with that service's own counters. Either way the posture
+— not the instrumentation — decides what the router reports.
 
 `TransitParticipation` is the owner these selectors read, and it is always
 installed by the composition root:
 
 | Variant | Counters | Reported volume |
 |---|---|---|
-| `Disabled` (the product posture) | **none exist** | `0` / `0` / `0.0` |
-| `Enabled(Arc<Mutex<TransitVolumeCounters>>)` (controlled lane only) | real, advanced by the forward path | measured |
+| `Disabled` (the default posture) | **none exist** | `0` / `0` / `0.0` |
+| `Enabled(Arc<Mutex<TransitVolumeCounters>>)` (an opted-in profile) | real, advanced by the forward path | measured |
 
 The disabled variant holds no counters, so it is **structurally incapable** of
 reporting a non-zero value. This is the difference between a posture and a

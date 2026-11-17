@@ -23,11 +23,17 @@ use i2pr_daemon::transit_owner::{
     LiveBuildOutcome, LiveGatewayOutcome, LiveInboundOutcome, ObepDeliveryOutcome,
     TransitDataDisposition, TransitLiveError, TransitLiveOwner, TransitOwner,
 };
+use i2pr_daemon::transit_participation::{
+    TransitParticipationBinding, TransitParticipationOwner, TransitParticipationPolicy,
+};
 use i2pr_proto::{
     Date, DeferredBuildRecords, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
     TunnelDataMessage, TunnelGatewayMessage,
 };
-use i2pr_runtime::{CancellationToken, Ssu2InboundI2np, Ssu2RuntimeConfig};
+use i2pr_runtime::{
+    BandwidthGovernor, BandwidthGovernorConfig, CancellationToken, Ssu2InboundI2np,
+    Ssu2RuntimeConfig,
+};
 use i2pr_transport::{LinkId, PeerId};
 use i2pr_tunnel::build_crypto::{EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography};
 use i2pr_tunnel::identity::TunnelId;
@@ -66,6 +72,34 @@ fn service_for_test() -> TransitBuildService {
     let policy = TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 2, 1, 64, None)
         .expect("policy");
     TransitBuildService::new(hop_material, policy, 4, router_delivery()).expect("service")
+}
+
+/// The M11 qualification posture.
+///
+/// Plan 492: the transit machinery is admitted only through a participation
+/// posture. The M11 lane qualifies the *machinery*, so it installs the
+/// loosest bounded posture: the transit service's own admission policy
+/// (`max_active = 4`, `max_active_per_peer = 2`) stays the governing limit,
+/// and the posture's share budget is wide enough that the lane's cells are
+/// never refused for share.
+fn participation_for_test() -> TransitParticipationBinding {
+    let governor = BandwidthGovernor::new(BandwidthGovernorConfig {
+        inbound_bytes_per_second: 1024 * 1024,
+        outbound_bytes_per_second: 1024 * 1024,
+        burst_bytes: 64 * 1024,
+        control_reserve_percent: 10,
+        max_pending_requests: 16,
+        max_pending_per_peer: 2,
+    })
+    .expect("valid governor");
+    let policy = TransitParticipationPolicy::new(
+        100,
+        i2pr_daemon::config::MAX_TRANSIT_PARTICIPATING_TUNNELS,
+        i2pr_daemon::config::MAX_TRANSIT_PEER_PARTICIPATION_CAP,
+    )
+    .expect("bounded posture");
+    let owner = TransitParticipationOwner::new(policy, Some(&governor), 100).expect("posture");
+    TransitParticipationBinding::new(owner, Some(governor))
 }
 
 fn live_owner_for_test() -> TransitLiveOwner<ChaCha8Rng> {
@@ -249,7 +283,7 @@ fn plan254_a2_dispatch_receives_exact_body() {
 #[test]
 fn plan254_a3_production_owner_traversal() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     assert!(owner.is_enabled());
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
@@ -270,7 +304,7 @@ fn plan254_a3_production_owner_traversal() {
 #[test]
 fn plan254_a4_transit_tunnel_data_reachable_through_pump() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     // Install a transit registration first through a live STBM.
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
@@ -306,7 +340,7 @@ fn plan254_a4_transit_tunnel_data_reachable_through_pump() {
 #[test]
 fn plan254_a5_obep_deliver_reaches_local_sink() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let seen: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_clone = Arc::clone(&seen);
     owner.install_local_sink(move |action| {
@@ -339,7 +373,7 @@ fn plan254_a5_obep_deliver_reaches_local_sink() {
 #[test]
 fn plan254_a6_ibgw_gateway_has_live_owner_path() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     // Unknown gateway tunnel id fails closed through the live pump.
     let nested = I2npMessage::new_standard(
         0xC0DE,
@@ -426,7 +460,7 @@ fn plan254_b10_otbrm_never_yields_build_body() {
     assert!(bodies.short_build_body.is_none());
     // The live owner ignores replies.
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let outcome = owner
         .handle_inbound(
             &inbound_with(
@@ -515,7 +549,7 @@ fn plan254_c14_disabled_preserves_reserved() {
 #[test]
 fn plan254_c15_enabled_invokes_transit_once() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
     let payload = stbm_payload_for(&probe, &record);
@@ -548,8 +582,8 @@ fn plan254_c16_peer_link_match_inbound() {
 #[test]
 fn plan254_c17_creator_bypass() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
-    owner.install_creator_build(test_peer(), MESSAGE_ID);
+    owner.enable(service_for_test(), participation_for_test());
+    owner.install_creator_build(test_peer(), MESSAGE_ID, NOW_MS);
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
     let payload = stbm_payload_for(&probe, &record);
@@ -573,7 +607,7 @@ fn plan254_c18_policy_rejection_terminal() {
     let policy = TransitAdmissionPolicy::disabled();
     let service =
         TransitBuildService::new(hop_material, policy, 4, router_delivery()).expect("service");
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
     let payload = stbm_payload_for(&probe, &record);
@@ -593,7 +627,7 @@ fn plan254_c18_policy_rejection_terminal() {
 #[test]
 fn plan254_c19_c20_commit_and_rollback_through_live_owner() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let probe = service_for_test();
     // Use a next-router with no peer mapping so delivery reports a
     // terminal non-Accepted outcome and rolls back.
@@ -616,7 +650,7 @@ fn plan254_c19_c20_commit_and_rollback_through_live_owner() {
 #[test]
 fn plan254_c21_outer_cancellation_drains() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     owner.cancel();
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
@@ -635,8 +669,8 @@ fn plan254_c21_outer_cancellation_drains() {
 #[test]
 fn plan254_d22_creator_data_never_reaches_transit() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
-    owner.install_creator_data(0x1000);
+    owner.enable(service_for_test(), participation_for_test());
+    owner.install_creator_data(0x1000, NOW_MS);
     let cell = TunnelDataMessage {
         tunnel_id: 0x1000,
         data: [0xAA; 1024],
@@ -660,7 +694,7 @@ fn plan254_d22_creator_data_never_reaches_transit() {
 #[test]
 fn plan254_d23_transit_data_exactly_once() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
     let payload = stbm_payload_for(&probe, &record);
@@ -696,7 +730,7 @@ fn plan254_d23_transit_data_exactly_once() {
 #[test]
 fn plan254_d24_unknown_id_fails_closed() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let cell = TunnelDataMessage {
         tunnel_id: 0x9999,
         data: [0x00; 1024],
@@ -721,7 +755,7 @@ fn plan254_d24_unknown_id_fails_closed() {
 #[test]
 fn plan254_d25_wrong_peer_no_fallback() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
     let payload = stbm_payload_for(&probe, &record);
@@ -759,7 +793,7 @@ fn plan254_d25_wrong_peer_no_fallback() {
 #[test]
 fn plan254_e27_local_reaches_consumer() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let seen: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
     let clone = Arc::clone(&seen);
     owner.install_local_sink(move |action| {
@@ -786,7 +820,7 @@ fn plan254_e27_local_reaches_consumer() {
 #[test]
 fn plan254_e28_router_bounded_delivery() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let action = RouterDeliveryAction {
         target_router: Hash::from_bytes([0x02; 32]),
         kind: RouterDeliveryKind::Router,
@@ -816,7 +850,7 @@ fn plan254_e28_router_bounded_delivery() {
 #[test]
 fn plan254_e29_tunnel_preserves_target() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let nested = I2npMessage::new_standard(
         0xA3,
         Date::from_millis(NOW_MS + 60_000),
@@ -849,7 +883,7 @@ fn plan254_e29_tunnel_preserves_target() {
 #[test]
 fn plan254_e30_local_without_sink_is_explicit() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let action = RouterDeliveryAction {
         target_router: Hash::from_bytes([0x01; 32]),
         kind: RouterDeliveryKind::Local,
@@ -869,7 +903,7 @@ fn plan254_e30_local_without_sink_is_explicit() {
 #[test]
 fn plan254_f33_unknown_gateway_fails_closed() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let nested = I2npMessage::new_standard(
         0xC0DE,
         Date::from_millis(NOW_MS + 60_000),
@@ -906,8 +940,8 @@ fn plan254_f33_unknown_gateway_fails_closed() {
 #[test]
 fn plan254_f35_creator_gateway_bypass() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
-    owner.install_creator_gateway(0x4321);
+    owner.enable(service_for_test(), participation_for_test());
+    owner.install_creator_gateway(0x4321, NOW_MS);
     let nested = I2npMessage::new_standard(
         0xC0DE,
         Date::from_millis(NOW_MS + 60_000),
@@ -944,7 +978,7 @@ fn plan254_f35_creator_gateway_bypass() {
 #[test]
 fn plan254_f36_cancel_stops_gateway_delivery() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     owner.cancel();
     let nested = I2npMessage::new_standard(
         0xC0DE,
@@ -987,7 +1021,7 @@ fn plan254_f36_cancel_stops_gateway_delivery() {
 #[test]
 fn plan254_g39_cancel_drains_immediately() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
     let payload = stbm_payload_for(&probe, &record);
@@ -1026,7 +1060,7 @@ fn plan254_g40_session_close_removes_peer() {
 #[test]
 fn plan254_g41_cancelled_build_leaves_no_registration() {
     let mut owner = live_owner_for_test();
-    owner.enable(service_for_test());
+    owner.enable(service_for_test(), participation_for_test());
     owner.cancel();
     let probe = service_for_test();
     let record = participant_record(Hash::from_bytes([0xAA; 32]), 0x1000, 0x2000, MESSAGE_ID);
@@ -1094,7 +1128,7 @@ fn owner_with_live_ibgw_for_self_test(receive_id: u32) -> TransitLiveOwner<ChaCh
         "IBGW install must accept"
     );
     let mut owner = live_owner_for_test();
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     owner
 }
 
@@ -1168,7 +1202,7 @@ fn m11_i2pr_self_tunnel_non_ibgw_drops_unit() {
     let creator = PeerId::from_bytes([0xAA; 32]);
     let _ = service.route_short_build(&payload, &creator, NOW_SECONDS, &mut rng);
     let mut owner = live_owner_for_test();
-    owner.enable(service);
+    owner.enable(service, participation_for_test());
     let local = Hash::from_bytes([0x55; 32]);
     let nested = nested_standard_for_self_test();
     let action = RouterDeliveryAction {

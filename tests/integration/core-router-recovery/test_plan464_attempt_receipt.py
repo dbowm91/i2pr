@@ -101,6 +101,24 @@ class AttemptReceiptTests(unittest.TestCase):
         self.assertEqual(receipt["owner_eviction_removed_owner"], 1)
         self.assertEqual(receipt["owner_eviction_removed_receive"], 1)
 
+    def test_bootstrap_outbound_commit_counts_as_install(self):
+        # Plan 478 (run 0h6f38y_): the bootstrap install used to be
+        # silent, so a bootstrap-only run read as
+        # match-without-install. The bootstrap path now emits the
+        # same install_committed shape as the service sites; a
+        # bootstrap match + commit with no service lines must read
+        # install_committed_attempts=1.
+        receipt = parse_attempt_receipt_lines(
+            [
+                'INFO destination build attempt build_attempt_id=1 '
+                'direction=Outbound transition="authenticated_reply_matched"',
+                'INFO destination build attempt build_attempt_id=1 '
+                'direction=Outbound transition="install_committed"',
+            ]
+        )
+        self.assertEqual(receipt["response_matched_attempts"], 1)
+        self.assertEqual(receipt["install_committed_attempts"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

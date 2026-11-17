@@ -400,6 +400,7 @@ mod tests {
             sequence: 7,
             send_stream_id: 11,
             receive_stream_id: 13,
+            kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
         }
     }
 

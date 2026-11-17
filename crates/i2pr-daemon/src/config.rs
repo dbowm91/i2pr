@@ -25,6 +25,32 @@ const MAX_ALLOWED_NETDB_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ALLOWED_RESEED_SOURCES: usize = 16;
 const MAX_ALLOWED_RESEED_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ALLOWED_BOOTSTRAP_RECORDS: u64 = 65_536;
+/// Plan 489: the largest routing table the daemon accepts.
+const MAX_ALLOWED_ROUTING_TABLE_ENTRIES: u64 = 16_384;
+/// Plan 489: the largest routing-table bucket the daemon accepts.
+const MAX_ALLOWED_ROUTING_TABLE_BUCKET_SIZE: u64 = 64;
+/// Plan 489: the largest exploration peer budget the daemon accepts.
+const MAX_ALLOWED_EXPLORATION_PEERS: u64 = 64;
+/// Plan 489: the longest exploration the daemon accepts, in
+/// milliseconds.
+const MAX_ALLOWED_EXPLORATION_DEADLINE_MS: u64 = 3_600_000;
+/// Plan 489: the shortest exploration the daemon accepts, in
+/// milliseconds.
+const MIN_EXPLORATION_DEADLINE_MS: u64 = 1_000;
+/// Plan 497: the longest participation maintenance cadence the daemon
+/// accepts, in milliseconds.
+///
+/// The ceiling is the participation driver's own `MAX_MAINTENANCE_PERIOD`
+/// (one hour). A cadence above it is refused by the driver itself, so the
+/// configuration refuses it first and names the field.
+const MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS: u64 = 3_600_000;
+/// Plan 497: the shortest participation maintenance cadence the daemon
+/// accepts, in milliseconds.
+///
+/// One second keeps the cadence loop from becoming a busy loop. The
+/// driver's own store still decides when a maintenance pass is actually
+/// due; this bound only refuses a cadence that could spin.
+const MIN_PARTICIPATION_MAINTENANCE_PERIOD_MS: u64 = 1_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +91,10 @@ struct RawConfig {
     floodfill: RawFloodfillConfig,
     #[serde(default)]
     bandwidth: RawBandwidthConfig,
+    #[serde(default)]
+    transit: RawTransitConfig,
+    #[serde(default)]
+    exploratory: RawExploratoryConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,6 +236,35 @@ struct RawNetDbConfig {
     min_router_infos: u64,
     #[serde(default = "default_netdb_min_floodfill_advertisers")]
     min_floodfill_advertisers: u64,
+    /// Plan 489: whether the floodfill-indexed routing table is active.
+    #[serde(default = "default_netdb_routing_table_enabled")]
+    routing_table_enabled: bool,
+    /// Plan 489: the maximum number of peers the routing table holds.
+    #[serde(default = "default_netdb_routing_table_max_entries")]
+    routing_table_max_entries: u64,
+    /// Plan 489: the maximum number of peers one routing-table bucket
+    /// holds.
+    #[serde(default = "default_netdb_routing_table_max_bucket_size")]
+    routing_table_max_bucket_size: u64,
+    /// Plan 489: whether the router runs exploratory lookups.
+    #[serde(default = "default_netdb_exploration_enabled")]
+    exploration_enabled: bool,
+    /// Plan 489: the maximum number of peers one exploration may query.
+    #[serde(default = "default_netdb_exploration_max_peers")]
+    exploration_max_peers: u64,
+    /// Plan 489: the maximum lifetime of one exploration, in
+    /// milliseconds.
+    #[serde(default = "default_netdb_exploration_deadline_ms")]
+    exploration_deadline_ms: u64,
+    /// Plan 497: the cadence of the NetDB participation maintenance owner,
+    /// in milliseconds.
+    ///
+    /// The cadence is the period at which the daemon wakes the
+    /// participation owner. It is bounded on both sides: a zero or
+    /// sub-second cadence is refused, and so is one above the driver's
+    /// own one-hour ceiling.
+    #[serde(default = "default_netdb_participation_maintenance_period_ms")]
+    participation_maintenance_period_ms: u64,
 }
 
 impl Default for RawNetDbConfig {
@@ -216,6 +275,14 @@ impl Default for RawNetDbConfig {
             max_encoded_bytes: default_netdb_max_encoded_bytes(),
             min_router_infos: default_netdb_min_router_infos(),
             min_floodfill_advertisers: default_netdb_min_floodfill_advertisers(),
+            routing_table_enabled: default_netdb_routing_table_enabled(),
+            routing_table_max_entries: default_netdb_routing_table_max_entries(),
+            routing_table_max_bucket_size: default_netdb_routing_table_max_bucket_size(),
+            exploration_enabled: default_netdb_exploration_enabled(),
+            exploration_max_peers: default_netdb_exploration_max_peers(),
+            exploration_deadline_ms: default_netdb_exploration_deadline_ms(),
+            participation_maintenance_period_ms: default_netdb_participation_maintenance_period_ms(
+            ),
         }
     }
 }
@@ -569,10 +636,29 @@ struct RawSsu2Config {
     port: u16,
     #[serde(default = "default_ssu2_advertise")]
     advertise: bool,
+    /// Plan 546: permit publication of the router's own **bound** SSU2
+    /// address. Off by default; see `Ssu2Config::publish_bound_address`.
+    #[serde(default = "default_ssu2_publish_bound_address")]
+    publish_bound_address: bool,
     #[serde(default = "default_ssu2_introducer_service")]
     introducer_service: bool,
+    #[serde(default = "default_ssu2_peer_test")]
+    peer_test: bool,
+    #[serde(default = "default_ssu2_peer_pool")]
+    peer_pool: bool,
+    #[serde(default = "default_ssu2_introducer_request")]
+    introducer_request: bool,
+    #[serde(default = "default_ssu2_relay_requester")]
+    relay_requester: bool,
+    #[serde(default = "default_ssu2_relay_target")]
+    relay_target: bool,
     #[serde(default = "default_ssu2_qualification_profile")]
     qualification_profile: String,
+    /// Optional destination for the Plan 476 sanitized local receipt
+    /// export. Absent by default: no export, no file, no observer
+    /// readout. Honoured only under an explicit qualification profile.
+    #[serde(default)]
+    qualification_receipt_path: Option<String>,
     #[serde(default = "default_ssu2_max_pending_handshakes")]
     max_pending_handshakes: usize,
     #[serde(default = "default_ssu2_max_active_sessions")]
@@ -603,8 +689,15 @@ impl Default for RawSsu2Config {
             bind_ipv6: default_ssu2_bind_ipv6(),
             port: default_ssu2_port(),
             advertise: default_ssu2_advertise(),
+            publish_bound_address: default_ssu2_publish_bound_address(),
             introducer_service: default_ssu2_introducer_service(),
+            peer_test: default_ssu2_peer_test(),
+            peer_pool: default_ssu2_peer_pool(),
+            introducer_request: default_ssu2_introducer_request(),
+            relay_requester: default_ssu2_relay_requester(),
+            relay_target: default_ssu2_relay_target(),
             qualification_profile: default_ssu2_qualification_profile(),
+            qualification_receipt_path: None,
             max_pending_handshakes: default_ssu2_max_pending_handshakes(),
             max_active_sessions: default_ssu2_max_active_sessions(),
             max_pending_per_ip: default_ssu2_max_pending_per_ip(),
@@ -867,12 +960,87 @@ impl Default for RawFloodfillConfig {
     }
 }
 
+/// The operator-controlled transit participation posture (Plan 492).
+///
+/// The section is a **posture**, not an advertisement: it never publishes the
+/// transit role, never lowers a protocol floor, and never reaches the
+/// network on its own. `participation` is the single switch and it is
+/// **off by default**; a router that has never set it does not relay another
+/// router's tunnel traffic.
+///
+/// The three limits are bounded by named constants
+/// ([`MAX_TRANSIT_SHARE_LIMIT_PERCENT`], [`MAX_TRANSIT_PARTICIPATING_TUNNELS`],
+/// [`MAX_TRANSIT_PEER_PARTICIPATION_CAP`]) and validated before any
+/// listener or owner is constructed.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTransitConfig {
+    #[serde(default)]
+    participation: bool,
+    #[serde(default = "default_transit_share_limit")]
+    share_limit: u8,
+    #[serde(default = "default_transit_participating_tunnels")]
+    participating_tunnels: usize,
+    #[serde(default = "default_transit_peer_participation_cap")]
+    peer_participation_cap: usize,
+}
+
+impl Default for RawTransitConfig {
+    fn default() -> Self {
+        Self {
+            participation: false,
+            share_limit: default_transit_share_limit(),
+            participating_tunnels: default_transit_participating_tunnels(),
+            peer_participation_cap: default_transit_peer_participation_cap(),
+        }
+    }
+}
+
+/// The operator-controlled exploratory build posture (Plan 505).
+///
+/// The posture is a **posture**, not an advertisement: it never publishes the
+/// exploratory role, never lowers a protocol floor, and never reaches the
+/// network on its own. `builds` is the single switch and it is **off by
+/// default**; a router that has never set it builds no exploratory tunnel.
+///
+/// The posture is off by default for a concrete reason, not out of caution.
+/// The daemon's transport can only dial a peer it may legally reach — the
+/// SSU2 dial target is loopback-only and the private-LAN variant accepts
+/// only RFC1918 IPv4 — so a public deployment's peer population is not
+/// dialable at all. Enabling the posture is an explicit operator decision
+/// that this router should build exploratory tunnels inside the mesh it can
+/// actually reach.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExploratoryConfig {
+    #[serde(default)]
+    builds: bool,
+}
+
+fn default_transit_share_limit() -> u8 {
+    DEFAULT_TRANSIT_SHARE_LIMIT
+}
+
+fn default_transit_participating_tunnels() -> usize {
+    DEFAULT_TRANSIT_PARTICIPATING_TUNNELS
+}
+
+fn default_transit_peer_participation_cap() -> usize {
+    DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP
+}
+
 fn default_profile() -> String {
     String::from("balanced")
 }
 
+/// Smallest burst that fits one maximum NTCP2 data frame above the default
+/// control reserve: `ceil(65_537 * 100 / (100 - 10)) = 72_819` (Plan 484,
+/// branch (a)). The 64 KiB default could never construct a bandwidth-enabled
+/// NTCP2 owner, so no working configuration changes shape. Raising
+/// `control_reserve_percent` can push the required minimum above this
+/// default; that path stays fail-closed at NTCP2 construction time.
 const fn default_bandwidth_burst_bytes() -> u64 {
-    64 * 1024
+    72_819
 }
 
 const fn default_bandwidth_control_reserve_percent() -> u8 {
@@ -989,6 +1157,39 @@ const fn default_netdb_min_router_infos() -> u64 {
 
 const fn default_netdb_min_floodfill_advertisers() -> u64 {
     5
+}
+
+const fn default_netdb_routing_table_enabled() -> bool {
+    false
+}
+
+const fn default_netdb_routing_table_max_entries() -> u64 {
+    1_024
+}
+
+const fn default_netdb_routing_table_max_bucket_size() -> u64 {
+    8
+}
+
+const fn default_netdb_exploration_enabled() -> bool {
+    false
+}
+
+const fn default_netdb_exploration_max_peers() -> u64 {
+    8
+}
+
+const fn default_netdb_exploration_deadline_ms() -> u64 {
+    30_000
+}
+
+/// Plan 497: the default cadence of the NetDB participation maintenance
+/// owner, in milliseconds.
+///
+/// One minute matches the peer-profile store's own maintenance interval,
+/// so one daemon tick is one due maintenance pass.
+const fn default_netdb_participation_maintenance_period_ms() -> u64 {
+    60_000
 }
 
 const fn default_reseed_enabled() -> bool {
@@ -1241,7 +1442,49 @@ const fn default_ssu2_advertise() -> bool {
     false
 }
 
+/// Plan 546: publishing the bound address is an explicit operator
+/// statement that the host is directly reachable at its bind, so it is
+/// off by default.
+const fn default_ssu2_publish_bound_address() -> bool {
+    false
+}
+
 const fn default_ssu2_introducer_service() -> bool {
+    false
+}
+
+/// Plan 521: the router's own peer test is an explicit opt-in and it is
+/// **off** by default, so a router that has not asked for reachability
+/// evidence never generates probe traffic.
+const fn default_ssu2_peer_test() -> bool {
+    false
+}
+
+/// Plan 531: reaching a peer through its introducer is an explicit
+/// opt-in and it is **off** by default, so a router that has not asked
+/// for it never sends a relay request.
+const fn default_ssu2_relay_requester() -> bool {
+    false
+}
+
+/// Plan 532: answering a relay introduction is an explicit opt-in and it
+/// is **off** by default, so a router that has not asked to answer one
+/// never answers one.
+const fn default_ssu2_relay_target() -> bool {
+    false
+}
+
+/// Plan 522: the outbound peer-session pool is an explicit opt-in
+/// and it is **off** by default, so a router that has not asked to
+/// hold peer sessions never generates handshake traffic.
+const fn default_ssu2_peer_pool() -> bool {
+    false
+}
+
+/// Plan 524: asking a peer for a relay tag is an explicit opt-in and it
+/// is **off** by default, so a router that has not asked to learn an
+/// introducer never sends a relay-tag request.
+const fn default_ssu2_introducer_request() -> bool {
     false
 }
 
@@ -1301,6 +1544,10 @@ const MAX_SSU2_HANDSHAKE_TIMEOUT_MS: u64 = 60_000;
 const MIN_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 10;
 const MAX_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 1_000;
 const MIN_SSU2_SERVICE_PORT: u16 = 1024;
+/// Plan 496: the NTCP2 private-LAN qualification profile carries the same
+/// non-privileged service-port floor as the SSU2 surface, so a configured
+/// NTCP2 service port is never a privileged port.
+const MIN_NTCP2_SERVICE_PORT: u16 = 1024;
 
 // --- Plan 174 service-tunnel defaults: disabled, loopback-only, no listener. ---
 
@@ -1529,6 +1776,14 @@ pub enum Ntcp2QualificationProfile {
     Disabled,
     /// Loopback-only source qualification. This never grants advertisement.
     ControlledLoopback,
+    /// Plan 496: explicit RFC1918 IPv4 bind for a private qualification
+    /// lab.
+    ///
+    /// This is source-side qualification only. It never grants NetDB
+    /// publication, a reachability permit, a `caps=f` advertisement, or
+    /// any public transport activation, and it requires the SSU2 surface
+    /// to be in the matching private-LAN profile.
+    PrivateLanQualification,
 }
 
 /// Normalized NTCP2 transport configuration.
@@ -1536,9 +1791,12 @@ pub enum Ntcp2QualificationProfile {
 pub struct Ntcp2Config {
     /// Whether NTCP2 transport is enabled.
     pub enabled: bool,
-    /// Explicit profile; the only enabled profile is loopback-only.
+    /// Explicit profile; the enabled profiles are the loopback-only
+    /// controlled profile and the RFC1918-only private-LAN qualification
+    /// profile.
     pub qualification_profile: Ntcp2QualificationProfile,
-    /// Local bind address, restricted to loopback while enabled.
+    /// Local bind address. The controlled profile is loopback-only; the
+    /// private-LAN profile requires an RFC1918 IPv4 literal.
     pub bind_address: IpAddr,
     /// Explicit, non-privileged port required by the qualification profile.
     pub listen_port: u16,
@@ -1585,6 +1843,37 @@ pub struct NetDbConfig {
     /// Minimum floodfill advertiser count required for the
     /// `ready-for-network-integration` state.
     pub min_floodfill_advertisers: usize,
+    /// Plan 489: whether the floodfill-indexed routing table is active.
+    ///
+    /// The table is **off by default**. Plan 489 delivers the table and
+    /// the policy that draws from it; the participation phases that
+    /// follow wire it into the router.
+    pub routing_table_enabled: bool,
+    /// Plan 489: the maximum number of peers the routing table holds.
+    pub routing_table_max_entries: usize,
+    /// Plan 489: the maximum number of peers one routing-table bucket
+    /// holds.
+    pub routing_table_max_bucket_size: usize,
+    /// Plan 489: whether the router runs exploratory lookups.
+    ///
+    /// Exploration is **off by default**, and it cannot be enabled
+    /// while the routing table is off: an exploration with nowhere to
+    /// put the peers it discovers is refused at parse time.
+    pub exploration_enabled: bool,
+    /// Plan 489: the maximum number of peers one exploration may query.
+    pub exploration_max_peers: usize,
+    /// Plan 489: the maximum lifetime of one exploration, in
+    /// milliseconds.
+    pub exploration_deadline_ms: u64,
+    /// Plan 497: the cadence of the NetDB participation maintenance owner,
+    /// in milliseconds.
+    ///
+    /// The cadence is the period at which the daemon wakes the
+    /// participation owner. It is bounded on both sides: a zero or
+    /// sub-second cadence is refused, and so is one above the driver's
+    /// own one-hour ceiling. The key is **additive** — it changes no other
+    /// key's meaning.
+    pub participation_maintenance_period_ms: u64,
 }
 
 /// Normalized reseed configuration.
@@ -1775,12 +2064,88 @@ pub struct Ssu2Config {
     /// Bind port. `0` selects an ephemeral port (integration tests);
     /// a configured service port must be in the normal range.
     pub port: u16,
-    /// Whether this router advertises an SSU2 address (always false).
+    /// Whether this router publishes **its own** SSU2 address.
+    ///
+    /// Plan 520: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, the router publishes the direct SSU2 form
+    /// only while its own reachability evidence admits it, and it
+    /// withdraws the address when the evidence lapses. It is refused
+    /// outside the controlled loopback profile.
     pub advertise: bool,
-    /// Whether introducer service is offered (always false).
+    /// Whether this router may publish its own **bound** SSU2 address
+    /// (default false).
+    ///
+    /// Plan 546. `advertise` says *whether* the router publishes; this
+    /// says *which address* it may publish. Off by default, the router
+    /// can publish only a loopback bind, so publication stays inside a
+    /// loopback lab. On, the bound socket's own address may be
+    /// published.
+    ///
+    /// **Set this only when the host is directly reachable at its bind**
+    /// -- a lab LAN, or a public host with no NAT in front of it. The
+    /// reachability the record then carries means "the socket is bound
+    /// to this address", not "peers can reach this address". Behind NAT
+    /// the two differ, and a router that publishes an unreachable
+    /// address is blocked by the peers it wastes; a widely blocked
+    /// address makes live-network testing harder rather than easier.
+    /// Live testing from behind NAT needs a peer test's verdict, which
+    /// the tree does not yet carry into reachability.
+    pub publish_bound_address: bool,
+    /// Whether this router holds a **bounded pool of outbound peer
+    /// sessions** (default false).
+    ///
+    /// Plan 522: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, the router keeps a bounded set of
+    /// outbound sessions to the peers it already knows, and the
+    /// transport's outbound sessions send a keepalive so a held
+    /// session does not lapse. It never advertises anything.
+    pub peer_pool: bool,
+    /// Whether this router runs **its own** peer test (default false).
+    ///
+    /// Plan 521: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, the router probes a peer it already holds a
+    /// session with and records a **confirmed** exchange as its own
+    /// reachability evidence. It generates no traffic when it is off, and it
+    /// never runs outside the SSU2 service.
+    pub peer_test: bool,
+    /// Whether this router asks a peer for a relay tag (default false).
+    ///
+    /// Plan 524: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, a **firewalled** router asks one peer that
+    /// advertises the introducer capability for a relay tag, over a
+    /// session it already holds, and records the answer as an
+    /// authenticated introducer. It generates no traffic when it is off,
+    /// and it never runs outside the SSU2 service.
+    pub introducer_request: bool,
+    /// Whether introducer service is offered (default false).
+    ///
+    /// Plan 490 makes the role available behind this explicit opt-in.
+    /// It never grants advertisement and it never runs by default.
     pub introducer_service: bool,
+    /// Whether this router reaches a peer through its introducer
+    /// (default false).
+    ///
+    /// Plan 531: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, a router that knows a peer publishing an
+    /// introducer set asks that peer's introducer to relay toward it,
+    /// over a session the router already holds. It generates no traffic
+    /// when it is off, and it never runs outside the SSU2 service.
+    pub relay_requester: bool,
+    /// Whether this router answers a relay introduction when it is the
+    /// target (default false).
+    ///
+    /// Plan 532: the switch is an explicit opt-in and it is **off** by
+    /// default. When it is on, a router that is introduced to a requester
+    /// verifies the introduction and answers it: the accept goes to the
+    /// introducer on the session the introduction arrived on, and the hole
+    /// punch goes to the requester out of session. It generates no
+    /// traffic when it is off, and it never runs outside the SSU2 service.
+    pub relay_target: bool,
     /// Explicit socket profile. `PrivateLan` does not authorize publication.
     pub qualification_profile: Ssu2QualificationProfile,
+    /// Optional destination for the Plan 476 sanitized local receipt
+    /// export. `None` means no export at all.
+    pub qualification_receipt_path: Option<PathBuf>,
     /// Maximum pending (unauthenticated) handshakes.
     pub max_pending_handshakes: usize,
     /// Maximum active (authenticated) sessions.
@@ -1802,6 +2167,32 @@ pub struct Ssu2Config {
     /// Upper bound for one central-scheduler sleep.
     pub scheduler_poll_max: Duration,
 }
+
+impl Ssu2Config {
+    /// Returns the truthful status of the introducer (Bob) role.
+    ///
+    /// Plan 490: the role is *available* but opt-in, so the disabled
+    /// path says "available but not enabled" rather than the older
+    /// "unavailable in this milestone", which would be false. The
+    /// message names no secret and no peer.
+    pub const fn introducer_service_status(&self) -> &'static str {
+        if self.introducer_service {
+            SSU2_INTRODUCER_ENABLED_REASON
+        } else {
+            SSU2_INTRODUCER_DISABLED_REASON
+        }
+    }
+}
+
+/// The truthful message for a router whose introducer role is switched
+/// off. The role exists; it is simply not enabled.
+pub const SSU2_INTRODUCER_DISABLED_REASON: &str =
+    "the SSU2 introducer service is available but not enabled (ssu2.introducer_service = false)";
+
+/// The truthful message for a router whose introducer role is switched
+/// on. The role is opt-in and non-advertised.
+pub const SSU2_INTRODUCER_ENABLED_REASON: &str =
+    "the SSU2 introducer service is enabled (opt-in, non-advertised)";
 
 /// Immutable normalized configuration snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1856,6 +2247,12 @@ pub struct Config {
     pub floodfill: FloodfillConfig,
     /// Explicit global transport capacity and bandwidth-class policy.
     pub bandwidth: BandwidthConfig,
+    /// Operator-controlled transit participation posture (Plan 492; default
+    /// off, never advertised).
+    pub transit: TransitConfig,
+    /// Operator-controlled exploratory build posture (Plan 505; default off,
+    /// never advertised).
+    pub exploratory: ExploratoryConfig,
 }
 
 /// Product backend used for normal-daemon SAM-created destinations.
@@ -1925,6 +2322,59 @@ pub struct BandwidthConfig {
     pub max_pending_requests: usize,
     /// Maximum queued byte reservations for one peer.
     pub max_pending_per_peer: usize,
+}
+
+/// The default percentage of the enforced share the transit posture may use.
+pub const DEFAULT_TRANSIT_SHARE_LIMIT: u8 = 25;
+/// The default number of tunnels this router participates in.
+pub const DEFAULT_TRANSIT_PARTICIPATING_TUNNELS: usize = 4;
+/// The default number of tunnels one peer may participate in.
+pub const DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP: usize = 2;
+/// The largest percentage of the enforced share the transit posture may use.
+pub const MAX_TRANSIT_SHARE_LIMIT_PERCENT: u8 = 100;
+/// The largest number of tunnels this router may participate in.
+pub const MAX_TRANSIT_PARTICIPATING_TUNNELS: usize = 32;
+/// The largest number of tunnels one peer may participate in.
+pub const MAX_TRANSIT_PEER_PARTICIPATION_CAP: usize = 8;
+
+/// The operator-controlled transit participation posture (Plan 492).
+///
+/// The posture is **off by default**. Enabling it is an explicit operator
+/// decision that says how much of the router's enforced bandwidth share may
+/// be spent relaying other routers' tunnel traffic, how many tunnels this
+/// router participates in, and how many of those tunnels one peer may hold.
+///
+/// The posture never advertises the transit role: the published capability
+/// string is unchanged by this surface, and the role stays non-advertised
+/// until the evidence that justifies an advertisement exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitConfig {
+    /// Whether the operator opted this router into transit participation.
+    pub participation: bool,
+    /// The percentage of the enforced bandwidth share the transit posture
+    /// may consume. `1..=`[`MAX_TRANSIT_SHARE_LIMIT_PERCENT`].
+    pub share_limit: u8,
+    /// The maximum number of tunnels this router participates in.
+    /// `1..=`[`MAX_TRANSIT_PARTICIPATING_TUNNELS`].
+    pub participating_tunnels: usize,
+    /// The maximum number of participating tunnels one peer may hold.
+    /// `1..=`[`MAX_TRANSIT_PEER_PARTICIPATION_CAP`].
+    pub peer_participation_cap: usize,
+}
+
+/// The operator-controlled exploratory build posture (Plan 505).
+///
+/// The posture is **off by default**. Enabling it is an explicit operator
+/// decision that says this router should name a peer, build a one-hop
+/// exploratory tunnel toward it, and watch the pair for liveness.
+///
+/// The posture never advertises the exploratory role: the published
+/// capability string is unchanged by this surface, and the role stays
+/// non-advertised until the evidence that justifies an advertisement exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExploratoryConfig {
+    /// Whether the operator opted this router into exploratory tunnel builds.
+    pub builds: bool,
 }
 
 /// Normalized service-tunnel configuration.
@@ -2057,7 +2507,7 @@ impl Config {
             });
         }
 
-        let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2, raw.network.network_id)?;
+        let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2, &raw.ssu2, raw.network.network_id)?;
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
         let news = normalize_news(&raw.news)?;
@@ -2071,6 +2521,8 @@ impl Config {
         let addressbook = normalize_addressbook(&raw.addressbook, &data_dir)?;
         let floodfill = normalize_floodfill(&raw.floodfill, &ssu2, &ntcp2, &netdb)?;
         let bandwidth = normalize_bandwidth(&raw.bandwidth, &ssu2)?;
+        let transit = normalize_transit(&raw.transit, &bandwidth)?;
+        let exploratory = normalize_exploratory(&raw.exploratory);
 
         Ok(Self {
             source_path: None,
@@ -2104,6 +2556,8 @@ impl Config {
             addressbook,
             floodfill,
             bandwidth,
+            transit,
+            exploratory,
         })
     }
 }
@@ -3060,18 +3514,99 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             });
         }
     };
-    // SSU2 remains opt-in and non-advertised. Private-LAN qualification
-    // is an explicit local bind profile, not a public publication permit.
+    // Plan 520: the router may publish **its own** SSU2 address behind an
+    // explicit opt-in. The switch stays off by default, it requires the
+    // SSU2 service itself to run, and it is refused outside the controlled
+    // loopback profile: the runtime's publication material is refused for
+    // any non-loopback bind, so a private-LAN bind could never earn the
+    // address, and the switch is refused there instead of silently
+    // publishing nothing.
     if raw.advertise {
+        if !raw.enabled {
+            return Err(ConfigError::Semantic {
+                field: "ssu2.advertise",
+                reason: "the SSU2 address publication requires ssu2.enabled = true",
+            });
+        }
+        if private_lan {
+            return Err(ConfigError::Semantic {
+                field: "ssu2.advertise",
+                reason: "the private-LAN SSU2 profile cannot publish an SSU2 address",
+            });
+        }
+    }
+    // Plan 521: the router's own peer test runs behind an explicit
+    // opt-in. It needs the SSU2 service itself, because a peer test is an
+    // exchange with a peer the router already holds a session with, and it
+    // is refused rather than silently inert when the service is off.
+    if raw.peer_test && !raw.enabled {
         return Err(ConfigError::Semantic {
-            field: "ssu2.advertise",
-            reason: "SSU2 address publication is unavailable in this milestone",
+            field: "ssu2.peer_test",
+            reason: "the router's own peer test requires ssu2.enabled = true",
         });
     }
-    if raw.introducer_service {
+    // Plan 522: the outbound peer-session pool runs behind an explicit
+    // opt-in. It needs the SSU2 service itself, because a pooled
+    // session is an outbound SSU2 session, and it is refused rather
+    // than silently inert when the service is off.
+    if raw.peer_pool && !raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.peer_pool",
+            reason: "the outbound peer-session pool requires ssu2.enabled = true",
+        });
+    }
+    // Plan 522: the keepalive's own unanswered deadline must fall
+    // strictly before the session's idle timeout, or the two would
+    // disagree about when a session dies. The interval is the
+    // transport's own constant, so there is no second value to
+    // disagree with.
+    if raw.peer_pool
+        && raw.idle_timeout_ms
+            <= i2pr_runtime::KEEPALIVE_INTERVAL_MS
+                * u64::from(i2pr_runtime::KEEPALIVE_TIMEOUT_INTERVALS)
+    {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.idle_timeout_ms",
+            reason: "the outbound peer-session pool needs an idle timeout longer than the keepalive's unanswered deadline",
+        });
+    }
+    // Plan 524: asking a peer for a relay tag runs behind an explicit
+    // opt-in. It needs the SSU2 service itself, because the request
+    // travels over a session the router already holds, and it is refused
+    // rather than silently inert when the service is off.
+    if raw.introducer_request && !raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.introducer_request",
+            reason: "the relay-tag request requires ssu2.enabled = true",
+        });
+    }
+    // Plan 531: reaching a peer through its introducer runs behind an
+    // explicit opt-in. It needs the SSU2 service itself, because the
+    // request travels over a session the router already holds, and it
+    // is refused rather than silently inert when the service is off.
+    if raw.relay_requester && !raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.relay_requester",
+            reason: "the relay requester requires ssu2.enabled = true",
+        });
+    }
+    // Plan 532: answering a relay introduction runs behind an explicit
+    // opt-in. It needs the SSU2 service itself, because the answer rides
+    // a session the router already holds, and it is refused rather than
+    // silently inert when the service is off.
+    if raw.relay_target && !raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.relay_target",
+            reason: "the relay target requires ssu2.enabled = true",
+        });
+    }
+    // Plan 490: the introducer role is available behind an explicit
+    // opt-in. It still requires the SSU2 service itself to run, and it
+    // never grants advertisement.
+    if raw.introducer_service && !raw.enabled {
         return Err(ConfigError::Semantic {
             field: "ssu2.introducer_service",
-            reason: "SSU2 introducer service is unavailable in this milestone",
+            reason: "the SSU2 introducer service requires ssu2.enabled = true",
         });
     }
     let bind_ipv4 = parse_ssu2_bind("ssu2.bind_ipv4", &raw.bind_ipv4, false, private_lan)?;
@@ -3161,18 +3696,49 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
             reason: "must be within 10..=1000",
         });
     }
+    // Plan 476: the sanitized local receipt export is opt-in and is
+    // only meaningful under an explicit qualification profile. It is
+    // a private local readout for the guarded per-host executor; it is
+    // never a listener and never a publication permit.
+    let qualification_receipt_path = match raw.qualification_receipt_path.as_deref() {
+        None => None,
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => {
+            if !raw.enabled {
+                return Err(ConfigError::Semantic {
+                    field: "ssu2.qualification_receipt_path",
+                    reason: "the local receipt export requires ssu2.enabled = true",
+                });
+            }
+            let path = PathBuf::from(value);
+            if !path.is_absolute() {
+                return Err(ConfigError::Semantic {
+                    field: "ssu2.qualification_receipt_path",
+                    reason: "must be an absolute path",
+                });
+            }
+            Some(path)
+        }
+    };
     Ok(Ssu2Config {
         enabled: raw.enabled,
         bind_ipv4,
         bind_ipv6,
         port: raw.port,
         advertise: raw.advertise,
+        peer_test: raw.peer_test,
+        publish_bound_address: raw.publish_bound_address,
+        peer_pool: raw.peer_pool,
+        introducer_request: raw.introducer_request,
         introducer_service: raw.introducer_service,
+        relay_requester: raw.relay_requester,
+        relay_target: raw.relay_target,
         qualification_profile: if private_lan {
             Ssu2QualificationProfile::PrivateLan
         } else {
             Ssu2QualificationProfile::ControlledLoopback
         },
+        qualification_receipt_path,
         max_pending_handshakes: raw.max_pending_handshakes,
         max_active_sessions: raw.max_active_sessions,
         max_pending_per_ip: raw.max_pending_per_ip,
@@ -3202,20 +3768,31 @@ fn validate_limit(field: &'static str, value: u64, maximum: u64) -> Result<(), C
     Ok(())
 }
 
-fn normalize_ntcp2(raw: &RawNtcp2Config, network_id: u16) -> Result<Ntcp2Config, ConfigError> {
+fn normalize_ntcp2(
+    raw: &RawNtcp2Config,
+    ssu2: &RawSsu2Config,
+    network_id: u16,
+) -> Result<Ntcp2Config, ConfigError> {
     let qualification_profile = match (raw.enabled, raw.qualification_profile.as_str()) {
         (false, "disabled") => Ntcp2QualificationProfile::Disabled,
         (true, "controlled_loopback") => Ntcp2QualificationProfile::ControlledLoopback,
+        (true, "private_lan_qualification") => Ntcp2QualificationProfile::PrivateLanQualification,
         (false, "controlled_loopback") => {
             return Err(ConfigError::Semantic {
                 field: "transport.ntcp2.qualification_profile",
                 reason: "controlled_loopback requires enabled = true",
             });
         }
+        (false, "private_lan_qualification") => {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "private_lan_qualification requires enabled = true",
+            });
+        }
         (true, _) => {
             return Err(ConfigError::Semantic {
                 field: "transport.ntcp2.qualification_profile",
-                reason: "enabled NTCP2 requires the explicit controlled_loopback profile",
+                reason: "enabled NTCP2 requires the explicit controlled_loopback or private_lan_qualification profile",
             });
         }
         (false, _) => {
@@ -3225,13 +3802,33 @@ fn normalize_ntcp2(raw: &RawNtcp2Config, network_id: u16) -> Result<Ntcp2Config,
             });
         }
     };
-    let bind_address: IpAddr = raw
-        .bind_address
-        .parse()
-        .map_err(|_| ConfigError::Semantic {
+    // Plan 496: an unset bind address is not a private-LAN endpoint, so
+    // it is refused with its own reason rather than with the generic
+    // literal-decode failure. The controlled profile keeps its existing
+    // behavior.
+    if qualification_profile == Ntcp2QualificationProfile::PrivateLanQualification
+        && raw.bind_address.trim().is_empty()
+    {
+        return Err(ConfigError::Semantic {
             field: "transport.ntcp2.bind_address",
-            reason: "must be an IP address literal",
-        })?;
+            reason: "private_lan_qualification requires an explicit RFC1918 IPv4 address literal; an empty bind address is not a private-LAN endpoint",
+        });
+    }
+    let bind_address: IpAddr = match raw.bind_address.parse() {
+        Ok(address) => address,
+        Err(_) => {
+            if qualification_profile == Ntcp2QualificationProfile::PrivateLanQualification {
+                return Err(ConfigError::Semantic {
+                    field: "transport.ntcp2.bind_address",
+                    reason: "private_lan_qualification requires an explicit RFC1918 IPv4 address literal",
+                });
+            }
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.bind_address",
+                reason: "must be an IP address literal",
+            });
+        }
+    };
     if qualification_profile == Ntcp2QualificationProfile::ControlledLoopback {
         if !bind_address.is_loopback() {
             return Err(ConfigError::Semantic {
@@ -3249,6 +3846,78 @@ fn normalize_ntcp2(raw: &RawNtcp2Config, network_id: u16) -> Result<Ntcp2Config,
             return Err(ConfigError::Semantic {
                 field: "network.network_id",
                 reason: "controlled NTCP2 requires a network ID representable by the handshake",
+            });
+        }
+    }
+    if qualification_profile == Ntcp2QualificationProfile::PrivateLanQualification {
+        // Plan 496 §5.1: the operator profile is RFC1918 IPv4 only. Loopback
+        // is not a private LAN, the unspecified address is not an endpoint,
+        // public addresses are not private, and IPv6 is out of scope. Each
+        // shape is refused with its own reason.
+        match bind_address {
+            IpAddr::V4(address) => {
+                if address.is_loopback() {
+                    return Err(ConfigError::Semantic {
+                        field: "transport.ntcp2.bind_address",
+                        reason: "private_lan_qualification requires an RFC1918 IPv4 address; loopback is not a private-LAN address",
+                    });
+                }
+                if address.is_unspecified() {
+                    return Err(ConfigError::Semantic {
+                        field: "transport.ntcp2.bind_address",
+                        reason: "private_lan_qualification requires an RFC1918 IPv4 address; the unspecified address is not a private-LAN address",
+                    });
+                }
+                if !address.is_private() {
+                    return Err(ConfigError::Semantic {
+                        field: "transport.ntcp2.bind_address",
+                        reason: "private_lan_qualification requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)",
+                    });
+                }
+            }
+            IpAddr::V6(_) => {
+                return Err(ConfigError::Semantic {
+                    field: "transport.ntcp2.bind_address",
+                    reason: "private_lan_qualification requires an RFC1918 IPv4 address; IPv6 literals are not supported",
+                });
+            }
+        }
+        if raw.listen_port == 0 {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.listen_port",
+                reason: "private_lan_qualification requires an explicit nonzero port",
+            });
+        }
+        if raw.listen_port < MIN_NTCP2_SERVICE_PORT {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.listen_port",
+                reason: "private_lan_qualification requires a port of at least 1024",
+            });
+        }
+        if network_id > u16::from(u8::MAX) {
+            return Err(ConfigError::Semantic {
+                field: "network.network_id",
+                reason: "private_lan_qualification requires a network ID representable by the handshake",
+            });
+        }
+        // Family coherence with the SSU2 surface: the private-LAN profile
+        // composes one RouterInfo that carries both transports, so the two
+        // must agree on the private LAN and on the address family. This
+        // mirrors the controlled-loopback cross-transport rule that
+        // `normalize_floodfill` asserts for the floodfill profile.
+        if ssu2.qualification_profile != "private_lan_qualification" {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "private_lan_qualification requires the ssu2 surface to use the private_lan_qualification profile",
+            });
+        }
+        if !matches!(
+            ssu2.bind_ipv4.trim().parse::<IpAddr>(),
+            Ok(IpAddr::V4(address)) if address.is_private()
+        ) {
+            return Err(ConfigError::Semantic {
+                field: "transport.ntcp2.qualification_profile",
+                reason: "private_lan_qualification requires the ssu2 surface to bind an RFC1918 IPv4 address",
             });
         }
     }
@@ -3363,12 +4032,85 @@ fn normalize_netdb(raw: &RawNetDbConfig) -> Result<NetDbConfig, ConfigError> {
             reason: "must not exceed netdb.min_router_infos",
         });
     }
+    if raw.routing_table_max_entries == 0 {
+        return Err(ConfigError::Semantic {
+            field: "netdb.routing_table_max_entries",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.routing_table_max_entries > MAX_ALLOWED_ROUTING_TABLE_ENTRIES {
+        return Err(ConfigError::Semantic {
+            field: "netdb.routing_table_max_entries",
+            reason: "exceeds the routing table safety limit",
+        });
+    }
+    if raw.routing_table_max_bucket_size == 0 {
+        return Err(ConfigError::Semantic {
+            field: "netdb.routing_table_max_bucket_size",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.routing_table_max_bucket_size > MAX_ALLOWED_ROUTING_TABLE_BUCKET_SIZE {
+        return Err(ConfigError::Semantic {
+            field: "netdb.routing_table_max_bucket_size",
+            reason: "exceeds the routing table safety limit",
+        });
+    }
+    if raw.exploration_max_peers == 0 {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_max_peers",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.exploration_max_peers > MAX_ALLOWED_EXPLORATION_PEERS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_max_peers",
+            reason: "exceeds the exploration safety limit",
+        });
+    }
+    if raw.exploration_deadline_ms < MIN_EXPLORATION_DEADLINE_MS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_deadline_ms",
+            reason: "must be at least one second",
+        });
+    }
+    if raw.exploration_deadline_ms > MAX_ALLOWED_EXPLORATION_DEADLINE_MS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_deadline_ms",
+            reason: "exceeds the exploration safety limit",
+        });
+    }
+    if raw.exploration_enabled && !raw.routing_table_enabled {
+        return Err(ConfigError::Semantic {
+            field: "netdb.exploration_enabled",
+            reason: "cannot be enabled while netdb.routing_table_enabled is false",
+        });
+    }
+    if raw.participation_maintenance_period_ms < MIN_PARTICIPATION_MAINTENANCE_PERIOD_MS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.participation_maintenance_period_ms",
+            reason: "must be at least one second",
+        });
+    }
+    if raw.participation_maintenance_period_ms > MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.participation_maintenance_period_ms",
+            reason: "exceeds the participation maintenance safety limit",
+        });
+    }
     Ok(NetDbConfig {
         enabled: raw.enabled,
         max_records: raw.max_records as usize,
         max_encoded_bytes: raw.max_encoded_bytes as usize,
         min_router_infos: raw.min_router_infos as usize,
         min_floodfill_advertisers: raw.min_floodfill_advertisers as usize,
+        routing_table_enabled: raw.routing_table_enabled,
+        routing_table_max_entries: raw.routing_table_max_entries as usize,
+        routing_table_max_bucket_size: raw.routing_table_max_bucket_size as usize,
+        exploration_enabled: raw.exploration_enabled,
+        exploration_max_peers: raw.exploration_max_peers as usize,
+        exploration_deadline_ms: raw.exploration_deadline_ms,
+        participation_maintenance_period_ms: raw.participation_maintenance_period_ms,
     })
 }
 
@@ -3551,6 +4293,76 @@ fn normalize_bandwidth(
         max_pending_requests: raw.max_pending_requests,
         max_pending_per_peer: raw.max_pending_per_peer,
     })
+}
+
+/// Normalizes the transit participation posture (Plan 492).
+///
+/// The posture is validated **before** any owner or listener is constructed,
+/// and every bound is a named constant:
+///
+/// - `share_limit` is a percentage of the enforced bandwidth share, so it is
+///   `1..=`[`MAX_TRANSIT_SHARE_LIMIT_PERCENT`];
+/// - `participating_tunnels` is `1..=`[`MAX_TRANSIT_PARTICIPATING_TUNNELS`];
+/// - `peer_participation_cap` is `1..=`[`MAX_TRANSIT_PEER_PARTICIPATION_CAP`]
+///   and may not exceed `participating_tunnels`, because a per-peer cap
+///   larger than the router-wide cap is a contradiction rather than a
+///   looser policy;
+/// - `participation = true` requires an **enabled** bandwidth policy. The
+///   share limit is enforced against the governor's permitted share; without
+///   a governor the limit could not be enforced and would be advisory, which
+///   the plan forbids. That is a configuration error, not a silent no-op.
+fn normalize_transit(
+    raw: &RawTransitConfig,
+    bandwidth: &BandwidthConfig,
+) -> Result<TransitConfig, ConfigError> {
+    if raw.share_limit == 0 || raw.share_limit > MAX_TRANSIT_SHARE_LIMIT_PERCENT {
+        return Err(ConfigError::Semantic {
+            field: "transit.share_limit",
+            reason: "must be between 1 and 100 percent of the enforced share",
+        });
+    }
+    if raw.participating_tunnels == 0
+        || raw.participating_tunnels > MAX_TRANSIT_PARTICIPATING_TUNNELS
+    {
+        return Err(ConfigError::Semantic {
+            field: "transit.participating_tunnels",
+            reason: "must be between 1 and the bounded participating-tunnel ceiling",
+        });
+    }
+    if raw.peer_participation_cap == 0
+        || raw.peer_participation_cap > MAX_TRANSIT_PEER_PARTICIPATION_CAP
+        || raw.peer_participation_cap > raw.participating_tunnels
+    {
+        return Err(ConfigError::Semantic {
+            field: "transit.peer_participation_cap",
+            reason: "must be between 1, the bounded per-peer ceiling, and the participating-tunnel count",
+        });
+    }
+    if raw.participation && !bandwidth.enabled {
+        return Err(ConfigError::Semantic {
+            field: "transit.participation",
+            reason: "requires an enabled bandwidth policy: the share limit is enforced against the governor's permitted share and would otherwise be advisory",
+        });
+    }
+    Ok(TransitConfig {
+        participation: raw.participation,
+        share_limit: raw.share_limit,
+        participating_tunnels: raw.participating_tunnels,
+        peer_participation_cap: raw.peer_participation_cap,
+    })
+}
+
+/// Normalizes the exploratory build posture (Plan 505).
+///
+/// The posture has exactly one switch and one bound-free value: whether the
+/// operator opted this router into building exploratory tunnels. There is
+/// deliberately **no** count knob — the number of exploratory pairs the
+/// router maintains is bounded by the coordinator's own pool and by Plan
+/// 504's `MAX_LIVENESS_PAIRS`, so a configuration key that could disagree
+/// with those ceilings would be a second source of truth rather than a
+/// limit.
+fn normalize_exploratory(raw: &RawExploratoryConfig) -> ExploratoryConfig {
+    ExploratoryConfig { builds: raw.builds }
 }
 
 fn normalize_reseed(
@@ -4081,6 +4893,79 @@ data_dir = "./state"
     }
 
     #[test]
+    fn bandwidth_default_burst_fits_ntcp2_frame_above_default_reserve() {
+        let configured = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 131072\noutbound_bytes_per_second = 262144\nshare_percent = 50\n"
+        );
+        let parsed = Config::parse(&configured).expect("valid explicit limits");
+        assert_eq!(parsed.bandwidth.control_reserve_percent, 10);
+        // Plan 484 branch (a): ceil(65_537 * 100 / (100 - 10)) = 72_819.
+        assert_eq!(parsed.bandwidth.burst_bytes, 72_819);
+        let governor =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 131_072,
+                outbound_bytes_per_second: 262_144,
+                burst_bytes: parsed.bandwidth.burst_bytes,
+                control_reserve_percent: parsed.bandwidth.control_reserve_percent,
+                max_pending_requests: 8,
+                max_pending_per_peer: 2,
+            })
+            .expect("default policy is a valid governor");
+        assert!(
+            i2pr_runtime::Ntcp2RuntimeService::new_with_bandwidth(
+                i2pr_runtime::Ntcp2RuntimeConfig::default(),
+                Some(governor),
+            )
+            .is_ok(),
+            "default burst must construct the NTCP2 owner"
+        );
+        let just_below =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 131_072,
+                outbound_bytes_per_second: 262_144,
+                burst_bytes: 72_819 - 1,
+                control_reserve_percent: 10,
+                max_pending_requests: 8,
+                max_pending_per_peer: 2,
+            })
+            .expect("one byte below default is still a valid governor");
+        assert!(matches!(
+            i2pr_runtime::Ntcp2RuntimeService::new_with_bandwidth(
+                i2pr_runtime::Ntcp2RuntimeConfig::default(),
+                Some(just_below),
+            ),
+            Err(i2pr_runtime::Ntcp2RuntimeConfigError::BandwidthBurstTooSmall { minimum: 72_819 })
+        ));
+    }
+
+    #[test]
+    fn bandwidth_explicit_small_burst_keeps_fail_closed_semantics() {
+        let configured = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 131072\noutbound_bytes_per_second = 262144\nshare_percent = 50\nburst_bytes = 65536\n"
+        );
+        let parsed = Config::parse(&configured).expect("explicit burst parses");
+        // Exact configured semantics preserved: no silent clamp to the minimum.
+        assert_eq!(parsed.bandwidth.burst_bytes, 65_536);
+        let governor =
+            i2pr_runtime::BandwidthGovernor::new(i2pr_runtime::BandwidthGovernorConfig {
+                inbound_bytes_per_second: 131_072,
+                outbound_bytes_per_second: 262_144,
+                burst_bytes: parsed.bandwidth.burst_bytes,
+                control_reserve_percent: parsed.bandwidth.control_reserve_percent,
+                max_pending_requests: 8,
+                max_pending_per_peer: 2,
+            })
+            .expect("explicit small burst is still a valid governor");
+        assert!(matches!(
+            i2pr_runtime::Ntcp2RuntimeService::new_with_bandwidth(
+                i2pr_runtime::Ntcp2RuntimeConfig::default(),
+                Some(governor),
+            ),
+            Err(i2pr_runtime::Ntcp2RuntimeConfigError::BandwidthBurstTooSmall { minimum: 72_819 })
+        ));
+    }
+
+    #[test]
     fn bandwidth_rejects_incomplete_rates_share_and_unbounded_queues() {
         let missing_rate = format!(
             "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 1024\nshare_percent = 10\n"
@@ -4144,6 +5029,173 @@ data_dir = "./state"
                 field: "bandwidth.control_reserve_percent",
                 ..
             })
+        ));
+    }
+
+    /// Plan 492 WP1: the default posture does not participate, and the
+    /// defaults are the documented bounded ones.
+    #[test]
+    fn transit_participation_is_disabled_by_default_with_bounded_defaults() {
+        let default = Config::parse(MINIMAL).expect("default config");
+        assert!(!default.transit.participation);
+        assert_eq!(default.transit.share_limit, DEFAULT_TRANSIT_SHARE_LIMIT);
+        assert_eq!(
+            default.transit.participating_tunnels,
+            DEFAULT_TRANSIT_PARTICIPATING_TUNNELS
+        );
+        assert_eq!(
+            default.transit.peer_participation_cap,
+            DEFAULT_TRANSIT_PEER_PARTICIPATION_CAP
+        );
+    }
+
+    /// Plan 492 WP1: an explicit opt-in is accepted and normalized.
+    #[test]
+    fn transit_participation_accepts_an_explicit_bounded_opt_in() {
+        let configured = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 131072\noutbound_bytes_per_second = 262144\nshare_percent = 50\n[transit]\nparticipation = true\nshare_limit = 25\nparticipating_tunnels = 4\npeer_participation_cap = 2\n"
+        );
+        let parsed = Config::parse(&configured).expect("valid transit posture");
+        assert!(parsed.transit.participation);
+        assert_eq!(parsed.transit.share_limit, 25);
+        assert_eq!(parsed.transit.participating_tunnels, 4);
+        assert_eq!(parsed.transit.peer_participation_cap, 2);
+    }
+
+    /// Plan 492 WP1: an opt-in without an enforced bandwidth policy is a
+    /// configuration error, because the share limit could not be enforced.
+    #[test]
+    fn transit_participation_requires_an_enabled_bandwidth_policy() {
+        let without_governor = format!("{MINIMAL}\n[transit]\nparticipation = true\n");
+        assert!(matches!(
+            Config::parse(&without_governor),
+            Err(ConfigError::Semantic {
+                field: "transit.participation",
+                ..
+            })
+        ));
+
+        let disabled_governor =
+            format!("{MINIMAL}\n[bandwidth]\nenabled = false\n[transit]\nparticipation = true\n");
+        assert!(matches!(
+            Config::parse(&disabled_governor),
+            Err(ConfigError::Semantic {
+                field: "transit.participation",
+                ..
+            })
+        ));
+    }
+
+    /// Plan 492 WP1: every limit is bounded, and the per-peer cap may not
+    /// exceed the router-wide cap.
+    #[test]
+    fn transit_participation_rejects_unbounded_or_contradictory_limits() {
+        let base = format!(
+            "{MINIMAL}\n[ssu2]\nenabled = true\n[bandwidth]\nenabled = true\ninbound_bytes_per_second = 1024\noutbound_bytes_per_second = 1024\nshare_percent = 10\n"
+        );
+        let zero_share = format!("{base}[transit]\nshare_limit = 0\n");
+        assert!(matches!(
+            Config::parse(&zero_share),
+            Err(ConfigError::Semantic {
+                field: "transit.share_limit",
+                ..
+            })
+        ));
+
+        let excessive_share = format!("{base}[transit]\nshare_limit = 101\n");
+        assert!(matches!(
+            Config::parse(&excessive_share),
+            Err(ConfigError::Semantic {
+                field: "transit.share_limit",
+                ..
+            })
+        ));
+
+        let zero_tunnels = format!("{base}[transit]\nparticipating_tunnels = 0\n");
+        assert!(matches!(
+            Config::parse(&zero_tunnels),
+            Err(ConfigError::Semantic {
+                field: "transit.participating_tunnels",
+                ..
+            })
+        ));
+
+        let excessive_tunnels = format!("{base}[transit]\nparticipating_tunnels = 33\n");
+        assert!(matches!(
+            Config::parse(&excessive_tunnels),
+            Err(ConfigError::Semantic {
+                field: "transit.participating_tunnels",
+                ..
+            })
+        ));
+
+        let excessive_peer_cap = format!("{base}[transit]\npeer_participation_cap = 9\n");
+        assert!(matches!(
+            Config::parse(&excessive_peer_cap),
+            Err(ConfigError::Semantic {
+                field: "transit.peer_participation_cap",
+                ..
+            })
+        ));
+
+        let contradictory_peer_cap =
+            format!("{base}[transit]\nparticipating_tunnels = 2\npeer_participation_cap = 3\n");
+        assert!(matches!(
+            Config::parse(&contradictory_peer_cap),
+            Err(ConfigError::Semantic {
+                field: "transit.peer_participation_cap",
+                ..
+            })
+        ));
+    }
+
+    /// Plan 492 WP1: the section is strict like every other section.
+    #[test]
+    fn transit_section_rejects_unknown_keys() {
+        let unknown = format!("{MINIMAL}\n[transit]\nadvertise = true\n");
+        assert!(matches!(
+            Config::parse(&unknown),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    /// Plan 505 WP1: the exploratory build posture is **off by default**, so a
+    /// router that has never set it builds no exploratory tunnel.
+    #[test]
+    fn exploratory_builds_are_disabled_by_default() {
+        let default = Config::parse(MINIMAL).expect("default config");
+        assert!(!default.exploratory.builds);
+    }
+
+    /// Plan 505 WP1: an explicit opt-in is accepted and normalized.
+    #[test]
+    fn exploratory_builds_accept_an_explicit_opt_in() {
+        let configured = format!("{MINIMAL}\n[exploratory]\nbuilds = true\n");
+        let parsed = Config::parse(&configured).expect("valid exploratory posture");
+        assert!(parsed.exploratory.builds);
+    }
+
+    /// Plan 505 WP1: the section is strict, so a key that looks like an
+    /// advertisement is refused rather than ignored.
+    #[test]
+    fn exploratory_section_rejects_unknown_keys() {
+        let unknown = format!("{MINIMAL}\n[exploratory]\nadvertise = true\n");
+        assert!(matches!(
+            Config::parse(&unknown),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    /// Plan 505 WP1: the posture carries **no** count knob. The number of
+    /// exploratory pairs the router maintains is bounded by the coordinator's
+    /// pool and Plan 504's `MAX_LIVENESS_PAIRS`; a configuration key that
+    /// could disagree with those ceilings would be a second source of truth.
+    #[test]
+    fn exploratory_section_rejects_a_pair_count_knob() {
+        let rejected = format!("{MINIMAL}\n[exploratory]\nmax_pairs = 2\n");
+        assert!(matches!(
+            Config::parse(&rejected),
+            Err(ConfigError::Parse(_))
         ));
     }
 
@@ -4593,6 +5645,262 @@ data_dir = "./state"
         assert!(!path.exists());
     }
 
+    /// Plan 496 §5.1: the authorized shape of the NTCP2 private-LAN
+    /// qualification profile. Both transports sit in the same private-LAN
+    /// profile on an RFC1918 IPv4 endpoint.
+    const PRIVATE_LAN_NTCP2_BLOCK: &str = "enabled = true\nqualification_profile = \"private_lan_qualification\"\nbind_address = \"192.168.10.25\"\nlisten_port = 44321\n";
+    const PRIVATE_LAN_SSU2_BLOCK: &str = "enabled = true\nqualification_profile = \"private_lan_qualification\"\nbind_ipv4 = \"192.168.10.25\"\nbind_ipv6 = \"\"\nport = 44123\n";
+
+    /// Builds a configuration carrying the two transport blocks under test.
+    fn private_lan_config(ntcp2_block: &str, ssu2_block: &str, network_block: &str) -> String {
+        format!(
+            "{}\n{}\n[transport.ntcp2]\n{}\n[ssu2]\n{}\n",
+            MINIMAL, network_block, ntcp2_block, ssu2_block
+        )
+    }
+
+    /// Plan 496 §5.1: every unauthorized shape of the private-LAN profile,
+    /// each paired with the repaired configuration that must still parse.
+    ///
+    /// The pair is the inverted probe: the refusal must fire on the
+    /// rejected shape and must not fire on its repair.
+    type PrivateLanCase = (&'static str, String, String, &'static str, &'static str);
+
+    fn private_lan_cases() -> Vec<PrivateLanCase> {
+        let ntcp2 = PRIVATE_LAN_NTCP2_BLOCK;
+        let ssu2 = PRIVATE_LAN_SSU2_BLOCK;
+        let repaired = private_lan_config(ntcp2, ssu2, "");
+        vec![
+            (
+                "the profile is not enabled",
+                private_lan_config(
+                    &ntcp2.replace("enabled = true", "enabled = false"),
+                    ssu2,
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.qualification_profile",
+                "private_lan_qualification requires enabled = true",
+            ),
+            (
+                "the bind address is unset",
+                private_lan_config(
+                    &ntcp2.replace("bind_address = \"192.168.10.25\"", "bind_address = \"\""),
+                    ssu2,
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an explicit RFC1918 IPv4 address literal; an empty bind address is not a private-LAN endpoint",
+            ),
+            (
+                "the bind address is not an address literal",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "not-an-ip"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an explicit RFC1918 IPv4 address literal",
+            ),
+            (
+                "the bind address is loopback",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "127.0.0.1"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address; loopback is not a private-LAN address",
+            ),
+            (
+                "the bind address is unspecified",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "0.0.0.0"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address; the unspecified address is not a private-LAN address",
+            ),
+            (
+                "the bind address is public",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "8.8.8.8"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)",
+            ),
+            (
+                "the bind address is a TEST-NET address",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "192.0.2.1"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)",
+            ),
+            (
+                "the bind address is an IPv6 unique-local address",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "fd00::1"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address; IPv6 literals are not supported",
+            ),
+            (
+                "the bind address is an IPv6 loopback address",
+                private_lan_config(&ntcp2.replace("192.168.10.25", "::1"), ssu2, ""),
+                repaired.clone(),
+                "transport.ntcp2.bind_address",
+                "private_lan_qualification requires an RFC1918 IPv4 address; IPv6 literals are not supported",
+            ),
+            (
+                "the listen port is zero",
+                private_lan_config(
+                    &ntcp2.replace("listen_port = 44321", "listen_port = 0"),
+                    ssu2,
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.listen_port",
+                "private_lan_qualification requires an explicit nonzero port",
+            ),
+            (
+                "the listen port is privileged",
+                private_lan_config(
+                    &ntcp2.replace("listen_port = 44321", "listen_port = 1023"),
+                    ssu2,
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.listen_port",
+                "private_lan_qualification requires a port of at least 1024",
+            ),
+            (
+                "the network id does not fit the handshake width",
+                private_lan_config(ntcp2, ssu2, "[network]\nnetwork_id = 300\n"),
+                repaired.clone(),
+                "network.network_id",
+                "private_lan_qualification requires a network ID representable by the handshake",
+            ),
+            (
+                "the ssu2 surface is not in the private-LAN profile",
+                private_lan_config(
+                    ntcp2,
+                    &ssu2.replace(
+                        "qualification_profile = \"private_lan_qualification\"",
+                        "qualification_profile = \"controlled_loopback\"",
+                    ),
+                    "",
+                ),
+                repaired.clone(),
+                "transport.ntcp2.qualification_profile",
+                "private_lan_qualification requires the ssu2 surface to use the private_lan_qualification profile",
+            ),
+            (
+                "the ssu2 surface does not bind an RFC1918 IPv4 address",
+                private_lan_config(ntcp2, &ssu2.replace("192.168.10.25", "127.0.0.1"), ""),
+                repaired.clone(),
+                "transport.ntcp2.qualification_profile",
+                "private_lan_qualification requires the ssu2 surface to bind an RFC1918 IPv4 address",
+            ),
+        ]
+    }
+
+    #[test]
+    fn ntcp2_private_lan_profile_refuses_every_unauthorized_shape() {
+        for (name, rejected, _repaired, field, reason) in private_lan_cases() {
+            match Config::parse(&rejected) {
+                Err(ConfigError::Semantic {
+                    field: got_field,
+                    reason: got_reason,
+                }) => {
+                    assert_eq!(
+                        got_field, field,
+                        "case `{name}` must name the offending field"
+                    );
+                    assert_eq!(
+                        got_reason, reason,
+                        "case `{name}` must state the requirement"
+                    );
+                }
+                Err(other) => {
+                    panic!("case `{name}` must be refused with a semantic error: {other:?}")
+                }
+                Ok(config) => panic!("case `{name}` must be refused, parsed {config:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn ntcp2_private_lan_profile_refusals_are_not_vacuous() {
+        // The inverted probe: repairing only the offending value of every
+        // refusal must make the same configuration parse. A refusal that
+        // also refused its own repair would prove nothing.
+        for (name, _rejected, repaired, _field, _reason) in private_lan_cases() {
+            let config = Config::parse(&repaired)
+                .unwrap_or_else(|error| panic!("case `{name}` repair must parse: {error:?}"));
+            assert_eq!(
+                config.transport.ntcp2.qualification_profile,
+                Ntcp2QualificationProfile::PrivateLanQualification,
+                "case `{name}` repair must select the private-LAN profile"
+            );
+            assert_eq!(config.transport.ntcp2.listen_port, 44321);
+        }
+    }
+
+    #[test]
+    fn ntcp2_private_lan_profile_accepts_rfc1918_endpoint_with_matching_ssu2() {
+        let text = private_lan_config(PRIVATE_LAN_NTCP2_BLOCK, PRIVATE_LAN_SSU2_BLOCK, "");
+        let config = Config::parse(&text).expect("valid private-LAN profile");
+        assert!(config.transport.ntcp2.enabled);
+        assert_eq!(
+            config.transport.ntcp2.qualification_profile,
+            Ntcp2QualificationProfile::PrivateLanQualification
+        );
+        assert_eq!(
+            config.transport.ntcp2.bind_address,
+            "192.168.10.25".parse::<IpAddr>().expect("RFC1918 literal")
+        );
+        assert_eq!(config.transport.ntcp2.listen_port, 44321);
+        assert_eq!(
+            config.ssu2.qualification_profile,
+            Ssu2QualificationProfile::PrivateLan
+        );
+        assert_eq!(
+            config.ssu2.bind_ipv4,
+            Some("192.168.10.25".parse::<IpAddr>().expect("RFC1918 literal"))
+        );
+        assert_eq!(config.ssu2.port, 44123);
+    }
+
+    #[test]
+    fn ntcp2_private_lan_profile_never_falls_back_to_the_controlled_profile() {
+        // The controlled profile keeps its own bind, port, and profile
+        // rules, and a private-LAN bind under it stays refused.
+        let text = format!(
+            "{}\n[transport.ntcp2]\nenabled = true\nqualification_profile = \"controlled_loopback\"\nbind_address = \"127.0.0.1\"\nlisten_port = 44321\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("controlled-loopback profile still parses");
+        assert_eq!(
+            config.transport.ntcp2.qualification_profile,
+            Ntcp2QualificationProfile::ControlledLoopback
+        );
+        assert!(config.transport.ntcp2.bind_address.is_loopback());
+        assert_eq!(config.transport.ntcp2.listen_port, 44321);
+
+        let non_loopback = text.replace("127.0.0.1", "192.168.10.25");
+        assert!(matches!(
+            Config::parse(&non_loopback),
+            Err(ConfigError::Semantic {
+                field: "transport.ntcp2.bind_address",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ntcp2_defaults_stay_disabled_and_loopback_only() {
+        // Invariant 1: with no `[transport.ntcp2]` section at all, NTCP2
+        // is disabled, disabled-profile, and loopback-only.
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(!config.transport.ntcp2.enabled);
+        assert_eq!(
+            config.transport.ntcp2.qualification_profile,
+            Ntcp2QualificationProfile::Disabled
+        );
+        assert!(config.transport.ntcp2.bind_address.is_loopback());
+    }
+
     #[test]
     fn ntcp2_tuning_fields_do_not_activate_when_disabled() {
         let directory = tempdir().expect("temp directory");
@@ -4619,6 +5927,181 @@ data_dir = "./state"
         assert_eq!(config.netdb.max_encoded_bytes, 4 * 1024 * 1024);
         assert_eq!(config.netdb.min_router_infos, 50);
         assert_eq!(config.netdb.min_floodfill_advertisers, 5);
+        // Plan 489: the routing table and the exploration are off by
+        // default. Plan 489 delivers the table and the policy; the
+        // participation phases that follow wire it in.
+        assert!(!config.netdb.routing_table_enabled);
+        assert_eq!(config.netdb.routing_table_max_entries, 1_024);
+        assert_eq!(config.netdb.routing_table_max_bucket_size, 8);
+        assert!(!config.netdb.exploration_enabled);
+        assert_eq!(config.netdb.exploration_max_peers, 8);
+        assert_eq!(config.netdb.exploration_deadline_ms, 30_000);
+        // Plan 497: the participation maintenance cadence is additive and
+        // defaults to one minute.
+        assert_eq!(
+            config.netdb.participation_maintenance_period_ms,
+            default_netdb_participation_maintenance_period_ms()
+        );
+    }
+
+    #[test]
+    fn the_routing_table_and_the_exploration_can_be_enabled() {
+        let text = format!(
+            "{}\n[netdb]\nrouting_table_enabled = true\nexploration_enabled = true\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("valid configuration");
+        assert!(config.netdb.routing_table_enabled);
+        assert!(config.netdb.exploration_enabled);
+    }
+
+    #[test]
+    fn the_exploration_needs_the_routing_table() {
+        let text = format!("{}\n[netdb]\nexploration_enabled = true\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.exploration_enabled",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_routing_table_bounds_are_enforced() {
+        let zero = format!("{}\n[netdb]\nrouting_table_max_entries = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&zero),
+            Err(ConfigError::Semantic {
+                field: "netdb.routing_table_max_entries",
+                ..
+            })
+        ));
+        let huge = format!(
+            "{}\n[netdb]\nrouting_table_max_entries = {}\n",
+            MINIMAL,
+            MAX_ALLOWED_ROUTING_TABLE_ENTRIES + 1
+        );
+        assert!(matches!(
+            Config::parse(&huge),
+            Err(ConfigError::Semantic {
+                field: "netdb.routing_table_max_entries",
+                ..
+            })
+        ));
+        let bucket = format!("{}\n[netdb]\nrouting_table_max_bucket_size = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&bucket),
+            Err(ConfigError::Semantic {
+                field: "netdb.routing_table_max_bucket_size",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_exploration_bounds_are_enforced() {
+        let peers = format!("{}\n[netdb]\nexploration_max_peers = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&peers),
+            Err(ConfigError::Semantic {
+                field: "netdb.exploration_max_peers",
+                ..
+            })
+        ));
+        let deadline = format!(
+            "{}\n[netdb]\nexploration_deadline_ms = {}\n",
+            MINIMAL,
+            MIN_EXPLORATION_DEADLINE_MS - 1
+        );
+        assert!(matches!(
+            Config::parse(&deadline),
+            Err(ConfigError::Semantic {
+                field: "netdb.exploration_deadline_ms",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_defaults_to_one_minute() {
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert_eq!(
+            config.netdb.participation_maintenance_period_ms,
+            default_netdb_participation_maintenance_period_ms()
+        );
+        assert_eq!(config.netdb.participation_maintenance_period_ms, 60_000);
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_is_accepted_at_its_default() {
+        let text = format!(
+            "{}\n[netdb]\nparticipation_maintenance_period_ms = {}\n",
+            MINIMAL,
+            default_netdb_participation_maintenance_period_ms()
+        );
+        let config = Config::parse(&text).expect("valid configuration");
+        assert_eq!(
+            config.netdb.participation_maintenance_period_ms,
+            default_netdb_participation_maintenance_period_ms()
+        );
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_refuses_zero() {
+        let text = format!(
+            "{}\n[netdb]\nparticipation_maintenance_period_ms = 0\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.participation_maintenance_period_ms",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_refuses_a_value_above_the_ceiling() {
+        let text = format!(
+            "{}\n[netdb]\nparticipation_maintenance_period_ms = {}\n",
+            MINIMAL,
+            MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS + 1
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.participation_maintenance_period_ms",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_accepts_the_ceiling_itself() {
+        let text = format!(
+            "{}\n[netdb]\nparticipation_maintenance_period_ms = {}\n",
+            MINIMAL, MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS
+        );
+        let config = Config::parse(&text).expect("valid configuration");
+        assert_eq!(
+            config.netdb.participation_maintenance_period_ms,
+            MAX_ALLOWED_PARTICIPATION_MAINTENANCE_PERIOD_MS
+        );
+    }
+
+    #[test]
+    fn the_netdb_participation_maintenance_cadence_is_additive() {
+        // The new key changes no existing key's meaning: the neighbouring
+        // keys keep their defaults and their own bounds.
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(!config.netdb.routing_table_enabled);
+        assert_eq!(config.netdb.routing_table_max_entries, 1_024);
+        assert_eq!(config.netdb.routing_table_max_bucket_size, 8);
+        assert!(!config.netdb.exploration_enabled);
+        assert_eq!(config.netdb.exploration_max_peers, 8);
+        assert_eq!(config.netdb.exploration_deadline_ms, 30_000);
     }
 
     #[test]
@@ -4887,15 +6370,12 @@ data_dir = "./state"
 
     #[test]
     fn ssu2_enabled_true_rejects_broad_exposure() {
-        // advertise/introducer stay rejected even under the controlled
-        // profile; no wildcard/non-loopback bind is reachable because
-        // `parse_ssu2_bind` rejects it fail-closed.
-        for extra in [
-            "advertise = true",
-            "introducer_service = true",
-            "bind_ipv4 = \"0.0.0.0\"",
-            "bind_ipv4 = \"192.0.2.1\"",
-        ] {
+        // No wildcard/non-loopback bind is reachable because
+        // `parse_ssu2_bind` rejects it fail-closed. Plan 490 makes the
+        // introducer role available behind an explicit opt-in, and Plan
+        // 520 makes the router's own address publication available behind
+        // an explicit opt-in, so neither is in this list.
+        for extra in ["bind_ipv4 = \"0.0.0.0\"", "bind_ipv4 = \"192.0.2.1\""] {
             let text = format!("{}\n[ssu2]\nenabled = true\n{}\n", MINIMAL, extra);
             assert!(
                 Config::parse(&text).is_err(),
@@ -5055,7 +6535,35 @@ data_dir = "./state"
     }
 
     #[test]
+    fn ssu2_advertise_is_an_explicit_opt_in_behind_the_controlled_profile() {
+        // Plan 520: the router may publish **its own** SSU2 address behind
+        // an explicit opt-in. The switch is off by default, it requires
+        // the SSU2 service itself to run, and it is refused outside the
+        // controlled loopback profile.
+        let text = format!("{}\n[ssu2]\nenabled = true\nadvertise = true\n", MINIMAL);
+        let config = Config::parse(&text).expect("the controlled profile may opt in");
+        assert!(config.ssu2.enabled);
+        assert!(config.ssu2.advertise);
+        // The private-LAN profile may not: the runtime's publication
+        // material is refused for any non-loopback bind, so the address
+        // could never be earned there.
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nadvertise = true\nqualification_profile = \"private_lan_qualification\"\nbind_ipv4 = \"192.168.10.25\"\nbind_ipv6 = \"\"\nport = 44123\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "ssu2.advertise",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn ssu2_advertise_and_introducer_are_rejected() {
+        // Plan 520: the publication is an explicit opt-in, but it needs
+        // the SSU2 service itself to run, so the switch alone is refused.
         let text = format!("{}\n[ssu2]\nadvertise = true\n", MINIMAL);
         assert!(matches!(
             Config::parse(&text),
@@ -5064,6 +6572,8 @@ data_dir = "./state"
                 ..
             })
         ));
+        // Plan 490: the introducer role is available behind an explicit
+        // opt-in, but it needs the SSU2 service itself to run.
         let text = format!("{}\n[ssu2]\nintroducer_service = true\n", MINIMAL);
         assert!(matches!(
             Config::parse(&text),
@@ -5072,6 +6582,33 @@ data_dir = "./state"
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn ssu2_introducer_service_is_available_and_default_off() {
+        // The key is accepted, default off, and the disabled message is
+        // truthful: the role exists, it is simply not enabled.
+        let config = Config::parse(MINIMAL).expect("minimal config");
+        assert!(!config.ssu2.introducer_service);
+        assert_eq!(
+            config.ssu2.introducer_service_status(),
+            crate::config::SSU2_INTRODUCER_DISABLED_REASON
+        );
+        assert!(
+            crate::config::SSU2_INTRODUCER_DISABLED_REASON.contains("available but not enabled"),
+            "the disabled message must not claim the role is unavailable"
+        );
+        // The opt-in parses when the SSU2 service itself runs.
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nintroducer_service = true\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("introducer opt-in");
+        assert!(config.ssu2.introducer_service);
+        assert_eq!(
+            config.ssu2.introducer_service_status(),
+            crate::config::SSU2_INTRODUCER_ENABLED_REASON
+        );
     }
 
     #[test]
@@ -5159,6 +6696,51 @@ data_dir = "./state"
     fn unknown_ssu2_fields_are_rejected() {
         let text = format!("{}\n[ssu2]\nunknown = true\n", MINIMAL);
         assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    // --- Plan 476 local receipt export ---
+
+    #[test]
+    fn ssu2_local_receipt_export_is_absent_by_default() {
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(config.ssu2.qualification_receipt_path.is_none());
+    }
+
+    #[test]
+    fn ssu2_local_receipt_export_requires_an_absolute_path() {
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\nqualification_receipt_path = \"relative/receipt.json\"\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { field, .. }) if field == "ssu2.qualification_receipt_path"
+        ));
+    }
+
+    #[test]
+    fn ssu2_local_receipt_export_requires_the_transport_to_be_enabled() {
+        let text = format!(
+            "{}\n[ssu2]\nenabled = false\nqualification_receipt_path = \"/tmp/i2pr-receipt.json\"\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { field, .. }) if field == "ssu2.qualification_receipt_path"
+        ));
+    }
+
+    #[test]
+    fn ssu2_local_receipt_export_accepts_an_absolute_path() {
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\nqualification_receipt_path = \"/tmp/i2pr-receipt.json\"\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("valid export configuration");
+        assert_eq!(
+            config.ssu2.qualification_receipt_path,
+            Some(PathBuf::from("/tmp/i2pr-receipt.json"))
+        );
     }
 
     // --- Plan 174 service-tunnel foundation ---

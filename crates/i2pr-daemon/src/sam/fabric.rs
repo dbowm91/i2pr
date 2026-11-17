@@ -398,6 +398,13 @@ impl std::error::Error for LocalDeliveryDegradation {}
 /// Plan 149 §8 requires the driver to record every typed bounded
 /// failure; the SAM service exposes the counters for the FORWARD and
 /// PLAN 149 fault tests.
+///
+/// Plan 478 send-side attribution: the aggregate `delivery_failed`
+/// is additionally split by cause so a SYN-send failure names its
+/// owner (peer LS2 missing vs invalid vs install vs the
+/// `bridge_to_peer` seam). The four split fields always sum to the
+/// aggregate: every split site increments both via
+/// [`DeliverySweepCounters::note_split_failure`].
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 pub struct DeliverySweepCounters {
     /// Number of `TransportSendRequest`s successfully delivered.
@@ -412,9 +419,85 @@ pub struct DeliverySweepCounters {
     pub unknown_peer: usize,
     /// Number of requests rejected by the local destination delivery seam.
     pub delivery_failed: usize,
+    /// Split of `delivery_failed`: peer bridge holds no LeaseSet2.
+    pub delivery_failed_ls2_missing: usize,
+    /// Split of `delivery_failed`: peer LeaseSet2 failed validation.
+    pub delivery_failed_ls2_invalid: usize,
+    /// Split of `delivery_failed`: validated peer LeaseSet2 failed install.
+    pub delivery_failed_ls2_install: usize,
+    /// Split of `delivery_failed`: the `bridge_to_peer` seam failed.
+    pub delivery_failed_bridge: usize,
+    /// Number of `deliver_outbound` invocations folded into this
+    /// snapshot. Every return path of both sweep seams counts
+    /// exactly one sweep — including empty sweeps and
+    /// bridge-missing sweeps — so a zero `sweeps` delta over a
+    /// wait proves the per-destination driver never ran, while
+    /// `sweeps > 0` with all outcome counters zero proves it
+    /// swept but found nothing queued. Activity, not degradation:
+    /// excluded from [`DeliverySweepCounters::clean`].
+    pub sweeps: usize,
+}
+
+/// Typed send-side failure cause for the `delivery_failed` split.
+/// Counts only; no identities, keys, or payload material.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SendFailureCause {
+    /// Peer bridge holds no LeaseSet2.
+    Ls2Missing,
+    /// Peer LeaseSet2 failed validation.
+    Ls2Invalid,
+    /// Validated peer LeaseSet2 failed install.
+    Ls2Install,
+    /// The `bridge_to_peer` seam failed.
+    Bridge,
 }
 
 impl DeliverySweepCounters {
+    /// One executed sweep with no outcomes: the canonical return
+    /// for bridge-missing and empty-queue paths. Keeps the driver
+    /// liveness signal (`sweeps`) moving even when there was
+    /// nothing to deliver.
+    pub fn one_sweep() -> Self {
+        Self {
+            sweeps: 1,
+            ..Self::default()
+        }
+    }
+
+    /// Records one typed send-side failure: increments the
+    /// aggregate and exactly the matching split field, with
+    /// saturating arithmetic. Every `delivery_failed` site must go
+    /// through here so the split sum invariant holds structurally.
+    pub fn note_split_failure(&mut self, cause: SendFailureCause) {
+        self.delivery_failed = self.delivery_failed.saturating_add(1);
+        match cause {
+            SendFailureCause::Ls2Missing => {
+                self.delivery_failed_ls2_missing =
+                    self.delivery_failed_ls2_missing.saturating_add(1);
+            }
+            SendFailureCause::Ls2Invalid => {
+                self.delivery_failed_ls2_invalid =
+                    self.delivery_failed_ls2_invalid.saturating_add(1);
+            }
+            SendFailureCause::Ls2Install => {
+                self.delivery_failed_ls2_install =
+                    self.delivery_failed_ls2_install.saturating_add(1);
+            }
+            SendFailureCause::Bridge => {
+                self.delivery_failed_bridge = self.delivery_failed_bridge.saturating_add(1);
+            }
+        }
+    }
+
+    /// Sum of the four split fields. Equals `delivery_failed` when
+    /// every failure site used `note_split_failure`.
+    pub fn split_failure_sum(&self) -> usize {
+        self.delivery_failed_ls2_missing
+            .saturating_add(self.delivery_failed_ls2_invalid)
+            .saturating_add(self.delivery_failed_ls2_install)
+            .saturating_add(self.delivery_failed_bridge)
+    }
+
     /// Adds another bounded sweep into this snapshot without allowing
     /// counters to wrap.
     pub fn saturating_add_assign(&mut self, other: Self) {
@@ -425,15 +508,33 @@ impl DeliverySweepCounters {
             .saturating_add(other.factory_exhausted);
         self.unknown_peer = self.unknown_peer.saturating_add(other.unknown_peer);
         self.delivery_failed = self.delivery_failed.saturating_add(other.delivery_failed);
+        self.delivery_failed_ls2_missing = self
+            .delivery_failed_ls2_missing
+            .saturating_add(other.delivery_failed_ls2_missing);
+        self.delivery_failed_ls2_invalid = self
+            .delivery_failed_ls2_invalid
+            .saturating_add(other.delivery_failed_ls2_invalid);
+        self.delivery_failed_ls2_install = self
+            .delivery_failed_ls2_install
+            .saturating_add(other.delivery_failed_ls2_install);
+        self.delivery_failed_bridge = self
+            .delivery_failed_bridge
+            .saturating_add(other.delivery_failed_bridge);
+        self.sweeps = self.sweeps.saturating_add(other.sweeps);
     }
 
     /// `true` when every successful delivery happened with no
-    /// typed degradation.
+    /// typed degradation. `sweeps` is activity, not degradation,
+    /// and is deliberately excluded: an empty sweep stays clean.
     pub const fn clean(&self) -> bool {
         self.missing_factory == 0
             && self.factory_exhausted == 0
             && self.unknown_peer == 0
             && self.delivery_failed == 0
+            && self.delivery_failed_ls2_missing == 0
+            && self.delivery_failed_ls2_invalid == 0
+            && self.delivery_failed_ls2_install == 0
+            && self.delivery_failed_bridge == 0
     }
 }
 
@@ -455,3 +556,82 @@ pub fn degrade_to_reason(counters: DeliverySweepCounters) -> Option<LocalDeliver
 
 /// Convenience alias for the per-destination transport request.
 pub type LocalTransportRequest = TransportSendRequest;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_failure_notes_aggregate_and_exactly_one_cause() {
+        let causes = [
+            SendFailureCause::Ls2Missing,
+            SendFailureCause::Ls2Invalid,
+            SendFailureCause::Ls2Install,
+            SendFailureCause::Bridge,
+        ];
+        for (index, cause) in causes.iter().enumerate() {
+            let mut counters = DeliverySweepCounters::default();
+            assert!(counters.clean(), "fresh counters must be clean");
+            counters.note_split_failure(*cause);
+            assert_eq!(counters.delivery_failed, 1, "aggregate must move");
+            let fields = [
+                counters.delivery_failed_ls2_missing,
+                counters.delivery_failed_ls2_invalid,
+                counters.delivery_failed_ls2_install,
+                counters.delivery_failed_bridge,
+            ];
+            assert_eq!(fields[index], 1, "exactly the matching split field moves");
+            assert_eq!(
+                fields.iter().sum::<usize>(),
+                1,
+                "no sibling split field may move"
+            );
+            assert_eq!(
+                counters.split_failure_sum(),
+                counters.delivery_failed,
+                "split sum must equal the aggregate"
+            );
+            assert!(!counters.clean(), "noted failure must read dirty");
+        }
+    }
+
+    #[test]
+    fn split_counters_accumulate_and_clean_covers_new_fields() {
+        let mut first = DeliverySweepCounters::default();
+        first.note_split_failure(SendFailureCause::Ls2Missing);
+        first.note_split_failure(SendFailureCause::Bridge);
+        let mut second = DeliverySweepCounters::default();
+        second.note_split_failure(SendFailureCause::Ls2Invalid);
+        second.delivered = second.delivered.saturating_add(3);
+        first.saturating_add_assign(second);
+        assert_eq!(first.delivery_failed, 3);
+        assert_eq!(first.delivery_failed_ls2_missing, 1);
+        assert_eq!(first.delivery_failed_ls2_invalid, 1);
+        assert_eq!(first.delivery_failed_ls2_install, 0);
+        assert_eq!(first.delivery_failed_bridge, 1);
+        assert_eq!(first.delivered, 3);
+        assert_eq!(first.split_failure_sum(), first.delivery_failed);
+        assert!(!first.clean());
+        assert!(DeliverySweepCounters::default().clean());
+    }
+
+    #[test]
+    fn sweeps_count_invocations_and_stay_clean() {
+        let empty = DeliverySweepCounters::one_sweep();
+        assert_eq!(empty.sweeps, 1);
+        assert!(
+            empty.clean(),
+            "an empty sweep is activity without degradation"
+        );
+        assert_eq!(empty.split_failure_sum(), 0);
+        let mut merged = DeliverySweepCounters::default();
+        assert_eq!(merged.sweeps, 0, "no sweep ran yet");
+        merged.saturating_add_assign(empty);
+        merged.saturating_add_assign(DeliverySweepCounters::one_sweep());
+        assert_eq!(merged.sweeps, 2);
+        assert!(merged.clean(), "sweeps alone must not read dirty");
+        merged.note_split_failure(SendFailureCause::Bridge);
+        assert_eq!(merged.sweeps, 2, "failures must not move sweeps");
+        assert!(!merged.clean());
+    }
+}

@@ -1,0 +1,34 @@
+{
+  "ban_triggers": [
+    {
+      "caps": "LU",
+      "version": "0.9.56"
+    },
+    {
+      "caps": "L",
+      "version": "0.9.57"
+    },
+    {
+      "caps": "GXf",
+      "version": "0.9.67"
+    }
+  ],
+  "exclude_caps": [
+    "K",
+    "E",
+    "G"
+  ],
+  "family": "i2pd",
+  "floodfill_enabled": false,
+  "max_share_bandwidth_kbps": 64,
+  "min_allowed_version": "0.9.58",
+  "min_floodfill_version": "0.9.62",
+  "min_peer_test_version": "0.9.62",
+  "min_selection_version": "0.9.62",
+  "network_id": 2,
+  "schema": "i2pr-plan495-peer-config-v1",
+  "supported_transports": [
+    "SSU2",
+    "NTCP2"
+  ]
+}

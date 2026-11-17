@@ -1,0 +1,9 @@
+{
+  "advertised_endpoint_matches_bound_socket": true,
+  "no_stale_netdb_files": true,
+  "peer_data_dir_fresh": true,
+  "peer_process_fresh": true,
+  "schema": "i2pr-plan495-peer-state-v1",
+  "stale_netdb_file_count": 0,
+  "static_key_matches_bound_port": true
+}

@@ -218,7 +218,7 @@ fn plan125_established_pair_both_sides_reach_established() {
             0,
         )
         .expect("bob process SYN");
-    let bob_inbound = bob_mgr.accept(REMOTE_PORT).expect("bob accept");
+    let bob_inbound = bob_mgr.accept(REMOTE_PORT, 0).expect("bob accept");
     assert_eq!(bob_inbound.raw(), bob_inbound.raw());
 
     let bob_response = bob_mgr
@@ -315,7 +315,7 @@ fn plan125_data_packet_routing_finds_outbound_connection() {
             0,
         )
         .expect("bob process SYN");
-    let bob_inbound = bob_mgr.accept(REMOTE_PORT).expect("bob accept");
+    let bob_inbound = bob_mgr.accept(REMOTE_PORT, 0).expect("bob accept");
     let _ = bob_mgr
         .accept_inbound_syn(
             &bob_dest,

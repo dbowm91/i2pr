@@ -814,7 +814,7 @@ async fn accept_inbound_syn_response(
     if streaming.listener_backlog(0) < 1 {
         return None;
     }
-    let inbound_id = streaming.accept(0).expect("accept inbound SYN");
+    let inbound_id = streaming.accept(0, wall_ms()).expect("accept inbound SYN");
     let (peer_bytes, peer_key, inbound_local, inbound_remote) = {
         let inbound = streaming
             .get_connection(inbound_id)

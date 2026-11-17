@@ -527,7 +527,11 @@ fn verify_archive<R: Read + io::Seek>(
         let file = archive
             .by_index(index)
             .map_err(|_| PackageError::InvalidArchive)?;
-        let name = file.name().to_owned();
+        // Plan 487 WP6 (zip 9): the entry name is now fallible.
+        let name = file
+            .name()
+            .map_err(|_| PackageError::InvalidArchive)?
+            .into_owned();
         if !names.insert(name.clone())
             || file.is_dir()
             || file.compression() != CompressionMethod::Stored

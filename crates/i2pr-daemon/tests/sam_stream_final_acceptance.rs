@@ -623,6 +623,98 @@ async fn plan151_sibling_streams_isolate_close_one() {
     shutdown_and_assert_baselines(&state, scope, parent).await;
 }
 
+/// Plan 485 — sequential streams reuse one live session across a
+/// zero-attachment gap. Unlike the sibling tests above (Plan 149
+/// same-socket path), the session control sockets stay open in
+/// control mode on dedicated sockets while streams run on fresh
+/// sockets (the lane shape). Finishing the first pair must NOT tear
+/// the sessions down; the second pair on the same session IDs must
+/// still establish. Before the fix the first finish emitted a
+/// cause-3 teardown and the second ACCEPT/CONNECT failed
+/// `InvalidId`.
+#[tokio::test(flavor = "current_thread")]
+async fn plan485_sequential_streams_reuse_live_session() {
+    let (state, address, scope, parent) = start_listener(sam_config(), None).await;
+
+    // Dedicated control sockets: SESSION CREATE, then park open.
+    // These never enter raw mode, so they own their sessions until
+    // explicitly closed.
+    let priv_a = transient_destination(address).await;
+    let priv_b = transient_destination(address).await;
+    let mut control_a = TcpStream::connect(address).await.expect("control a");
+    let mut control_b = TcpStream::connect(address).await.expect("control b");
+    hello_3_1(&mut control_a).await;
+    hello_3_1(&mut control_b).await;
+    let _pub_a = session_create(&mut control_a, "alpha", &priv_a).await;
+    let pub_b = session_create(&mut control_b, "beta", &priv_b).await;
+    assert_eq!(state.session_registry().session_count(), 2);
+
+    // First pair on fresh sockets (concurrent ACCEPT/CONNECT so the
+    // SYN meets a parked waiter); exchange; close both streams.
+    let pub_b_one = pub_b.clone();
+    let accept_one = tokio::spawn(async move { accept_stream(address, "beta").await });
+    let connect_one =
+        tokio::spawn(async move { connect_stream(address, "alpha", &pub_b_one).await });
+    let (mut b_one, _) = accept_one.await.expect("accept one");
+    let mut a_one = connect_one.await.expect("connect one");
+    let payload_one_a = test_pattern(1024, 0xE1);
+    let payload_one_b = test_pattern(1024, 0xE2);
+    exchange_exact(&mut a_one, &mut b_one, &payload_one_a, &payload_one_b).await;
+    drop(a_one);
+    drop(b_one);
+    assert!(
+        wait_for_condition(LIFECYCLE_POLL_TIMEOUT, || {
+            state.stream_registry().attachment_count() == 0
+        })
+        .await,
+        "first-pair attachments did not release"
+    );
+    // THE Plan 485 assertion: zero-attachment gap, sessions live.
+    assert_eq!(
+        state.session_registry().session_count(),
+        2,
+        "sessions must survive the gap between sequential streams"
+    );
+
+    // Second pair SEQUENTIALLY after the gap, same session IDs.
+    let pub_b_two = pub_b.clone();
+    let accept_two = tokio::spawn(async move { accept_stream(address, "beta").await });
+    let connect_two =
+        tokio::spawn(async move { connect_stream(address, "alpha", &pub_b_two).await });
+    let (mut b_two, _) = accept_two.await.expect("accept two");
+    let mut a_two = connect_two.await.expect("connect two");
+    let payload_two_a = test_pattern(1024, 0xE3);
+    let payload_two_b = test_pattern(1024, 0xE4);
+    exchange_exact(&mut a_two, &mut b_two, &payload_two_a, &payload_two_b).await;
+    drop(a_two);
+    drop(b_two);
+    assert!(
+        wait_for_condition(LIFECYCLE_POLL_TIMEOUT, || {
+            state.stream_registry().attachment_count() == 0
+        })
+        .await,
+        "second-pair attachments did not release"
+    );
+    // Sessions still live: control sockets remain open.
+    assert_eq!(
+        state.session_registry().session_count(),
+        2,
+        "sessions must survive the second zero-attachment gap"
+    );
+
+    // Explicit control-socket close ends the sessions (cause-2 path).
+    drop(control_a);
+    drop(control_b);
+    assert!(
+        wait_for_condition(LIFECYCLE_POLL_TIMEOUT, || {
+            state.session_registry().session_count() == 0
+        })
+        .await,
+        "control-socket close did not tear the sessions down"
+    );
+    shutdown_and_assert_baselines(&state, scope, parent).await;
+}
+
 fn slow_peer_ceilings(streams: usize) -> (usize, usize, usize, usize) {
     // Explicit reservoirs derived from the balanced Streaming
     // profile: send/recv windows bound in-flight packets per

@@ -69,15 +69,19 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use i2pr_client::DestinationTunnelPool;
 use i2pr_netdb::{
     DestinationHash, InsertOutcome, LeaseSet2Store, LookupAction, LookupId, LookupPolicy,
     ReplyPath, ReplyPathError, ResponseOutcome, RouterHash, RouterInfoStore, RouterInfoStoreConfig,
-    router_hash_from_destination, select_floodfill_candidates,
+    VersionGatedFloodfillSelection, router_hash_from_destination, select_floodfill_candidates,
+    select_version_gated_floodfills,
 };
-use i2pr_proto::{Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE};
+use i2pr_proto::{
+    Date, Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE,
+};
 use i2pr_transport::Deadline;
 use i2pr_tunnel::data_plane_registry::{DataPlaneRegistry, InboundGatewayRoute};
 use i2pr_tunnel::roles::OutboundGatewayRole;
@@ -90,6 +94,21 @@ pub const MAX_CONCURRENT_LEASE_LOOKUPS: usize = 8;
 pub const MAX_RETAINED_LEASE_REPLY_PATHS: usize = 8;
 /// Maximum concurrent local LeaseSet2 publications.
 pub const MAX_CONCURRENT_LEASE_PUBLICATIONS: usize = 8;
+/// Minimum interval between two local LeaseSet2 publications of the
+/// same destination, in milliseconds (Plan 487 WP4).
+///
+/// The publish-and-acknowledge loop rate-limits the wire: a floodfill
+/// store is an expensive, stateful operation, and a destination that
+/// republished on every driver tick would both hammer the floodfill
+/// and race its own acknowledgement.
+pub const MIN_LS2_PUBLICATION_INTERVAL_MS: u64 = 1_000;
+/// Maximum acknowledged local LeaseSet2 publications retained for
+/// inspection (Plan 487 WP4).
+pub const MAX_RETAINED_LS2_PUBLICATION_ACKS: usize = 8;
+/// How long a pending local LeaseSet2 publication waits for its
+/// correlated `DeliveryStatus` before it is reaped, in milliseconds
+/// (Plan 487 WP4).
+pub const LS2_PUBLICATION_ACK_DEADLINE_MS: u64 = 30_000;
 /// Maximum lookup retries before the coordinator reports peer-exhausted.
 pub const MAX_LEASE_LOOKUP_RETRIES: u32 = 3;
 /// Default lookup deadline in milliseconds (matches the lookup policy total).
@@ -142,6 +161,19 @@ pub enum DestinationTunnelError {
     /// The tunnel was lost during the operation.
     #[error("tunnel lost during destination operation")]
     TunnelLost,
+    /// The publication is rate-limited: the same destination published
+    /// less than one second ago.
+    #[error("publication is rate limited for this destination")]
+    PublicationRateLimited,
+    /// The rotation does not advance the record's `published` timestamp
+    /// by at least one second.
+    #[error("publication does not advance the published timestamp")]
+    PublicationNotMonotonic,
+    /// The rotation regresses the oldest advertised lease's
+    /// expiration: the replacement would advertise a lease that dies
+    /// earlier than the record it replaces.
+    #[error("publication regresses the oldest lease expiration")]
+    PublicationExpiryRegressed,
     /// The lookup deadline elapsed.
     #[error("destination lookup deadline elapsed")]
     DeadlineExceeded,
@@ -192,6 +224,9 @@ pub struct DestinationTunnelCounters {
     pub publications_started: u64,
     /// Publications acknowledged via protocol-derived evidence.
     pub publications_acked: u64,
+    /// Plan 487 WP4 — local LeaseSet2 publications reaped because no
+    /// correlated `DeliveryStatus` arrived within the deadline.
+    pub publications_timed_out: u64,
     /// Search-reply responses processed (bounded).
     pub search_replies_merged: u64,
     /// Mismatched key/store responses rejected.
@@ -378,9 +413,111 @@ struct PendingLeaseLookup {
 /// One pending local LeaseSet2 publication tracked by the coordinator.
 #[derive(Clone, Debug)]
 struct PendingLeasePublication {
-    floodfill: RouterHash,
-    store_message: i2pr_proto::DatabaseStoreMessage,
+    intent: PublicationIntent,
     message_id: u32,
+    /// Plan 487 WP4 — the destination the publication belongs to. The
+    /// ledger is keyed by destination, so the acknowledgement can be
+    /// attributed without re-deriving it from the request id.
+    destination: Option<i2pr_client::DestinationId>,
+    /// Plan 487 WP4 — the monotonic time at which the store was
+    /// emitted. The pending entry is reaped when the correlated
+    /// `DeliveryStatus` does not arrive within the deadline.
+    sent_at_ms: Option<u64>,
+    /// Plan 487 WP4 — the record's `published` timestamp, in seconds.
+    published_seconds: u32,
+    /// Plan 487 WP4 — the oldest advertised lease's expiration, in
+    /// milliseconds.
+    oldest_lease_expiry_ms: u64,
+    /// Plan 487 WP4 — the previous publication's `published` second,
+    /// captured when this publication was recorded. The delta against
+    /// it is the record's advance over its predecessor.
+    previous_published_seconds: Option<u32>,
+    /// Plan 487 WP4 — the previous publication's oldest advertised
+    /// lease expiration, in milliseconds.
+    previous_oldest_lease_expiry_ms: Option<u64>,
+}
+
+/// Plan 487 WP4 — the ledger of one destination's most recent local
+/// LeaseSet2 publication.
+///
+/// The ledger is what makes the publish-and-acknowledge loop's three
+/// bounds enforceable across publications: the rate limit, the
+/// `published` monotonicity, and the oldest-lease expiration
+/// advancement. Without it a second publication of the same
+/// destination could carry an older `published` second, and the
+/// floodfill would silently keep the previous record.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PublicationLedgerEntry {
+    /// The `published` timestamp (seconds) of the last published record.
+    pub published_seconds: u32,
+    /// The oldest advertised lease's expiration (milliseconds) of the
+    /// last published record.
+    pub oldest_lease_expiry_ms: u64,
+    /// The monotonic time (milliseconds) at which the last publish was
+    /// emitted.
+    pub published_at_ms: u64,
+    /// The reply token carried by the last published store.
+    pub reply_token: u32,
+}
+
+/// Plan 487 WP4 — one acknowledged local LeaseSet2 publication.
+///
+/// The record carries counts and the inbound tunnel the correlated
+/// `DeliveryStatus` arrived on. It never carries a key, a signature,
+/// an identity, or payload material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationAcknowledgement {
+    /// The publication request identifier.
+    pub request_id: u64,
+    /// The destination the publication belongs to, when the
+    /// publication path recorded one. The tunnel-composed path has no
+    /// destination notion and records none.
+    pub destination: Option<i2pr_client::DestinationId>,
+    /// The reply token the correlated `DeliveryStatus` carried.
+    pub reply_token: u32,
+    /// The inbound tunnel the correlated `DeliveryStatus` arrived on.
+    pub inbound_tunnel_id: u32,
+    /// The record's `published` timestamp (seconds).
+    pub published_seconds: u32,
+    /// The oldest advertised lease's expiration (milliseconds).
+    pub oldest_lease_expiry_ms: u64,
+    /// How far the oldest advertised lease's expiration advanced
+    /// relative to the previous publication of the same destination.
+    /// A rotation replaces the lease that dies first, so this advances
+    /// by at least one millisecond; the first publication has no
+    /// predecessor and records zero.
+    pub oldest_lease_expiry_delta_ms: u64,
+    /// How far the record's `published` timestamp advanced relative to
+    /// the previous publication of the same destination, in seconds.
+    pub published_delta_seconds: u64,
+    /// The monotonic time (milliseconds) at which the publication was
+    /// emitted.
+    pub published_at_ms: u64,
+    /// The monotonic time (milliseconds) at which the acknowledgement
+    /// was observed.
+    pub acknowledged_at_ms: u64,
+}
+
+/// The state of one reserved local LeaseSet2 publication intent.
+///
+/// Plan 487 WP5 (Plan 393): an intent exists from the moment the
+/// coordinator's bounded capacity is reserved, **before** the store
+/// record is composed. The compose, request-construction, and delivery
+/// failure classes each release the reservation through
+/// [`DestinationTunnelCoordinator::cancel_ls2_publication`]. If the
+/// intent were taken only after the record was composed, the first two
+/// classes would have nothing to release and the coordinator's bounded
+/// capacity would leak.
+#[derive(Clone, Debug)]
+enum PublicationIntent {
+    /// Coordinator capacity is reserved; the store record has not been
+    /// composed or attached yet.
+    Reserved,
+    /// The composed record and its publication target are attached.
+    Composed {
+        floodfill: RouterHash,
+        store_message: i2pr_proto::DatabaseStoreMessage,
+    },
 }
 
 /// Test/adapters reply-path provider. Production callers inject the
@@ -491,6 +628,21 @@ pub struct DestinationTunnelCoordinator {
     pending: BTreeMap<u64, PendingLeaseLookup>,
     retained_paths: BTreeMap<u64, ReplyPath>,
     publications: BTreeMap<u64, PendingLeasePublication>,
+    /// Plan 487 WP4 — the per-destination publication ledger.
+    publication_ledger: BTreeMap<i2pr_client::DestinationId, PublicationLedgerEntry>,
+    /// Plan 487 WP4 — the bounded record of acknowledged publications.
+    publication_acks: VecDeque<PublicationAcknowledgement>,
+    /// Plan 492 — the bounded per-peer participation ledger for the
+    /// router's own build-hop selection.
+    hop_participation: i2pr_netdb::ParticipationLedger,
+    /// Plan 492 — the Plan 488 diversity rules the ordinary build-hop
+    /// selection honours.
+    hop_diversity: crate::destination_peers::HopDiversityPolicy,
+    /// Plan 503 — the live owner of the peer-eligibility receipts. The
+    /// coordinator records one receipt per live peer-eligibility decision:
+    /// the tunnel-build gate and the DSM-target gate. A coordinator without
+    /// an owner records nothing.
+    version_eligibility: Option<Arc<crate::version_eligibility::VersionEligibilityOwner>>,
     next_request_id: u64,
     now_ms: u64,
     counters: DestinationTunnelCounters,
@@ -508,15 +660,54 @@ impl DestinationTunnelCoordinator {
             pending: BTreeMap::new(),
             retained_paths: BTreeMap::new(),
             publications: BTreeMap::new(),
+            publication_ledger: BTreeMap::new(),
+            publication_acks: VecDeque::new(),
+            hop_participation: i2pr_netdb::ParticipationLedger::new(
+                crate::destination_peers::HopDiversityPolicy::default().max_participation,
+                i2pr_netdb::MAX_PARTICIPATION_TRACKED_PEERS,
+            ),
+            hop_diversity: crate::destination_peers::HopDiversityPolicy::default(),
+            version_eligibility: None,
             next_request_id: INITIAL_DESTINATION_REQUEST_ID,
             now_ms: 0,
             counters: DestinationTunnelCounters::default(),
         }
     }
 
+    /// Attaches the live peer-eligibility receipt owner.
+    ///
+    /// Plan 503: the coordinator records one receipt per live
+    /// peer-eligibility decision — the tunnel-build gate and the DSM-target
+    /// gate — so the running router's decisions are observable. A
+    /// coordinator without an owner records nothing.
+    pub fn with_version_eligibility(
+        mut self,
+        owner: Arc<crate::version_eligibility::VersionEligibilityOwner>,
+    ) -> Self {
+        self.version_eligibility = Some(owner);
+        self
+    }
+
     /// Returns the authoritative bounded RouterInfo store.
     pub fn store(&self) -> &RouterInfoStore {
         &self.store
+    }
+
+    /// Prunes the authoritative store with the supplied retention window
+    /// and returns the number of records removed.
+    ///
+    /// Plan 507: the coordinator's store is fed by the startup seed and by
+    /// the live peer-knowledge reconcile, and `RouterInfoStore::insert`
+    /// **refuses** at the quota and never evicts -- so a store that filled
+    /// up would refuse every new peer, permanently. The prune is the tree's
+    /// own explicit-prune operation (Plan 103 §3.4: *explicit prune over
+    /// silent eviction*), so the store turns over instead of freezing.
+    ///
+    /// The window is supplied by the caller so the daemon has exactly one
+    /// retention policy, derived from its own acceptance window. The
+    /// operation is deterministic: the caller supplies `now`.
+    pub fn prune(&mut self, now_ms: u64, window_ms: u64) -> usize {
+        self.store.prune(Date::from_millis(now_ms), window_ms)
     }
 
     /// Inserts a record that has already passed the canonical
@@ -532,13 +723,68 @@ impl DestinationTunnelCoordinator {
 
     /// Returns the bounded, privacy-safe build-candidate projection of the
     /// authoritative validated RouterInfo store.
+    ///
+    /// Plan 492: the projection applies the per-peer participation cap, so
+    /// a peer that already accumulated its share of build-hop selections is
+    /// not offered again. The refusal is counted in the summary.
     pub fn destination_peer_candidates(
         &self,
     ) -> (
         Vec<crate::destination_peers::DestinationPeerCandidate>,
         crate::destination_peers::CandidateProjectionSummary,
     ) {
-        crate::destination_peers::project_validated_store(&self.store)
+        let (candidates, summary) = crate::destination_peers::project_validated_store(
+            &self.store,
+            self.hop_participation.counts(),
+            &self.hop_diversity,
+        );
+        // Plan 503: the tunnel-build gate is a live peer-eligibility
+        // decision, so it leaves a receipt. The receipt counts the version
+        // refusals only; the projection's other refusal reasons are counted
+        // in the summary.
+        self.record_version_receipt(
+            crate::version_eligibility::VersionEligibilityReceipt::tunnel_build_peer(
+                &summary,
+                candidates.len(),
+            ),
+        );
+        (candidates, summary)
+    }
+
+    /// Records one peer-eligibility receipt when the live owner is attached.
+    ///
+    /// Plan 503. A coordinator without an owner records nothing: the
+    /// controlled helper and the integration lanes construct one without the
+    /// owner and are unaffected.
+    fn record_version_receipt(
+        &self,
+        receipt: crate::version_eligibility::VersionEligibilityReceipt,
+    ) {
+        if let Some(owner) = &self.version_eligibility {
+            owner.record(receipt);
+        }
+    }
+
+    /// Records one build-hop selection against the bounded per-peer
+    /// participation ledger.
+    ///
+    /// Plan 492: the ledger is what the per-peer participation cap is
+    /// measured against, so a selection that is never recorded would make
+    /// the cap advisory. The ledger saturates at the policy's cap and
+    /// evicts the least recently recorded peer when its own bound is
+    /// reached.
+    pub fn record_hop_selection(&mut self, peers: &[i2pr_proto::Hash]) {
+        for peer in peers {
+            self.hop_participation
+                .record(&i2pr_netdb::RouterHash::from_hash(*peer), self.now_ms);
+        }
+    }
+
+    /// Returns the bounded participation ledger's tracked counters.
+    pub fn hop_participation_counts(
+        &self,
+    ) -> &std::collections::BTreeMap<i2pr_netdb::RouterHash, u32> {
+        self.hop_participation.counts()
     }
 
     /// Returns the validated remote LeaseSet2 cache.
@@ -739,6 +985,55 @@ impl DestinationTunnelCoordinator {
             .hashes()
     }
 
+    /// Returns the version-gated floodfill candidates for the supplied
+    /// destination/routing key through the authoritative store.
+    ///
+    /// Plan 503: a floodfill that publishes no API version, an uncomparable
+    /// API version, or an API version below the DSM floor is **never** a DSM
+    /// target. Every refusal is counted by reason, and the decision leaves a
+    /// receipt. The selection is the same shape as
+    /// [`Self::candidate_hashes`] — the same routing key, the same target
+    /// exclusion, the same policy ceiling — with the floor applied.
+    pub fn version_gated_candidate_hashes(
+        &self,
+        target: &DestinationHash,
+        routing_key: &RouterHash,
+    ) -> VersionGatedFloodfillSelection {
+        let target_hash = router_hash_from_destination(*target);
+        let selection =
+            select_version_gated_floodfills(&self.store, routing_key, &[target_hash], &self.policy);
+        self.record_dsm_receipt(&selection);
+        selection
+    }
+
+    /// Returns the version-gated floodfill candidates for the router's own
+    /// RouterInfo publication.
+    ///
+    /// Plan 503: the creator RouterInfo publication is a `DatabaseStore`, so
+    /// the DSM floor applies to it exactly as it applies to a LeaseSet2
+    /// publication. Our own hash is excluded and is the routing key, which
+    /// is the shape the publication path has always used.
+    pub fn version_gated_publication_floodfills(
+        &self,
+        local_hash: &RouterHash,
+    ) -> VersionGatedFloodfillSelection {
+        let selection =
+            select_version_gated_floodfills(&self.store, local_hash, &[*local_hash], &self.policy);
+        self.record_dsm_receipt(&selection);
+        selection
+    }
+
+    /// Records the DSM-target receipt for one gated selection.
+    fn record_dsm_receipt(&self, selection: &VersionGatedFloodfillSelection) {
+        self.record_version_receipt(
+            crate::version_eligibility::VersionEligibilityReceipt::dsm_target(
+                selection.examined(),
+                selection.accepted(),
+                selection.refusals(),
+            ),
+        );
+    }
+
     /// Returns a privacy-safe summary of the cached remote LeaseSet2,
     /// if present.
     pub fn remote_lease_summary(
@@ -912,6 +1207,47 @@ impl DestinationTunnelCoordinator {
                 Err(DestinationTunnelError::InvalidReplyPath)
             }
             LookupAction::Complete { .. } => {
+                self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
+                Err(DestinationTunnelError::NoEligibleCandidates)
+            }
+        }
+    }
+
+    /// Advances one pending LeaseSet2 lookup to its next floodfill
+    /// candidate after the previous attempt went unanswered. The
+    /// state machine skips already-queried peers, so a retry rotates
+    /// instead of re-asking the silent floodfill; exhaustion frees
+    /// the pending slot and terminates honestly with
+    /// `NoEligibleCandidates`, never a spin. Unknown or already
+    /// completed request ids fail closed with `UnknownLookup`.
+    pub fn advance_lease_lookup_after_timeout(
+        &mut self,
+        request_id: u64,
+        routing_key: &RouterHash,
+    ) -> Result<LookupAction, DestinationTunnelError> {
+        let pending = self
+            .pending
+            .get_mut(&request_id)
+            .ok_or(DestinationTunnelError::UnknownLookup)?;
+        pending.retries = pending.retries.saturating_add(1);
+        pending.deadline_ms = pending
+            .deadline_ms
+            .saturating_add(DEFAULT_LEASE_LOOKUP_DEADLINE_MS);
+        let action = self
+            .seam
+            .advance_lease_set2_after_timeout_with_store(&self.store, routing_key);
+        match action {
+            LookupAction::SendDatabaselookup { .. } => Ok(action),
+            LookupAction::NeedExploratoryReplyPath { .. } => {
+                self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
+                self.counters.reply_paths_unresolved =
+                    self.counters.reply_paths_unresolved.saturating_add(1);
+                Err(DestinationTunnelError::InvalidReplyPath)
+            }
+            LookupAction::Complete { .. } => {
+                self.pending.remove(&request_id);
+                self.retained_paths.remove(&request_id);
+                self.seam.cancel_lease_set2_lookup();
                 self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
                 Err(DestinationTunnelError::NoEligibleCandidates)
             }
@@ -1338,13 +1674,102 @@ impl DestinationTunnelCoordinator {
         self.publications.insert(
             request_id,
             PendingLeasePublication {
-                floodfill,
-                store_message,
+                intent: PublicationIntent::Composed {
+                    floodfill,
+                    store_message,
+                },
                 message_id: 0,
+                destination: None,
+                sent_at_ms: None,
+                published_seconds: 0,
+                oldest_lease_expiry_ms: 0,
+                previous_published_seconds: None,
+                previous_oldest_lease_expiry_ms: None,
             },
         );
         self.counters.publications_started = self.counters.publications_started.saturating_add(1);
         Ok(request_id)
+    }
+
+    /// Reserves coordinator capacity for one local LeaseSet2
+    /// publication and returns its request id, **before** the store
+    /// record is composed.
+    ///
+    /// Plan 487 WP5 (Plan 393): the product publication path must hold
+    /// an intent for the whole attempt, so that the compose and
+    /// request-construction failure classes have an intent to release.
+    /// The reservation is completed by
+    /// [`Self::attach_ls2_publication`]; a reservation that is never
+    /// attached is released by [`Self::cancel_ls2_publication`].
+    pub fn reserve_ls2_publication(&mut self) -> Result<u64, DestinationTunnelError> {
+        if self.publications.len() >= MAX_CONCURRENT_LEASE_PUBLICATIONS {
+            return Err(DestinationTunnelError::TooManyPublications);
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.checked_add(1).expect("request id");
+        self.publications.insert(
+            request_id,
+            PendingLeasePublication {
+                intent: PublicationIntent::Reserved,
+                message_id: 0,
+                destination: None,
+                sent_at_ms: None,
+                published_seconds: 0,
+                oldest_lease_expiry_ms: 0,
+                previous_published_seconds: None,
+                previous_oldest_lease_expiry_ms: None,
+            },
+        );
+        self.counters.publications_started = self.counters.publications_started.saturating_add(1);
+        Ok(request_id)
+    }
+
+    /// Attaches a composed store record and its publication target to
+    /// a reservation taken by [`Self::reserve_ls2_publication`].
+    ///
+    /// The validation is the same as
+    /// [`Self::begin_ls2_publication`]; a rejected attachment leaves
+    /// the reservation in place, and the caller releases it with
+    /// [`Self::cancel_ls2_publication`].
+    pub fn attach_ls2_publication(
+        &mut self,
+        request_id: u64,
+        store_message: i2pr_proto::DatabaseStoreMessage,
+        floodfill: RouterHash,
+    ) -> Result<(), DestinationTunnelError> {
+        if !self.publications.contains_key(&request_id) {
+            return Err(DestinationTunnelError::UnknownPublication);
+        }
+        if !self.is_floodfill(&floodfill) {
+            return Err(DestinationTunnelError::NoEligibleCandidates);
+        }
+        if store_message.key == Hash::from_bytes(*floodfill.as_bytes()) {
+            return Err(DestinationTunnelError::Publication(
+                "store key must be destination-derived, not floodfill".to_owned(),
+            ));
+        }
+        let valid_record = match &store_message.data {
+            i2pr_proto::DatabaseStoreData::LeaseSet2(_) => true,
+            i2pr_proto::DatabaseStoreData::EncryptedLeaseSet(record) => {
+                i2pr_crypto::red25519::Red25519PublicKey::decode(record.blinded_public_key())
+                    .ok()
+                    .map(|key| i2pr_crypto::red25519::blinded_storage_key(&key))
+                    == Some(store_message.key)
+            }
+            _ => false,
+        };
+        if !valid_record {
+            return Err(DestinationTunnelError::Publication(
+                "publication body or destination-derived store key is invalid".to_owned(),
+            ));
+        }
+        if let Some(entry) = self.publications.get_mut(&request_id) {
+            entry.intent = PublicationIntent::Composed {
+                floodfill,
+                store_message,
+            };
+        }
+        Ok(())
     }
 
     /// Composes one outbound local LeaseSet2 publication through the
@@ -1372,13 +1797,24 @@ impl DestinationTunnelCoordinator {
             .publications
             .get(&request_id)
             .ok_or(DestinationTunnelError::UnknownPublication)?;
-        if Hash::from_bytes(*pending.floodfill.as_bytes()) != target_floodfill {
+        let (pending_floodfill, pending_store_message) = match &pending.intent {
+            PublicationIntent::Composed {
+                floodfill,
+                store_message,
+            } => (floodfill, store_message),
+            PublicationIntent::Reserved => {
+                return Err(DestinationTunnelError::Publication(
+                    "publication record is not attached to the reserved intent".to_owned(),
+                ));
+            }
+        };
+        if Hash::from_bytes(*pending_floodfill.as_bytes()) != target_floodfill {
             return Err(DestinationTunnelError::Publication(
                 "publication floodfill mismatch".to_owned(),
             ));
         }
         let dispatch = crate::outbound_lookup::compose_outbound_publication(
-            &pending.store_message,
+            pending_store_message,
             target_floodfill,
             role,
             message_id,
@@ -1424,10 +1860,18 @@ impl DestinationTunnelCoordinator {
     /// Correlates a `DeliveryStatus` reply with a tracked local
     /// LeaseSet2 publication. A mismatched token is a typed rejection;
     /// only protocol-derived acknowledgement completes the row.
+    ///
+    /// Plan 487 WP4 — the correlated status is attributed to the
+    /// inbound tunnel it arrived on. That is the whole point of the
+    /// publish-and-acknowledge loop: a publication is acknowledged
+    /// only when the floodfill's `DeliveryStatus` comes back **through
+    /// an inbound tunnel**, which proves the record was stored by the
+    /// network rather than merely handed to a socket.
     pub fn correlate_ls2_publication_status(
         &mut self,
         message_id: u32,
-    ) -> Result<u64, DestinationTunnelError> {
+        inbound_tunnel_id: u32,
+    ) -> Result<PublicationAcknowledgement, DestinationTunnelError> {
         let matched = self
             .publications
             .iter()
@@ -1441,9 +1885,165 @@ impl DestinationTunnelCoordinator {
             .ok_or_else(|| {
                 DestinationTunnelError::Publication("delivery status token mismatch".to_owned())
             })?;
-        self.publications.remove(&matched);
+        let pending = self
+            .publications
+            .remove(&matched)
+            .ok_or(DestinationTunnelError::UnknownPublication)?;
+        let destination = pending.destination;
+        let acknowledged_at_ms = self.now_ms;
+        let oldest_lease_expiry_delta_ms = pending
+            .previous_oldest_lease_expiry_ms
+            .map(|previous| pending.oldest_lease_expiry_ms.saturating_sub(previous))
+            .unwrap_or(0);
+        let published_delta_seconds = pending
+            .previous_published_seconds
+            .map(|previous| u64::from(pending.published_seconds.saturating_sub(previous)))
+            .unwrap_or(0);
+        let acknowledgement = PublicationAcknowledgement {
+            request_id: matched,
+            destination,
+            reply_token: message_id,
+            inbound_tunnel_id,
+            published_seconds: pending.published_seconds,
+            oldest_lease_expiry_ms: pending.oldest_lease_expiry_ms,
+            oldest_lease_expiry_delta_ms,
+            published_delta_seconds,
+            published_at_ms: pending.sent_at_ms.unwrap_or(acknowledged_at_ms),
+            acknowledged_at_ms,
+        };
+        if self.publication_acks.len() >= MAX_RETAINED_LS2_PUBLICATION_ACKS {
+            self.publication_acks.pop_front();
+        }
+        self.publication_acks.push_back(acknowledgement);
         self.counters.publications_acked = self.counters.publications_acked.saturating_add(1);
-        Ok(matched)
+        Ok(acknowledgement)
+    }
+
+    /// Plan 487 WP4 — admits one local LeaseSet2 publication for a
+    /// destination, enforcing the publication bounds the
+    /// publish-and-acknowledge loop requires.
+    ///
+    /// - **Rate limit**: less than one publication per second per
+    ///   destination.
+    /// - **`published` monotonicity**: the record's `published` second
+    ///   is at least one second later than the previous publication's.
+    ///   This is the reference's own replacement rule — the pinned
+    ///   i2pd `NetDb::AddLeaseSet2` replaces a stored LeaseSet2 only
+    ///   when the incoming record's published timestamp is *strictly
+    ///   greater*, so a record that repeats the previous second is
+    ///   silently ignored by the floodfill and the old record is kept.
+    /// - **Oldest lease non-regression**: the oldest advertised
+    ///   lease's expiration never moves backwards, so a replacement
+    ///   never advertises a lease that dies earlier than the record it
+    ///   replaces. The *advance* of that expiration on a rotation is
+    ///   recorded (as the delta against the previous publication) and
+    ///   asserted by the lifecycle tests; it is deliberately not a
+    ///   hard gate, because a pool replenishment that only *adds* a
+    ///   tunnel leaves the oldest lease untouched and must still be
+    ///   publishable.
+    ///
+    /// Admission is checked **before** the record is composed, so a
+    /// rejected publication never reaches the wire.
+    pub fn admit_ls2_publication(
+        &mut self,
+        destination: i2pr_client::DestinationId,
+        published_seconds: u32,
+        oldest_lease_expiry_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), DestinationTunnelError> {
+        let Some(previous) = self.publication_ledger.get(&destination).copied() else {
+            return Ok(());
+        };
+        if now_ms.saturating_sub(previous.published_at_ms) < MIN_LS2_PUBLICATION_INTERVAL_MS {
+            return Err(DestinationTunnelError::PublicationRateLimited);
+        }
+        if published_seconds < previous.published_seconds.saturating_add(1) {
+            return Err(DestinationTunnelError::PublicationNotMonotonic);
+        }
+        if oldest_lease_expiry_ms < previous.oldest_lease_expiry_ms {
+            return Err(DestinationTunnelError::PublicationExpiryRegressed);
+        }
+        Ok(())
+    }
+
+    /// Plan 487 WP4 — records the emitted publication on the
+    /// coordinator: the pending entry keeps its reply token, and the
+    /// per-destination ledger advances so the next publication is
+    /// checked against this one.
+    pub fn note_ls2_publication_sent(
+        &mut self,
+        request_id: u64,
+        destination: i2pr_client::DestinationId,
+        message_id: u32,
+        published_seconds: u32,
+        oldest_lease_expiry_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), DestinationTunnelError> {
+        let previous = self.publication_ledger.get(&destination).copied();
+        let Some(pending) = self.publications.get_mut(&request_id) else {
+            return Err(DestinationTunnelError::UnknownPublication);
+        };
+        pending.message_id = message_id;
+        pending.destination = Some(destination);
+        pending.sent_at_ms = Some(now_ms);
+        pending.published_seconds = published_seconds;
+        pending.oldest_lease_expiry_ms = oldest_lease_expiry_ms;
+        pending.previous_published_seconds = previous.map(|previous| previous.published_seconds);
+        pending.previous_oldest_lease_expiry_ms =
+            previous.map(|previous| previous.oldest_lease_expiry_ms);
+        self.publication_ledger.insert(
+            destination,
+            PublicationLedgerEntry {
+                published_seconds,
+                oldest_lease_expiry_ms,
+                published_at_ms: now_ms,
+                reply_token: message_id,
+            },
+        );
+        Ok(())
+    }
+
+    /// Plan 487 WP4 — returns the bounded record of acknowledged local
+    /// LeaseSet2 publications, oldest first.
+    pub fn publication_acknowledgements(&self) -> Vec<PublicationAcknowledgement> {
+        self.publication_acks.iter().copied().collect()
+    }
+
+    /// Plan 487 WP4 — reaps pending publications whose correlated
+    /// `DeliveryStatus` did not arrive within the deadline.
+    ///
+    /// A publication that is never acknowledged is a publication the
+    /// network did not confirm. Reaping it keeps the coordinator's
+    /// bounded capacity honest and lets the driver republish. The
+    /// returned destinations are the ones whose publication must be
+    /// retried.
+    pub fn reap_unacknowledged_ls2_publications(
+        &mut self,
+        now_ms: u64,
+    ) -> Vec<i2pr_client::DestinationId> {
+        let deadline = LS2_PUBLICATION_ACK_DEADLINE_MS;
+        let expired: Vec<(u64, Option<i2pr_client::DestinationId>)> = self
+            .publications
+            .iter()
+            .filter_map(|(request_id, pending)| {
+                let sent_at_ms = pending.sent_at_ms?;
+                if now_ms.saturating_sub(sent_at_ms) >= deadline {
+                    Some((*request_id, pending.destination))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut destinations = Vec::new();
+        for (request_id, destination) in expired {
+            self.publications.remove(&request_id);
+            self.counters.publications_timed_out =
+                self.counters.publications_timed_out.saturating_add(1);
+            if let Some(destination) = destination {
+                destinations.push(destination);
+            }
+        }
+        destinations
     }
 
     /// Cancels a local LeaseSet2 publication attempt.

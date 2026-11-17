@@ -1,0 +1,38 @@
+{
+  "attempts": [
+    {
+      "cause": null,
+      "consumes_budget": true,
+      "outcome": "pass"
+    }
+  ],
+  "attempts_consumed": 1,
+  "cause": null,
+  "family": "i2pd",
+  "label": "invalid-tier-gap",
+  "outcome": "pass",
+  "schema": "i2pr-plan495-lane-evidence-v1",
+  "target_tier": 4,
+  "tiers": [
+    {
+      "reason": "ri-persisted",
+      "state": "pass",
+      "tier": 0
+    },
+    {
+      "reason": "selected",
+      "state": "pass",
+      "tier": 1
+    },
+    {
+      "reason": "one-way-i2np",
+      "state": "pass",
+      "tier": 3
+    },
+    {
+      "reason": "two-way-reply",
+      "state": "pass",
+      "tier": 4
+    }
+  ]
+}

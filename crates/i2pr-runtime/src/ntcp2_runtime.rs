@@ -1344,6 +1344,51 @@ pub struct DialBackoffSnapshot {
     pub capacity: usize,
 }
 
+/// The address scope an outbound NTCP2 dial may reach.
+///
+/// A scope is only an address admission rule for an already authorized
+/// outbound dial. It never widens the router's reachability, never publishes
+/// an address, and never selects a peer: it decides which literal addresses
+/// an authorized dial may connect to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ntcp2DialScope {
+    /// Only loopback addresses are admissible (the controlled qualification profile).
+    Loopback,
+    /// Only RFC1918 IPv4 literals are admissible (the guarded operator profile).
+    PrivateLan,
+}
+
+impl Ntcp2DialScope {
+    /// Returns the stable scope name used in tracing stages and receipts.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Loopback => "loopback",
+            Self::PrivateLan => "private_lan",
+        }
+    }
+
+    /// Returns the refusal stage name for a scope that admitted no address.
+    fn no_address_stage(&self) -> &'static str {
+        match self {
+            Self::Loopback => "no_loopback_ntcp2_address",
+            Self::PrivateLan => "no_private_lan_ntcp2_address",
+        }
+    }
+
+    /// Returns whether one literal peer address is admissible in this scope.
+    ///
+    /// The loopback rule is exactly the runtime's historical clamp. The
+    /// private-LAN rule accepts RFC1918 IPv4 literals only: loopback, the
+    /// unspecified address, public IPv4, IPv6 (including unique-local and
+    /// IPv4-mapped forms) are all refused.
+    pub fn admits(&self, ip: IpAddr) -> bool {
+        match self {
+            Self::Loopback => ip.is_loopback(),
+            Self::PrivateLan => matches!(ip, IpAddr::V4(address) if address.is_private()),
+        }
+    }
+}
+
 /// Typed result of an outbound dial.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DialOutcome {
@@ -1357,6 +1402,8 @@ pub enum DialOutcome {
     Deadline,
     /// The socket operation failed.
     Failed,
+    /// No advertised address fell inside the caller's permitted scope.
+    AddressOutOfScope,
 }
 
 /// An admitted outbound TCP attempt.
@@ -2227,10 +2274,54 @@ impl Ntcp2RuntimeService {
     /// Loopback restriction is intentional for the daemon's controlled
     /// qualification profile. Public routing policy belongs to a separately
     /// qualified profile and cannot be enabled by this helper.
+    ///
+    /// This is the [`Ntcp2DialScope::Loopback`] form of
+    /// [`Self::dial_authenticated_peer_in_scope`].
     #[allow(clippy::too_many_arguments)]
     pub async fn dial_authenticated_loopback_peer(
         &self,
         scope: &ChildScope,
+        peer_info: &RouterInfo,
+        expected_peer_hash: [u8; 32],
+        local_static: X25519PrivateKey,
+        local_router_info: &[u8],
+        network_id: u8,
+        id: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<AuthenticatedLink, DialOutcome> {
+        self.dial_authenticated_peer_in_scope(
+            Ntcp2DialScope::Loopback,
+            scope,
+            peer_info,
+            expected_peer_hash,
+            local_static,
+            local_router_info,
+            network_id,
+            id,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Selects and dials one literal NTCP2 address from a signature-verified
+    /// RouterInfo under the caller's address scope, authenticates the
+    /// advertised peer, and promotes the socket into the ordinary bounded link
+    /// owner.
+    ///
+    /// The scope decides which advertised addresses may be selected. Every
+    /// other check is unchanged: the peer signature, the network id, the
+    /// expected router hash, the address expiry, the admission and backoff
+    /// rules, the deadline, the cancellation, and the link promotion.
+    ///
+    /// [`Ntcp2DialScope::Loopback`] reproduces the historical loopback clamp
+    /// exactly. [`Ntcp2DialScope::PrivateLan`] admits only RFC1918 IPv4
+    /// literals, for a guarded operator qualification profile that never
+    /// publishes or advertises its endpoint.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn dial_authenticated_peer_in_scope(
+        &self,
+        scope: Ntcp2DialScope,
+        child_scope: &ChildScope,
         peer_info: &RouterInfo,
         expected_peer_hash: [u8; 32],
         local_static: X25519PrivateKey,
@@ -2285,6 +2376,7 @@ impl Ntcp2RuntimeService {
             }
         };
         let mut target = None;
+        let mut scope_refused = false;
         for address in peer_info.addresses() {
             let Ok(address) = Ntcp2RouterAddress::parse(address) else {
                 continue;
@@ -2296,7 +2388,8 @@ impl Ntcp2RuntimeService {
             let Some(endpoint) = address.endpoint() else {
                 continue;
             };
-            if !endpoint.ip().is_loopback() {
+            if !scope.admits(endpoint.ip()) {
+                scope_refused = true;
                 continue;
             }
             let Ok(target_value) = address.resolved_dial_target(endpoint.socket_addr()) else {
@@ -2309,10 +2402,15 @@ impl Ntcp2RuntimeService {
             Some(target) => target,
             None => {
                 tracing::info!(
-                    stage = "no_loopback_ntcp2_address",
+                    stage = scope.no_address_stage(),
+                    dial_scope = scope.name(),
                     "controlled NTCP2 outbound dial rejected"
                 );
-                return Err(DialOutcome::Failed);
+                return Err(if scope_refused {
+                    DialOutcome::AddressOutOfScope
+                } else {
+                    DialOutcome::Failed
+                });
             }
         };
         let attempt = match self.dial(target.socket_addr(), cancellation).await {
@@ -2387,7 +2485,7 @@ impl Ntcp2RuntimeService {
             );
             return Err(DialOutcome::Failed);
         }
-        self.promote_authenticated_dial(scope, attempt, handshake, id)
+        self.promote_authenticated_dial(child_scope, attempt, handshake, id)
             .map_err(|_| {
                 tracing::info!(
                     stage = "link_promotion",
@@ -2849,6 +2947,199 @@ mod tests {
         let inbound = inbound;
         outbound.close();
         inbound.close();
+    }
+
+    /// The address table shared by the dial-scope tests: one literal address
+    /// with the loopback-scope decision and the private-LAN-scope decision.
+    const DIAL_SCOPE_ADDRESS_TABLE: [(IpAddr, bool, bool); 10] = [
+        (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), true, false),
+        (IpAddr::V6(Ipv6Addr::LOCALHOST), true, false),
+        (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), false, true),
+        (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), false, true),
+        (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), false, true),
+        (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), false, false),
+        (IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), false, false),
+        (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), false, false),
+        (
+            IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
+            false,
+            false,
+        ),
+        (
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x010a)),
+            false,
+            false,
+        ),
+    ];
+
+    /// Builds a signed peer RouterInfo that advertises exactly one literal
+    /// endpoint, together with the peer's expected router hash.
+    fn peer_info_for_endpoint(
+        bundle: &i2pr_crypto::RouterIdentityBundle,
+        endpoint: SocketAddr,
+    ) -> (RouterInfo, [u8; 32]) {
+        let static_key = X25519PrivateKey::from_bytes([0x51; 32]);
+        let peer_info =
+            signed_peer_info(bundle, static_key.public_bytes(), [0x71; 16], endpoint, 2);
+        let peer_hash = bundle.identity().hash().expect("peer hash");
+        (peer_info, *peer_hash.as_bytes())
+    }
+
+    #[test]
+    fn dial_scope_admits_only_its_profile_addresses() {
+        for (ip, loopback_admits, private_lan_admits) in DIAL_SCOPE_ADDRESS_TABLE {
+            assert_eq!(
+                Ntcp2DialScope::Loopback.admits(ip),
+                loopback_admits,
+                "loopback scope decision for {ip}"
+            );
+            assert_eq!(
+                Ntcp2DialScope::PrivateLan.admits(ip),
+                private_lan_admits,
+                "private-LAN scope decision for {ip}"
+            );
+        }
+    }
+
+    /// The inverted probe for both scope rules: the admitted set is compared
+    /// exactly, so weakening `admits` to always-true — or to any superset of
+    /// the profile's own set — fails this test instead of passing silently.
+    #[test]
+    fn dial_scope_admission_set_is_exactly_the_profile_set() {
+        let admitted_loopback: Vec<IpAddr> = DIAL_SCOPE_ADDRESS_TABLE
+            .iter()
+            .map(|(ip, _, _)| *ip)
+            .filter(|ip| Ntcp2DialScope::Loopback.admits(*ip))
+            .collect();
+        assert_eq!(
+            admitted_loopback,
+            vec![
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ],
+            "the loopback scope must admit exactly the loopback literals"
+        );
+        let admitted_private_lan: Vec<IpAddr> = DIAL_SCOPE_ADDRESS_TABLE
+            .iter()
+            .map(|(ip, _, _)| *ip)
+            .filter(|ip| Ntcp2DialScope::PrivateLan.admits(*ip))
+            .collect();
+        assert_eq!(
+            admitted_private_lan,
+            vec![
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)),
+            ],
+            "the private-LAN scope must admit exactly the RFC1918 IPv4 literals"
+        );
+        // The probe must be able to observe a rejection: neither scope may
+        // admit every address in the table.
+        assert!(
+            !Ntcp2DialScope::Loopback.admits(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            "the loopback scope must refuse a private-LAN literal"
+        );
+        assert!(
+            !Ntcp2DialScope::PrivateLan.admits(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
+            "the private-LAN scope must refuse a public literal"
+        );
+    }
+
+    /// The loopback scope still refuses a private-LAN address through the
+    /// scope-taking dial path. The refusal happens before any socket activity,
+    /// so no connection is attempted.
+    #[tokio::test]
+    async fn loopback_scope_refuses_a_private_lan_address() {
+        use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
+
+        let bundle = RouterIdentityBundle::from_private_bytes([0x31; 32], [0x32; 32], &mut OsRng)
+            .expect("peer identity");
+        let endpoint: SocketAddr = "192.168.1.10:8448".parse().expect("private-LAN endpoint");
+        let (peer_info, peer_hash) = peer_info_for_endpoint(&bundle, endpoint);
+        let runtime = Ntcp2RuntimeService::new(Ntcp2RuntimeConfig::default()).expect("runtime");
+        let cancellation = CancellationToken::new();
+        let scope = runtime.child_scope(&cancellation);
+        let local_bundle =
+            RouterIdentityBundle::from_private_bytes([0x41; 32], [0x42; 32], &mut OsRng)
+                .expect("local identity");
+        let local_info = signed_peer_info(
+            &local_bundle,
+            X25519PrivateKey::from_bytes([0x61; 32]).public_bytes(),
+            [0x72; 16],
+            endpoint,
+            2,
+        )
+        .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+        .expect("local RouterInfo");
+
+        assert!(matches!(
+            runtime
+                .dial_authenticated_peer_in_scope(
+                    Ntcp2DialScope::Loopback,
+                    &scope,
+                    &peer_info,
+                    peer_hash,
+                    X25519PrivateKey::from_bytes([0x62; 32]),
+                    &local_info,
+                    2,
+                    1,
+                    &cancellation,
+                )
+                .await,
+            Err(DialOutcome::AddressOutOfScope)
+        ));
+        assert_eq!(runtime.snapshot().admission.pending, 0);
+        let _ = scope.shutdown().await;
+    }
+
+    /// The private-LAN scope still refuses a public address through the
+    /// scope-taking dial path. The refusal happens before any socket activity,
+    /// so no connection is attempted.
+    #[tokio::test]
+    async fn private_lan_scope_refuses_a_public_address() {
+        use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
+
+        let bundle = RouterIdentityBundle::from_private_bytes([0x31; 32], [0x32; 32], &mut OsRng)
+            .expect("peer identity");
+        // A public literal from the documentation range: it is not RFC1918, so
+        // the private-LAN scope must refuse it, and a regression cannot cause
+        // a real outbound connection to a routable host.
+        let endpoint: SocketAddr = "192.0.2.1:8448".parse().expect("public endpoint");
+        let (peer_info, peer_hash) = peer_info_for_endpoint(&bundle, endpoint);
+        let runtime = Ntcp2RuntimeService::new(Ntcp2RuntimeConfig::default()).expect("runtime");
+        let cancellation = CancellationToken::new();
+        let scope = runtime.child_scope(&cancellation);
+        let local_bundle =
+            RouterIdentityBundle::from_private_bytes([0x41; 32], [0x42; 32], &mut OsRng)
+                .expect("local identity");
+        let local_info = signed_peer_info(
+            &local_bundle,
+            X25519PrivateKey::from_bytes([0x61; 32]).public_bytes(),
+            [0x72; 16],
+            endpoint,
+            2,
+        )
+        .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+        .expect("local RouterInfo");
+
+        assert!(matches!(
+            runtime
+                .dial_authenticated_peer_in_scope(
+                    Ntcp2DialScope::PrivateLan,
+                    &scope,
+                    &peer_info,
+                    peer_hash,
+                    X25519PrivateKey::from_bytes([0x62; 32]),
+                    &local_info,
+                    2,
+                    1,
+                    &cancellation,
+                )
+                .await,
+            Err(DialOutcome::AddressOutOfScope)
+        ));
+        assert_eq!(runtime.snapshot().admission.pending, 0);
+        let _ = scope.shutdown().await;
     }
 
     #[tokio::test]

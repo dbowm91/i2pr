@@ -1,0 +1,14 @@
+{
+  "mesh": {
+    "admitted_builds": 1,
+    "bytes_relayed": 1024,
+    "refused": 1,
+    "relayed_cells": 1,
+    "stops": 1
+  },
+  "plan": 492,
+  "receipt_digests": {
+    "posture": "484728570debedafe1b91e171da8774c4035d67945b1d33a2b54b13c81ade11c"
+  },
+  "schema": "i2pr-transit-participation-mesh-v1"
+}

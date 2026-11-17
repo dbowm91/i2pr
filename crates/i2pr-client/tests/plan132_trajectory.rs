@@ -458,7 +458,10 @@ fn establish_stream(
     let _ = pipe_through_stack(a, b, &syn_requests[0], seed_base + 1, *clock);
 
     assert_eq!(b.streaming.listener_backlog(port_b), 1);
-    let b_conn = b.streaming.accept(port_b).expect("pending inbound stream");
+    let b_conn = b
+        .streaming
+        .accept(port_b, *clock)
+        .expect("pending inbound stream");
 
     let validated_a = b
         .dispatcher

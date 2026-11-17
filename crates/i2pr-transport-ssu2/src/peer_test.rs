@@ -106,6 +106,118 @@ pub enum PeerTestState {
 /// The policy layer consumes these with corroboration/expiry rules; a
 /// single unauthenticated datagram never confirms reachability (the
 /// table only emits these after signature + freshness + correlation +
+/// The specification's peer-test result for one combination of received
+/// messages.
+///
+/// Plan 528: the SSU2 specification states the peer-test result as a table
+/// over the messages Alice received -- 4, 5 and 7. The table is transcribed
+/// here as **data**, so the tree's rule is checkable against the
+/// specification rather than only against prose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PeerTestResult {
+    /// UNKNOWN -- not enough was received to decide.
+    Unknown,
+    /// OK -- the helper could reach Alice directly.
+    Ok,
+    /// FIREWALLED -- the helper could not reach Alice directly.
+    Firewalled,
+    /// The specification's own ambiguous row: "FIREWALLED or SYMNAT".
+    ///
+    /// The tree reads it **conservatively**: an ambiguous row is neither a
+    /// confirmation nor a firewalled verdict.
+    Ambiguous,
+    /// Not applicable -- the row cannot occur.
+    NotApplicable,
+}
+
+/// One row of the specification's peer-test result table.
+///
+/// Plan 528: `msg4`, `msg5` and `msg7` are the messages Alice received.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeerTestResultRow {
+    /// Alice received message 4 (the answer relayed by the introducer).
+    pub msg4: bool,
+    /// Alice received message 5 (the helper's direct answer).
+    pub msg5: bool,
+    /// Alice received message 7 (the helper's direct verdict).
+    pub msg7: bool,
+    /// The specification's result for this row.
+    pub result: PeerTestResult,
+}
+
+/// The specification's peer-test result table, transcribed.
+///
+/// Plan 528: the rows are the specification's own, in the specification's
+/// own order. The table is the tree's authority for the peer-test
+/// verdict, and a test pins it against the specification's wording.
+pub const PEER_TEST_RESULT_TABLE: [PeerTestResultRow; 8] = [
+    PeerTestResultRow {
+        msg4: false,
+        msg5: false,
+        msg7: false,
+        result: PeerTestResult::Unknown,
+    },
+    PeerTestResultRow {
+        msg4: true,
+        msg5: false,
+        msg7: false,
+        result: PeerTestResult::Firewalled,
+    },
+    PeerTestResultRow {
+        msg4: false,
+        msg5: true,
+        msg7: false,
+        result: PeerTestResult::Ok,
+    },
+    PeerTestResultRow {
+        msg4: true,
+        msg5: true,
+        msg7: false,
+        result: PeerTestResult::Ok,
+    },
+    PeerTestResultRow {
+        msg4: false,
+        msg5: false,
+        msg7: true,
+        result: PeerTestResult::NotApplicable,
+    },
+    PeerTestResultRow {
+        msg4: true,
+        msg5: false,
+        msg7: true,
+        result: PeerTestResult::Ambiguous,
+    },
+    PeerTestResultRow {
+        msg4: false,
+        msg5: true,
+        msg7: true,
+        result: PeerTestResult::NotApplicable,
+    },
+    PeerTestResultRow {
+        msg4: true,
+        msg5: true,
+        msg7: true,
+        result: PeerTestResult::Ok,
+    },
+];
+
+/// Returns the specification's peer-test result for the messages received.
+///
+/// Plan 528: the lookup is **total** -- every combination of the three
+/// messages is a row of the table, so the verdict is never guessed and
+/// never defaulted.
+pub const fn peer_test_result(msg4: bool, msg5: bool, msg7: bool) -> PeerTestResult {
+    let mut index = 0usize;
+    while index < PEER_TEST_RESULT_TABLE.len() {
+        let row = PEER_TEST_RESULT_TABLE[index];
+        if row.msg4 == msg4 && row.msg5 == msg5 && row.msg7 == msg7 {
+            return row.result;
+        }
+        index += 1;
+    }
+    PeerTestResult::Unknown
+}
+
 /// role + endpoint checks pass).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PeerTestOutcome {
@@ -948,6 +1060,42 @@ impl PeerTestTable {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_specification_result_table_is_transcribed_and_pinned() {
+        // Plan 528: the tree's peer-test verdict is the specification's own
+        // table, transcribed as data. The rows below are the
+        // specification's, in its order: "4 5 7 Result".
+        let rows: [(bool, bool, bool, PeerTestResult); 8] = [
+            (false, false, false, PeerTestResult::Unknown),
+            (true, false, false, PeerTestResult::Firewalled),
+            (false, true, false, PeerTestResult::Ok),
+            (true, true, false, PeerTestResult::Ok),
+            (false, false, true, PeerTestResult::NotApplicable),
+            (true, false, true, PeerTestResult::Ambiguous),
+            (false, true, true, PeerTestResult::NotApplicable),
+            (true, true, true, PeerTestResult::Ok),
+        ];
+        assert_eq!(PEER_TEST_RESULT_TABLE.len(), rows.len());
+        for (row, expected) in PEER_TEST_RESULT_TABLE.iter().zip(rows) {
+            assert_eq!(
+                (row.msg4, row.msg5, row.msg7, row.result),
+                expected,
+                "the transcribed row must match the specification's row"
+            );
+        }
+    }
+
+    #[test]
+    fn the_peer_test_result_lookup_is_total() {
+        for row in PEER_TEST_RESULT_TABLE {
+            assert_eq!(
+                peer_test_result(row.msg4, row.msg5, row.msg7),
+                row.result,
+                "every combination of the three messages is a row of the table"
+            );
+        }
+    }
+
     use super::*;
     use crate::block::PeerTestBlock;
     use core::net::{IpAddr, Ipv4Addr};

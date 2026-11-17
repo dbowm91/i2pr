@@ -336,6 +336,7 @@ async fn bridge_outbound_diagnostic_counter_increments() {
         let handle = destinations.get(destination_id).expect("bridge");
         handle.with(|bridge| {
             let request = i2pr_client::streaming::transport::TransportSendRequest {
+                kind: i2pr_client::streaming::transport::OutboundPacketKind::Data,
                 destination_hash: [0xAB; 32],
                 source_port: 1,
                 destination_port: 2,

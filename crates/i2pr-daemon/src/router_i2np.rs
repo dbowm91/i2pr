@@ -56,7 +56,7 @@ use std::time::Duration;
 use i2pr_crypto::{OsRng, RouterIdentityBundle, router_identity_hash};
 use i2pr_netdb::{CONTROLLED_ROUTER_VERSION, controlled_router_options};
 use i2pr_proto::{
-    Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress,
+    Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress, RouterInfo,
     SHORT_BUILD_RECORD_SIZE,
 };
 use i2pr_runtime::{
@@ -195,6 +195,20 @@ pub enum RouterI2npOutcome {
         link_id: LinkId,
         /// Encoded length of the dispatched message.
         encoded_len: usize,
+        /// Identifier of the message this control body acknowledges,
+        /// when the body carries one.
+        ///
+        /// Plan 504: the `DeliveryStatus` body already carries the
+        /// acknowledged message id in
+        /// [`i2pr_proto::DeliveryStatusMessage::message_id`]. The
+        /// dispatcher used to discard it, so an inbound echo could
+        /// not be attributed to the probe that caused it. The
+        /// transport `message_id` above is a different identifier (the
+        /// id of the message that *arrived*) and is left untouched.
+        ///
+        /// Every control body other than `DeliveryStatus` reports
+        /// `None`; the classification of those bodies is unchanged.
+        acknowledged_message_id: Option<u32>,
     },
     /// Bounded explicit disposition for unsupported/unknown bodies.
     /// Never a panic, never unbounded retention.
@@ -233,6 +247,17 @@ impl RouterI2npOutcome {
         }
     }
 
+    /// Returns the decoded transport message ID where the outcome carries one.
+    pub const fn message_id(self) -> Option<u32> {
+        match self {
+            Self::TunnelBuildReserved { message_id, .. }
+            | Self::PeerTest { message_id, .. }
+            | Self::TunnelData { message_id, .. }
+            | Self::RouterControl { message_id, .. } => Some(message_id),
+            Self::Unsupported { .. } => None,
+        }
+    }
+
     /// Returns the encoded length carried by this outcome.
     pub const fn encoded_len(self) -> usize {
         match self {
@@ -241,6 +266,24 @@ impl RouterI2npOutcome {
             | Self::TunnelData { encoded_len, .. }
             | Self::RouterControl { encoded_len, .. }
             | Self::Unsupported { encoded_len, .. } => encoded_len,
+        }
+    }
+
+    /// Returns the identifier of the message this outcome
+    /// acknowledges, when the body carries one.
+    ///
+    /// Plan 504: only a `DeliveryStatus` body names the message it
+    /// acknowledges. The value is the acknowledged message id, never
+    /// the transport `message_id` of the arriving message. `None`
+    /// means the outcome carries no acknowledgement, so it is not
+    /// evidence for anything.
+    pub const fn acknowledged_message_id(self) -> Option<u32> {
+        match self {
+            Self::RouterControl {
+                acknowledged_message_id,
+                ..
+            } => acknowledged_message_id,
+            _ => None,
         }
     }
 }
@@ -667,6 +710,7 @@ fn classify_message(
             peer,
             link_id,
             encoded_len,
+            acknowledged_message_id: None,
         }),
         I2npBody::DatabaseLookup(_) => Ok(RouterI2npOutcome::RouterControl {
             kind: RouterI2npKind::DatabaseLookup,
@@ -676,6 +720,7 @@ fn classify_message(
             peer,
             link_id,
             encoded_len,
+            acknowledged_message_id: None,
         }),
         I2npBody::DatabaseSearchReply(_) => Ok(RouterI2npOutcome::RouterControl {
             kind: RouterI2npKind::DatabaseSearchReply,
@@ -685,8 +730,9 @@ fn classify_message(
             peer,
             link_id,
             encoded_len,
+            acknowledged_message_id: None,
         }),
-        I2npBody::DeliveryStatus(_) => Ok(RouterI2npOutcome::RouterControl {
+        I2npBody::DeliveryStatus(status) => Ok(RouterI2npOutcome::RouterControl {
             kind: RouterI2npKind::DeliveryStatus,
             header,
             message_id,
@@ -694,6 +740,10 @@ fn classify_message(
             peer,
             link_id,
             encoded_len,
+            // Plan 504: the body names the message it acknowledges;
+            // the dispatcher used to discard it, so an inbound echo
+            // could not be attributed to the probe that caused it.
+            acknowledged_message_id: Some(status.message_id),
         }),
         I2npBody::TunnelTest(test) => Ok(RouterI2npOutcome::PeerTest {
             header,
@@ -916,11 +966,42 @@ pub enum RouterDeliveryOutcome {
     Cancelled,
 }
 
+/// Process-local completion for one admitted router delivery. A positive
+/// value means the selected socket writer accepted the whole delivery; it
+/// does not assert remote receipt or protocol acceptance.
+pub(crate) struct RouterDeliveryTicket {
+    _peer: PeerId,
+    _transport: RouterDeliveryTransport,
+    receiver: tokio::sync::oneshot::Receiver<bool>,
+}
+
+impl RouterDeliveryTicket {
+    pub(crate) fn from_receiver(
+        peer: PeerId,
+        transport: RouterDeliveryTransport,
+        receiver: tokio::sync::oneshot::Receiver<bool>,
+    ) -> Self {
+        Self {
+            _peer: peer,
+            _transport: transport,
+            receiver,
+        }
+    }
+
+    pub(crate) fn try_result(&mut self) -> Option<bool> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(false),
+        }
+    }
+}
+
 /// The authenticated transport path selected for one product delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RouterDeliveryTransport {
     /// An established SSU2 session accepted the message.
-    Ssu2,
+    Ssu2(LinkId),
     /// The exact authenticated NTCP2 link generation accepted the message.
     Ntcp2(LinkId),
 }
@@ -928,7 +1009,7 @@ pub(crate) enum RouterDeliveryTransport {
 impl RouterDeliveryTransport {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::Ssu2 => "ssu2",
+            Self::Ssu2(_) => "ssu2",
             Self::Ntcp2(_) => "ntcp2",
         }
     }
@@ -948,9 +1029,17 @@ pub(crate) struct Ntcp2RouterDeliveryRegistry {
 
 type PendingLookupMap = HashMap<(PeerId, LinkId), (Hash, u64)>;
 
+/// One bounded message plus a source-owned completion edge for a queued
+/// NTCP2 delivery. The completion is resolved by the authenticated link owner
+/// only after its socket writer accepts the full frame.
+pub(crate) struct Ntcp2RouterDeliveryMessage {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) completion: Option<tokio::sync::oneshot::Sender<bool>>,
+}
+
 #[derive(Clone, Debug)]
 struct Ntcp2RouterLinkRoute {
-    sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+    sender: tokio::sync::mpsc::Sender<Ntcp2RouterDeliveryMessage>,
     outbound: bool,
 }
 
@@ -1028,7 +1117,7 @@ impl Ntcp2RouterDeliveryRegistry {
         &self,
         peer: PeerId,
         link_id: LinkId,
-        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        sender: tokio::sync::mpsc::Sender<Ntcp2RouterDeliveryMessage>,
     ) -> bool {
         self.register_link(peer, link_id, sender, false)
     }
@@ -1038,7 +1127,7 @@ impl Ntcp2RouterDeliveryRegistry {
         &self,
         peer: PeerId,
         link_id: LinkId,
-        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        sender: tokio::sync::mpsc::Sender<Ntcp2RouterDeliveryMessage>,
     ) -> bool {
         self.register_link(peer, link_id, sender, true)
     }
@@ -1047,7 +1136,7 @@ impl Ntcp2RouterDeliveryRegistry {
         &self,
         peer: PeerId,
         link_id: LinkId,
-        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        sender: tokio::sync::mpsc::Sender<Ntcp2RouterDeliveryMessage>,
         outbound: bool,
     ) -> bool {
         let Ok(mut links) = self.links.lock() else {
@@ -1157,16 +1246,31 @@ impl Ntcp2RouterDeliveryRegistry {
     }
 
     /// Attempts bounded delivery and returns the exact selected generation.
+    #[cfg(test)]
     fn deliver_with_link(
         &self,
         peer: PeerId,
         bytes: Vec<u8>,
     ) -> (RouterDeliveryOutcome, Option<LinkId>) {
+        let (outcome, link, _) = self.deliver_with_link_and_receipt(peer, bytes, false);
+        (outcome, link)
+    }
+
+    fn deliver_with_link_and_receipt(
+        &self,
+        peer: PeerId,
+        bytes: Vec<u8>,
+        completion: bool,
+    ) -> (
+        RouterDeliveryOutcome,
+        Option<LinkId>,
+        Option<tokio::sync::oneshot::Receiver<bool>>,
+    ) {
         if bytes.is_empty() || bytes.len() > MAX_ROUTER_I2NP_BYTES {
-            return (RouterDeliveryOutcome::TooLarge, None);
+            return (RouterDeliveryOutcome::TooLarge, None, None);
         }
         let Ok(mut links) = self.links.lock() else {
-            return (RouterDeliveryOutcome::NoActiveSession, None);
+            return (RouterDeliveryOutcome::NoActiveSession, None, None);
         };
         let Some((key, route)) = links
             .iter()
@@ -1174,16 +1278,29 @@ impl Ntcp2RouterDeliveryRegistry {
             .max_by_key(|((_, link_id), _)| link_id.value())
             .map(|(key, route)| (*key, route.clone()))
         else {
-            return (RouterDeliveryOutcome::NoActiveSession, None);
+            return (RouterDeliveryOutcome::NoActiveSession, None, None);
         };
-        match route.sender.try_send(bytes) {
-            Ok(()) => (RouterDeliveryOutcome::Accepted, Some(key.1)),
+        let (completion_sender, completion_receiver) = if completion {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+        match route.sender.try_send(Ntcp2RouterDeliveryMessage {
+            bytes,
+            completion: completion_sender,
+        }) {
+            Ok(()) => (
+                RouterDeliveryOutcome::Accepted,
+                Some(key.1),
+                completion_receiver,
+            ),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                (RouterDeliveryOutcome::QueueFull, Some(key.1))
+                (RouterDeliveryOutcome::QueueFull, Some(key.1), None)
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 links.remove(&key);
-                (RouterDeliveryOutcome::NoActiveSession, None)
+                (RouterDeliveryOutcome::NoActiveSession, None, None)
             }
         }
     }
@@ -1242,8 +1359,44 @@ impl RouterDeliveryService {
         request: RouterDeliveryRequest,
         cancellation: &CancellationToken,
     ) -> (RouterDeliveryOutcome, Option<RouterDeliveryTransport>) {
+        let (outcome, transport, _) = self.deliver_inner(request, cancellation, false);
+        (outcome, transport)
+    }
+
+    /// Delivers one message and returns a private source-owned completion
+    /// ticket where the selected writer supports it.
+    pub(crate) fn deliver_with_ticket(
+        &self,
+        request: RouterDeliveryRequest,
+        cancellation: &CancellationToken,
+    ) -> (
+        RouterDeliveryOutcome,
+        Option<RouterDeliveryTransport>,
+        Option<RouterDeliveryTicket>,
+    ) {
+        let peer = request.peer;
+        let (outcome, transport, ticket) = self.deliver_inner(request, cancellation, true);
+        (
+            outcome,
+            transport,
+            ticket.zip(transport).map(|(receiver, transport)| {
+                RouterDeliveryTicket::from_receiver(peer, transport, receiver)
+            }),
+        )
+    }
+
+    fn deliver_inner(
+        &self,
+        request: RouterDeliveryRequest,
+        cancellation: &CancellationToken,
+        with_ticket: bool,
+    ) -> (
+        RouterDeliveryOutcome,
+        Option<RouterDeliveryTransport>,
+        Option<tokio::sync::oneshot::Receiver<bool>>,
+    ) {
         if cancellation.is_cancelled() {
-            return (RouterDeliveryOutcome::Cancelled, None);
+            return (RouterDeliveryOutcome::Cancelled, None, None);
         }
         let RouterDeliveryRequest {
             peer,
@@ -1251,7 +1404,15 @@ impl RouterDeliveryService {
             timeout,
         } = request;
         let ntcp2_bytes = message.as_bytes().to_vec();
-        let outcome = match self.service.send_i2np(peer, message, timeout) {
+        let (ssu2_outcome, ssu2_link, ssu2_ticket) = if with_ticket {
+            let (outcome, link_id, ticket) =
+                self.service.send_i2np_with_receipt(peer, message, timeout);
+            (outcome, link_id, ticket)
+        } else {
+            let (outcome, link_id) = self.service.send_i2np_with_link(peer, message, timeout);
+            (outcome, link_id, None)
+        };
+        let outcome = match ssu2_outcome {
             Ssu2SendOutcome::Accepted => RouterDeliveryOutcome::Accepted,
             Ssu2SendOutcome::QueueFull => RouterDeliveryOutcome::QueueFull,
             Ssu2SendOutcome::ResourceDenied => RouterDeliveryOutcome::ResourceDenied,
@@ -1260,22 +1421,26 @@ impl RouterDeliveryService {
             Ssu2SendOutcome::DeadlineElapsed => RouterDeliveryOutcome::DeadlineElapsed,
         };
         if outcome != RouterDeliveryOutcome::NoActiveSession {
-            let transport = (outcome != RouterDeliveryOutcome::NoActiveSession)
-                .then_some(RouterDeliveryTransport::Ssu2);
-            return (outcome, transport);
+            let transport = ssu2_link.map(RouterDeliveryTransport::Ssu2);
+            return (outcome, transport, ssu2_ticket);
         }
         let Ok(registry) = self.ntcp2.lock() else {
-            return (outcome, None);
+            return (outcome, None, None);
         };
         match registry.as_ref() {
             Some(registry) => {
-                let (outcome, link_id) = registry.deliver_with_link(peer, ntcp2_bytes);
+                let (outcome, link_id, completion) =
+                    registry.deliver_with_link_and_receipt(peer, ntcp2_bytes, with_ticket);
                 if outcome == RouterDeliveryOutcome::NoActiveSession {
                     registry.request_outbound_dial(peer);
                 }
-                (outcome, link_id.map(RouterDeliveryTransport::Ntcp2))
+                (
+                    outcome,
+                    link_id.map(RouterDeliveryTransport::Ntcp2),
+                    completion,
+                )
             }
-            None => (outcome, None),
+            None => (outcome, None, None),
         }
     }
 }
@@ -1348,25 +1513,62 @@ pub fn ssu2_runtime_config_from(
             max_outbound_datagrams: config.max_datagram_queue_items,
             max_outbound_bytes: config.max_datagram_queue_bytes,
             max_inbound_i2np_queue: config.max_inbound_i2np_queue,
+            // Plan 490: the relay handoff is a separate bounded queue.
+            max_inbound_relay_queue: default_limits.max_inbound_relay_queue,
         },
         deadlines: Ssu2RuntimeDeadlines {
             handshake: config.handshake_timeout,
             dial,
             idle: config.idle_timeout,
+            // Plan 522: the keepalive rides the **existing** session
+            // scheduler, so it is a deadline and not a task. Its
+            // interval is the transport's own constant, so there is no
+            // second value to disagree with. A router without the
+            // pool sends no keepalive at all.
+            keepalive: config
+                .peer_pool
+                .then(|| Duration::from_millis(i2pr_runtime::KEEPALIVE_INTERVAL_MS)),
             queue_wait: default_deadlines.queue_wait,
             drain: default_deadlines.drain,
             scheduler_poll_max: config.scheduler_poll_max,
         },
         prefixes: i2pr_runtime::IpPrefixPolicy::default(),
-        // Explicit-bind corroboration is inert for the private-LAN profile;
-        // the runtime rejects non-loopback publication and this composition
-        // never records reachability evidence for that profile.
+        // Plan 535: the observation lifetime is the transport's own, and the
+        // runtime reads it back from the tracker's policy. The daemon's
+        // configuration surface gains no key for it.
+        reachability: i2pr_runtime::Ssu2RuntimeReachability::default(),
+        // Explicit-bind corroboration. Plan 546: this is now the *only*
+        // production route to `Reachable`, so it matters rather than being
+        // inert -- but it still records only through the narrow bind note, and
+        // only when `publish_bound_address` admits the bind. With the key off,
+        // the runtime still refuses every non-loopback publication.
+        // Plan 549: the runtime's own cadence for re-proving the path in use.
+        // The daemon passes the default; this is a runtime knob, not an
+        // operator key, and no configuration surface gains a field for it.
+        path_revalidation_interval_ms: i2pr_runtime::PATH_REVALIDATION_INTERVAL_MS,
         explicit_bind_corroboration: true,
+        // Plan 546: may the bound address be published? Off by default; the
+        // operator's key is the only thing that widens it.
+        publish_bound_address: config.publish_bound_address,
         // Same posture for the controlled peer-test evidence path (Plan 283): the
         // service parses and routes peer-test datagrams but never responds on its
         // own, records nothing without a live started test, and starts tests only
         // through the narrow controlled APIs the M12 activation composition calls.
         controlled_peer_test: true,
+        // Ssu2DaemonService rejects every non-qualified bind above. The
+        // private-LAN and controlled-loopback profiles are explicit local
+        // qualification modes; ordinary/default-off startup never constructs
+        // this runtime observer.
+        qualification_observer: true,
+        // Plan 490: the introducer (Bob) role runs only behind the
+        // explicit `ssu2.introducer_service` opt-in. It stays
+        // non-advertised and default-off.
+        introducer_service: config.introducer_service,
+        // Plan 531: the requester (Alice) role runs only behind the
+        // explicit `ssu2.relay_requester` opt-in. It stays
+        // non-advertised and default-off.
+        relay_requester: config.relay_requester,
+        relay_target: config.relay_target,
     };
     runtime
         .validate()
@@ -1392,9 +1594,17 @@ pub fn ssu2_socket_config_from(config: &Ssu2Config) -> Result<Ssu2SocketConfig, 
             "SSU2 service requires enabled = true".to_owned(),
         ));
     }
-    if config.advertise || config.introducer_service {
+    // Plan 520: the router may publish **its own** SSU2 address behind an
+    // explicit opt-in. The publication is confined to the controlled
+    // loopback profile: the runtime's publication material is refused for
+    // any non-loopback bind, so a private-LAN bind could never earn the
+    // address, and the switch is refused there rather than silently
+    // publishing nothing.
+    if config.advertise
+        && config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
+    {
         return Err(Ssu2ServiceError::ControlledProfile(
-            "SSU2 controlled profile forbids advertise/introducer".to_owned(),
+            "the private-LAN SSU2 profile cannot publish an SSU2 address".to_owned(),
         ));
     }
     if config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
@@ -1509,6 +1719,91 @@ pub fn generate_controlled_identity_with_keys(
     generate_identity_with_keys(bundle, host, port, transport, false)
 }
 
+/// Re-dates and re-signs the router's own RouterInfo, and installs it.
+///
+/// Plan 518: the record the router publishes carries the publication date
+/// the router signed at **startup**, so it ages out of the network's view.
+/// The netdb's acceptance window is 24 hours
+/// (`i2pr_netdb::DEFAULT_MAX_AGE`), and the reference's own netdb expires
+/// routers between one and a half and twenty-seven hours
+/// (`libi2pd/NetDb.hpp:49-51`), so a router that never re-dates publishes a
+/// record the network will not accept.
+///
+/// The reference re-dates and re-signs its record before each publish
+/// (`libi2pd/RouterInfo.cpp:1218`, `libi2pd/RouterContext.cpp:1474`). This
+/// does the same: the **fresh** record is returned and installed, so the
+/// record the router hands out in `SessionConfirmed` carries the fresh date
+/// too.
+///
+/// When the record cannot be re-dated, the installed record is returned
+/// unchanged: the publication's staleness rule then refuses it and counts
+/// the refusal, so the fault is visible rather than silent.
+pub fn refresh_local_router_info_record(
+    bundle: &RouterIdentityBundle,
+    handle: &Ssu2PublicationHandle,
+    now_ms: u64,
+    ntcp2_endpoint: Option<SocketAddr>,
+    ntcp2_scope: i2pr_runtime::Ntcp2DialScope,
+) -> Option<Vec<u8>> {
+    let installed = handle.service().installed_local_router_info()?;
+    match i2pr_crypto::resign_router_info_with_published(
+        bundle,
+        &installed,
+        Date::from_millis(now_ms),
+    ) {
+        Ok(fresh) => {
+            // Plan 547: a record that names **both** transports is
+            // installed through the scoped form, so the install gate
+            // still verifies that the record's NTCP2 address names the
+            // separately bound endpoint and falls inside the scope.
+            //
+            // The endpoint is **supplied**, never inferred from the
+            // record: inferring it would make the test compare the
+            // record with itself. A record that names no NTCP2 address
+            // keeps the plain form, whose gate requires exactly that.
+            let outcome = match ntcp2_endpoint {
+                Some(endpoint) if router_info_names_ntcp2(&fresh) => handle
+                    .service()
+                    .install_scoped_dual_router_info(fresh.clone(), now_ms, endpoint, ntcp2_scope),
+                _ => handle
+                    .service()
+                    .install_local_router_info(fresh.clone(), now_ms),
+            };
+            if let Err(error) = outcome {
+                tracing::warn!(
+                    reason = ?error,
+                    "the re-dated RouterInfo was not installed"
+                );
+            }
+            Some(fresh)
+        }
+        Err(error) => {
+            tracing::warn!(reason = %error, "the local RouterInfo could not be re-dated");
+            Some(installed)
+        }
+    }
+}
+
+/// Whether one encoded RouterInfo names an NTCP2 address.
+///
+/// Plan 547: the re-dating path chooses between the plain install form and
+/// the scoped dual-transport form by the record's **own** content, because
+/// the two forms partition: the plain form requires a record that names no
+/// NTCP2 address, and the scoped form requires a record that names exactly
+/// one and that it names the separately bound endpoint.
+///
+/// A record that cannot be decoded names no NTCP2 address here, and the
+/// install gate refuses it in turn: the two never disagree.
+fn router_info_names_ntcp2(encoded: &[u8]) -> bool {
+    let Ok(info) = RouterInfo::decode(encoded, constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+    else {
+        return false;
+    };
+    info.addresses()
+        .iter()
+        .any(|address| address.transport_style() == "NTCP2")
+}
+
 /// Builds a fresh, signed NTCP2 RouterInfo for the explicit loopback profile.
 ///
 /// The persisted static key must already be bound to the supplied RouterIdentity.
@@ -1599,14 +1894,62 @@ pub fn generate_controlled_dual_transport_router_info(
     ntcp2_transport: &Ntcp2TransportIdentityMaterial,
     network_id: u16,
 ) -> Result<Vec<u8>, Ssu2ServiceError> {
-    if !ssu2_endpoint.ip().is_loopback()
-        || !ntcp2_endpoint.ip().is_loopback()
+    generate_scoped_dual_transport_router_info(
+        bundle,
+        ssu2_endpoint,
+        ssu2_transport,
+        ntcp2_endpoint,
+        ntcp2_transport,
+        network_id,
+        i2pr_runtime::Ntcp2DialScope::Loopback,
+    )
+}
+
+/// Builds one signed RouterInfo for the guarded operator profile, whose two
+/// transports both live on the same RFC1918 IPv4 private LAN.
+///
+/// Plan 496. The record is held locally and is never published to the
+/// NetDB; the operator hands it to a lab peer out of band.
+pub fn generate_private_lan_dual_transport_router_info(
+    bundle: &RouterIdentityBundle,
+    ssu2_endpoint: SocketAddr,
+    ssu2_transport: &Ssu2TransportIdentityMaterial,
+    ntcp2_endpoint: SocketAddr,
+    ntcp2_transport: &Ntcp2TransportIdentityMaterial,
+    network_id: u16,
+) -> Result<Vec<u8>, Ssu2ServiceError> {
+    generate_scoped_dual_transport_router_info(
+        bundle,
+        ssu2_endpoint,
+        ssu2_transport,
+        ntcp2_endpoint,
+        ntcp2_transport,
+        network_id,
+        i2pr_runtime::Ntcp2DialScope::PrivateLan,
+    )
+}
+
+/// Builds one signed RouterInfo for an explicit dual-transport qualification
+/// profile. Both endpoint/key tuples are copied from the live owners'
+/// validated configuration and identity-bound stores, and both endpoints must
+/// fall inside `scope`. No capability letters are added here.
+pub fn generate_scoped_dual_transport_router_info(
+    bundle: &RouterIdentityBundle,
+    ssu2_endpoint: SocketAddr,
+    ssu2_transport: &Ssu2TransportIdentityMaterial,
+    ntcp2_endpoint: SocketAddr,
+    ntcp2_transport: &Ntcp2TransportIdentityMaterial,
+    network_id: u16,
+    scope: i2pr_runtime::Ntcp2DialScope,
+) -> Result<Vec<u8>, Ssu2ServiceError> {
+    if !scope.admits(ssu2_endpoint.ip())
+        || !scope.admits(ntcp2_endpoint.ip())
         || ssu2_endpoint.port() < 1024
         || ntcp2_endpoint.port() < 1024
         || ssu2_endpoint.is_ipv4() != ntcp2_endpoint.is_ipv4()
     {
         return Err(Ssu2ServiceError::ControlledProfile(
-            "dual-transport qualification requires matching fixed loopback address families"
+            "dual-transport qualification requires matching fixed endpoints inside the permitted address scope"
                 .to_owned(),
         ));
     }
@@ -1855,9 +2198,16 @@ impl Ssu2DaemonService {
                 "SSU2 service requires enabled = true".to_owned(),
             ));
         }
-        if config.advertise || config.introducer_service {
+        // Plan 520: the router may publish **its own** SSU2 address behind
+        // an explicit opt-in. The publication is confined to the
+        // controlled loopback profile: the runtime's publication material
+        // is refused for any non-loopback bind, so a private-LAN bind
+        // could never earn the address.
+        if config.advertise
+            && config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
+        {
             return Err(Ssu2ServiceError::ControlledProfile(
-                "SSU2 controlled profile forbids advertise/introducer".to_owned(),
+                "the private-LAN SSU2 profile cannot publish an SSU2 address".to_owned(),
             ));
         }
         if config.qualification_profile == crate::config::Ssu2QualificationProfile::PrivateLan
@@ -1905,6 +2255,23 @@ impl Ssu2DaemonService {
             .install_controlled_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint)
     }
 
+    /// Installs one dual-family record only when its NTCP2 endpoint matches
+    /// the separately configured live listener and falls inside `scope`.
+    ///
+    /// Plan 496: the controlled profile stays loopback-only; the guarded
+    /// operator profile admits an RFC1918 IPv4 endpoint. The scope is the
+    /// caller's and is never widened here.
+    pub fn install_scoped_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+        scope: i2pr_runtime::Ntcp2DialScope,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service
+            .install_scoped_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint, scope)
+    }
+
     /// Returns the narrow outbound delivery capability.
     pub fn delivery(&self) -> RouterDeliveryService {
         RouterDeliveryService::new(self.service.clone())
@@ -1946,6 +2313,11 @@ impl Ssu2DaemonHandle {
         &self.service
     }
 
+    /// Returns the opt-in private qualification observer, if configured.
+    pub fn qualification_observer(&self) -> Option<i2pr_runtime::Ssu2QualificationObserver> {
+        self.service.qualification_observer()
+    }
+
     /// Installs one controlled dual-family record only when its NTCP2
     /// endpoint matches the separately configured live loopback listener.
     pub fn install_controlled_dual_router_info(
@@ -1956,6 +2328,23 @@ impl Ssu2DaemonHandle {
     ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
         self.service
             .install_controlled_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint)
+    }
+
+    /// Installs one dual-family record only when its NTCP2 endpoint matches
+    /// the separately configured live listener and falls inside `scope`.
+    ///
+    /// Plan 496: the controlled profile stays loopback-only; the guarded
+    /// operator profile admits an RFC1918 IPv4 endpoint. The scope is the
+    /// caller's and is never widened here.
+    pub fn install_scoped_dual_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+        ntcp2_endpoint: SocketAddr,
+        scope: i2pr_runtime::Ntcp2DialScope,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service
+            .install_scoped_dual_router_info(encoded, wall_now_ms, ntcp2_endpoint, scope)
     }
 
     /// Returns publication material derived by the runtime from its live bind and reachability
@@ -1989,6 +2378,30 @@ impl Ssu2DaemonHandle {
         self.handle.next_inbound().await
     }
 
+    /// Receives the next authenticated inbound relay block without waiting.
+    ///
+    /// Plan 498: the daemon's live inbound loop drains the runtime's relay
+    /// handoff on a bounded tick. This is the non-blocking counterpart of
+    /// the I2NP handoff's `next_inbound`.
+    pub fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
+        self.handle.try_next_relay_event()
+    }
+
+    /// Receives the next inbound requester event without waiting
+    /// (Plan 531).
+    ///
+    /// The requester's inbound events have their own bounded handoff: a
+    /// Relay Response that correlates with one of the router's own live
+    /// relay requests, and an out-of-session HolePunch.
+    pub fn try_next_requester_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
+        self.handle.try_next_requester_event()
+    }
+
+    /// Receives the next inbound target event without waiting (Plan 532).
+    pub fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget> {
+        self.handle.try_next_target_event()
+    }
+
     /// Receives the next inbound message and dispatches it through
     /// the central router-I2NP dispatcher, preserving authenticated
     /// peer identity. Returns `None` after shutdown drains the queue.
@@ -1998,6 +2411,26 @@ impl Ssu2DaemonHandle {
     ) -> Option<Result<RouterI2npOutcome, RouterI2npError>> {
         let inbound = self.handle.next_inbound().await?;
         Some(dispatch_router_i2np(&inbound, now_ms))
+    }
+
+    /// Receives the next authenticated inbound relay block and delivers
+    /// it to the introducer (Bob) role owner (Plan 490).
+    ///
+    /// The dispatch order is **service first, transit second, unknown
+    /// fail-closed**: the service owner (the introducer) sees a Relay
+    /// Request or a Relay Response; a Relay Intro belongs to the target
+    /// (transit) role and is refused by the service owner; the runtime
+    /// never surfaces a block it could not classify. Returns `None`
+    /// after shutdown drains the queue.
+    pub async fn next_relay_dispatched(
+        &mut self,
+        introducer: &mut crate::ssu2_introducer::Ssu2IntroducerService,
+        signers: &dyn crate::ssu2_introducer::IntroducerSignerResolver,
+        now_ms: u64,
+        now_secs: u64,
+    ) -> Option<crate::ssu2_introducer::Ssu2IntroducerOutcome> {
+        let event = self.handle.next_relay_event().await?;
+        Some(introducer.on_relay_event(&event, signers, now_ms, now_secs))
     }
 
     /// Dials one validated SSU2 target to an authenticated session.
@@ -2019,6 +2452,84 @@ impl Ssu2DaemonHandle {
     /// Returns the privacy-safe runtime snapshot.
     pub fn snapshot(&self) -> i2pr_runtime::Ssu2Snapshot {
         self.service.snapshot()
+    }
+
+    /// Returns the narrow capability the router's own publication needs.
+    ///
+    /// Plan 519: the publication runs on its **own task**, so it cannot
+    /// hold this handle: the handle owns the runtime's inbound handoff and
+    /// is not cloneable. The capability carries only what a publication
+    /// touches, and it hands out no authority the handle does not already
+    /// hold.
+    pub fn publication_handle(&self) -> Ssu2PublicationHandle {
+        Ssu2PublicationHandle {
+            service: self.service.clone(),
+            delivery: self.delivery.clone(),
+        }
+    }
+}
+
+/// The narrow capability the router's own RouterInfo publication uses.
+///
+/// Plan 519: the publication is a **task of its own**, and a task that is
+/// not the transport's service loop cannot hold the service's handle --
+/// that handle owns the runtime's inbound handoff and is not cloneable.
+/// This capability is the publication's whole view of the transport: the
+/// runtime's service (the live sessions, the installed record), the
+/// bounded delivery seam, and the dial seam.
+///
+/// It grants nothing the daemon did not already hold: it carries the same
+/// [`Ssu2RuntimeService`] the handle carries, over the same shared state.
+#[derive(Clone, Debug)]
+pub struct Ssu2PublicationHandle {
+    service: Ssu2RuntimeService,
+    delivery: RouterDeliveryService,
+}
+
+impl Ssu2PublicationHandle {
+    /// Returns the owning runtime service.
+    pub const fn service(&self) -> &Ssu2RuntimeService {
+        &self.service
+    }
+
+    /// Returns the narrow outbound delivery capability.
+    pub const fn delivery(&self) -> &RouterDeliveryService {
+        &self.delivery
+    }
+
+    /// Returns the router hashes of the peers holding at least one live
+    /// session link.
+    ///
+    /// Plan 519: the publication **prefers** a peer it is already connected
+    /// to, because that is the peer whose send needs no handshake. The set
+    /// is a point-in-time reading and is bounded by the runtime's own
+    /// active-session ceiling.
+    pub fn established_peer_hashes(&self) -> Vec<Hash> {
+        self.service.active_peer_hashes()
+    }
+
+    /// Returns the installed local RouterInfo, if one is installed.
+    pub fn installed_local_router_info(&self) -> Option<Vec<u8>> {
+        self.service.installed_local_router_info()
+    }
+
+    /// Installs the local RouterInfo the router hands out.
+    pub fn install_local_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+    ) -> Result<(), i2pr_runtime::Ssu2PublicationUnavailable> {
+        self.service.install_local_router_info(encoded, wall_now_ms)
+    }
+
+    /// Dials one validated SSU2 target to an authenticated session.
+    pub async fn dial(
+        &self,
+        target: Ssu2DialTarget,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<Ssu2EstablishedLink, i2pr_runtime::Ssu2DialOutcome> {
+        self.service.dial_ssu2(target, timeout, cancellation).await
     }
 }
 
@@ -2286,7 +2797,7 @@ mod tests {
             (RouterDeliveryOutcome::Accepted, Some(stale)),
             "the newest authenticated generation is selected deterministically"
         );
-        assert_eq!(duplicate_receiver.recv().await, Some(vec![0]));
+        assert_eq!(duplicate_receiver.recv().await.unwrap().bytes, vec![0]);
         registry.remove(peer, stale);
         assert!(registry.is_current(peer, active));
 
@@ -2298,7 +2809,7 @@ mod tests {
             registry.deliver_with_link(peer, vec![2]).0,
             RouterDeliveryOutcome::QueueFull
         );
-        assert_eq!(receiver.recv().await, Some(vec![1]));
+        assert_eq!(receiver.recv().await.unwrap().bytes, vec![1]);
 
         assert_eq!(
             registry.deliver_with_link(peer, vec![3]).0,
@@ -2340,7 +2851,7 @@ mod tests {
                 Some(RouterDeliveryTransport::Ntcp2(link_id)),
             )
         );
-        assert_eq!(receiver.recv().await, Some(bytes));
+        assert_eq!(receiver.recv().await.unwrap().bytes, bytes);
     }
 
     #[tokio::test]
@@ -2460,14 +2971,10 @@ mod tests {
                 .expect("bounded request")
         };
         for message_id in [0x461_0001, 0x461_0002] {
-            assert_eq!(
-                delivery.deliver_with_transport(send(message_id), &cancellation),
-                (
-                    RouterDeliveryOutcome::Accepted,
-                    Some(RouterDeliveryTransport::Ssu2),
-                ),
-                "SSU2 remains selected when NTCP2 is present or removed"
-            );
+            let (outcome, selected) =
+                delivery.deliver_with_transport(send(message_id), &cancellation);
+            assert_eq!(outcome, RouterDeliveryOutcome::Accepted);
+            assert!(matches!(selected, Some(RouterDeliveryTransport::Ssu2(_))));
             let inbound = tokio::time::timeout(Duration::from_secs(5), handle_b.next_inbound())
                 .await
                 .expect("SSU2 inbound deadline")
@@ -2668,14 +3175,9 @@ mod tests {
             .expect("bounded delivery")
         };
 
-        assert_eq!(
-            delivery.deliver_with_transport(send(0x461_1001), &cancellation),
-            (
-                RouterDeliveryOutcome::Accepted,
-                Some(RouterDeliveryTransport::Ssu2)
-            ),
-            "the live SSU2 session is preferred while both authenticated families exist"
-        );
+        let (outcome, selected) = delivery.deliver_with_transport(send(0x461_1001), &cancellation);
+        assert_eq!(outcome, RouterDeliveryOutcome::Accepted);
+        assert!(matches!(selected, Some(RouterDeliveryTransport::Ssu2(_))));
         let ssu_inbound = tokio::time::timeout(Duration::from_secs(5), handle_b.next_inbound())
             .await
             .expect("SSU2 receive deadline")
@@ -2685,14 +3187,9 @@ mod tests {
         registry.remove(peer_b, link_id);
         outbound.close();
         inbound.close();
-        assert_eq!(
-            delivery.deliver_with_transport(send(0x461_1002), &cancellation),
-            (
-                RouterDeliveryOutcome::Accepted,
-                Some(RouterDeliveryTransport::Ssu2)
-            ),
-            "the live SSU2 session carries product I2NP after NTCP2 link loss"
-        );
+        let (outcome, selected) = delivery.deliver_with_transport(send(0x461_1002), &cancellation);
+        assert_eq!(outcome, RouterDeliveryOutcome::Accepted);
+        assert!(matches!(selected, Some(RouterDeliveryTransport::Ssu2(_))));
         let ssu_inbound_after_ntcp2_loss =
             tokio::time::timeout(Duration::from_secs(5), handle_b.next_inbound())
                 .await
@@ -2754,7 +3251,8 @@ mod tests {
         let bytes = replacement_receiver
             .recv()
             .await
-            .expect("replacement NTCP2 route queue");
+            .expect("replacement NTCP2 route queue")
+            .bytes;
         outbound_replacement
             .send_i2np_message(bytes, Duration::from_secs(2), &cancellation)
             .await
@@ -3074,6 +3572,40 @@ mod tests {
             "192.168.10.25:44123".parse().unwrap()
         );
         assert!(sockets.ipv6.is_none());
+    }
+
+    #[test]
+    fn socket_config_permits_the_controlled_advertisement_opt_in() {
+        // Plan 520: the router may publish **its own** SSU2 address behind
+        // an explicit opt-in, and the introducer role is available behind
+        // its own. The socket layer's independent gate is the **profile**:
+        // the controlled loopback profile may opt in, and the private-LAN
+        // profile may not, because the runtime's publication material is
+        // refused for any non-loopback bind.
+        let mut config = crate::config::Config::parse(
+            "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"\"\nbind_ipv6 = \"::1\"\nintroducer_service = true\n",
+        )
+        .expect("introducer profile")
+        .ssu2;
+        assert!(config.introducer_service);
+        assert!(!config.advertise);
+        // The controlled loopback profile may opt in.
+        config.advertise = true;
+        assert!(ssu2_socket_config_from(&config).is_ok());
+        // The private-LAN profile may not.
+        let mut private = config.clone();
+        private.qualification_profile = crate::config::Ssu2QualificationProfile::PrivateLan;
+        private.bind_ipv4 = Some("192.168.10.25".parse().unwrap());
+        private.bind_ipv6 = None;
+        private.port = 44123;
+        let Err(Ssu2ServiceError::ControlledProfile(reason)) = ssu2_socket_config_from(&private)
+        else {
+            panic!("the private-LAN profile must never publish an SSU2 address");
+        };
+        assert!(
+            reason.contains("publish"),
+            "the refusal must name the publication it forbids: {reason}"
+        );
     }
 
     #[test]

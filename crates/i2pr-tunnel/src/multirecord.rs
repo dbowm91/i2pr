@@ -591,6 +591,10 @@ pub enum MultiRecordError {
     /// The supplied RNG could not produce output.
     #[error("multi-record RNG unavailable")]
     RandomnessUnavailable,
+    /// The bounded per-path message-id collision search found no
+    /// usable nonzero identifier.
+    #[error("multi-record message-id allocation exhausted")]
+    MessageIdAllocationExhausted,
     /// The originator fake record did not match its integrity hash.
     #[error("inbound originator fake record was modified after dispatch")]
     OriginatorFakeModified,
@@ -755,6 +759,10 @@ pub struct PreparedHopContext {
     /// Hop role. Used by the postprocessor to surface the
     /// outbound-endpoint classification on the per-hop result.
     pub role: HopRole,
+    /// Message identifier this hop forwards in its authenticated
+    /// request. The terminal hop retains the creator's expected
+    /// reply identifier; preceding hops receive unique fresh IDs.
+    pub forwarding_message_id: u32,
 }
 
 // Manual `Zeroize`/`ZeroizeOnDrop` implementation because `HopRole`
@@ -863,8 +871,10 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
     // `MultiRecordHopSpec` directly.
     validate_routing_chain(path_hops)?;
     let record_set = assign_record_slots(path_hops.len() as u8, direction, rng)?;
+    let forwarding_message_ids =
+        allocate_forwarding_message_ids(path_hops.len(), next_message_id, rng)?;
     let mut hop_contexts: Vec<PreparedHopContext> = Vec::with_capacity(path_hops.len());
-    for hop in path_hops {
+    for (hop, forwarding_message_id) in path_hops.iter().zip(forwarding_message_ids) {
         let slot = record_set
             .slot_for_real_hop(hop.canonical_index)
             .ok_or(MultiRecordError::SlotExhausted)?;
@@ -872,7 +882,7 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
             hop,
             &creator_tunnel_id_bytes,
             request_time_ms,
-            next_message_id,
+            forwarding_message_id,
             rng,
         )?;
         let sealed = cryptography.seal_short_request(
@@ -892,6 +902,7 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
             state,
             layer_keys,
             role: hop.role,
+            forwarding_message_id,
         });
     }
     // Build the wire payload slot table.
@@ -937,6 +948,39 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
         direction,
         first_hop,
     })
+}
+
+/// Allocate one forwarding message identifier per real hop. The
+/// terminal hop uses the supplied creator reply-correlation ID;
+/// preceding hops receive fresh identifiers unique within the path.
+fn allocate_forwarding_message_ids<R: CryptoRng + RngCore>(
+    hop_count: usize,
+    terminal_message_id: u32,
+    rng: &mut R,
+) -> Result<Vec<u32>, MultiRecordError> {
+    if hop_count == 0 || terminal_message_id == 0 {
+        return Err(MultiRecordError::MessageIdAllocationExhausted);
+    }
+    let mut identifiers = Vec::with_capacity(hop_count);
+    for _ in 1..hop_count {
+        let mut allocated = None;
+        for _ in 0..32 {
+            let mut bytes = [0_u8; 4];
+            rng.try_fill_bytes(&mut bytes)
+                .map_err(|_| MultiRecordError::RandomnessUnavailable)?;
+            let candidate = u32::from_be_bytes(bytes);
+            if candidate != 0
+                && candidate != terminal_message_id
+                && !identifiers.contains(&candidate)
+            {
+                allocated = Some(candidate);
+                break;
+            }
+        }
+        identifiers.push(allocated.ok_or(MultiRecordError::MessageIdAllocationExhausted)?);
+    }
+    identifiers.push(terminal_message_id);
+    Ok(identifiers)
 }
 
 /// Hop specification consumed by [`prepare_short_build_message`].
@@ -1456,6 +1500,7 @@ impl MultiHopReferenceFixture {
             state: sealed0.state,
             layer_keys: layer0,
             role: HopRole::Participant,
+            forwarding_message_id: 0x1111,
         };
         let context1 = PreparedHopContext {
             hop_index: 1,
@@ -1464,6 +1509,7 @@ impl MultiHopReferenceFixture {
             state: sealed1.state,
             layer_keys: layer1,
             role: HopRole::Participant,
+            forwarding_message_id: 0x2222,
         };
         let context2 = PreparedHopContext {
             hop_index: 2,
@@ -1472,6 +1518,7 @@ impl MultiHopReferenceFixture {
             state: sealed2.state,
             layer_keys: layer2,
             role: HopRole::OutboundEndpoint,
+            forwarding_message_id: 0x3333,
         };
         let contexts = vec![context0, context1, context2];
         let mut slots = vec![[0_u8; RECORD_BYTES]; record_set.record_count() as usize];
@@ -2238,6 +2285,33 @@ mod tests {
                 .iter()
                 .skip(1)
                 .all(|context| context.role == HopRole::Participant)
+        );
+        let forwarding_ids: Vec<u32> = prepared
+            .hop_contexts
+            .iter()
+            .map(|context| context.forwarding_message_id)
+            .collect();
+        assert_eq!(forwarding_ids.last(), Some(&0x1234_5678));
+        assert!(forwarding_ids.iter().all(|id| *id != 0));
+        for index in 0..hop_privs.len() {
+            let opened = cryptography
+                .open_short_request(
+                    &prepared.hop_contexts[index].own_record,
+                    &hop_privs[index],
+                    hop_hashes[index].as_bytes(),
+                )
+                .expect("open each independently sealed hop request");
+            let request =
+                ShortRequestRecord::decode(opened.plaintext.as_ref()).expect("decode hop request");
+            assert_eq!(request.next_message_id(), forwarding_ids[index]);
+        }
+        assert_eq!(
+            forwarding_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            forwarding_ids.len(),
+            "per-hop forwarding identifiers are unique"
         );
 
         let mut payload = prepared.payload.to_vec();

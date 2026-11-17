@@ -322,6 +322,30 @@ pub const DATA_DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
 /// session recommends termination (Plan 157 local policy bounding
 /// prolonged heavy loss).
 pub const DATA_MAX_CONSECUTIVE_RTO_BEFORE_TERMINATE: u32 = 5;
+/// The keepalive's payload size, in bytes.
+///
+/// Plan 522: the reference's keepalive is a twenty-byte padding
+/// block and nothing else (`libi2pd/SSU2Session.cpp:269`), so a
+/// keepalive carries **no** I2NP message and adds **no** new
+/// block type.
+pub const DATA_KEEPALIVE_PAYLOAD_BYTES: usize = 20;
+/// The keepalive's unanswered deadline, in intervals.
+///
+/// Plan 522: the keepalive refreshes the session's **send**
+/// timestamp, so the idle timeout -- which reads the *maximum*
+/// of the send and receive timestamps -- cannot notice a peer
+/// that stopped answering. The keepalive therefore carries its
+/// own deadline, and three unanswered keepalives end the
+/// session.
+pub const DATA_KEEPALIVE_TIMEOUT_INTERVALS: u64 = 3;
+/// The keepalive interval, in milliseconds.
+///
+/// Plan 522: this is the transport's own cadence and the single
+/// source of truth for it. The daemon derives the runtime's
+/// keepalive from this constant rather than configuring a second
+/// value, and refuses a pool whose idle timeout is too short for
+/// this interval's unanswered deadline.
+pub const DATA_KEEPALIVE_INTERVAL_MS: u64 = 60_000;
 /// IPv4 data-phase payload budget overhead (`MTU - 60` per the Data
 /// Message section).
 pub const DATA_IPV4_OVERHEAD_BYTES: usize = 60;

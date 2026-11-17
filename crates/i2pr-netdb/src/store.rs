@@ -5,7 +5,7 @@
 //! replacement/conflict/expiry semantics with checked arithmetic and
 //! no saturating hidden bugs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use i2pr_proto::Date;
 
@@ -82,7 +82,41 @@ pub struct RouterInfoStoreStats {
 #[derive(Debug)]
 pub struct RouterInfoStore {
     records: BTreeMap<RouterHash, ValidatedRouterInfo>,
+    /// The retained records' publication times, ordered.
+    ///
+    /// Plan 540: this is **maintained**, not derived. The store maintains it
+    /// on exactly the paths that maintain the record map -- the new-key path,
+    /// the replacement path and the removal path -- so the prune can find the
+    /// stale records without walking every retained record. An entry is the
+    /// record's publication time and its key, so two records published at the
+    /// same instant are two entries and the index is never lossy.
+    ///
+    /// The index is **exact**: a stale record that the index missed would
+    /// never be removed, which is a silent retention failure, so every
+    /// retained record has exactly one entry and every entry names a
+    /// retained record.
+    ages: BTreeSet<(u64, RouterHash)>,
+    /// The retained floodfill advertisers' hashes, ordered.
+    ///
+    /// Plan 541: this is **maintained**, not derived. The store maintains it
+    /// on exactly the paths that maintain the record map and the floodfill
+    /// advertiser count -- the new-key path, the replacement path and the
+    /// removal path -- so the selection walks the advertisers instead of
+    /// scanning the record map.
+    ///
+    /// The index is **exact**: an advertiser the index missed would be
+    /// invisible to the router's floodfill selection, which is a silent
+    /// selection failure, so every advertiser has exactly one entry and
+    /// every entry names an advertiser.
+    advertisers: BTreeSet<RouterHash>,
     total_encoded_bytes: usize,
+    /// The number of retained records that advertise the `f` capability.
+    ///
+    /// Plan 538: this is **accounted**, not derived. The store maintains it
+    /// on the same paths that maintain the byte total, so it can never
+    /// disagree with the set of retained records, and reading it costs
+    /// nothing where a scan of every record would cost the population.
+    floodfill_advertiser_count: usize,
     config: RouterInfoStoreConfig,
 }
 
@@ -100,7 +134,10 @@ impl RouterInfoStore {
     pub fn with_config(config: RouterInfoStoreConfig) -> Self {
         Self {
             records: BTreeMap::new(),
+            ages: BTreeSet::new(),
+            advertisers: BTreeSet::new(),
             total_encoded_bytes: 0,
+            floodfill_advertiser_count: 0,
             config,
         }
     }
@@ -118,6 +155,8 @@ impl RouterInfoStore {
     pub fn insert(&mut self, validated: ValidatedRouterInfo) -> InsertOutcome {
         let key = validated.key();
         let encoded_len = validated.encoded_len();
+        let incoming_floodfill = validated.advertises_floodfill();
+        let incoming_published_ms = validated.published().as_millis();
 
         if let Some(existing) = self.records.get(&key) {
             let existing_published = existing.published();
@@ -132,6 +171,8 @@ impl RouterInfoStore {
                 return InsertOutcome::Conflict;
             }
             // incoming > existing; replacement path.
+            let existing_floodfill = existing.advertises_floodfill();
+            let existing_published_ms = existing.published().as_millis();
             if encoded_len > existing.encoded_len() {
                 let extra = encoded_len - existing.encoded_len();
                 if self
@@ -151,6 +192,18 @@ impl RouterInfoStore {
                 .checked_add(encoded_len)
                 .expect("accounting overflow on replace");
             self.records.insert(key, validated);
+            // The replacement may carry a different publication time, so the
+            // index follows the record: the old entry goes, the new one comes.
+            self.ages.remove(&(existing_published_ms, key));
+            self.ages.insert((incoming_published_ms, key));
+            if existing_floodfill != incoming_floodfill {
+                self.adjust_floodfill_advertiser_count(incoming_floodfill);
+            }
+            // Plan 541: the advertiser index follows the capability, so a
+            // replacement that publishes a different capability set swaps
+            // the entry. The note is idempotent, so it is made on every
+            // replacement rather than only when the capability changed.
+            self.note_advertiser(key, incoming_floodfill);
             return InsertOutcome::Replaced;
         }
 
@@ -170,6 +223,11 @@ impl RouterInfoStore {
             .checked_add(encoded_len)
             .expect("accounting overflow on insert");
         self.records.insert(key, validated);
+        self.ages.insert((incoming_published_ms, key));
+        if incoming_floodfill {
+            self.adjust_floodfill_advertiser_count(true);
+        }
+        self.note_advertiser(key, incoming_floodfill);
         InsertOutcome::Inserted
     }
 
@@ -195,9 +253,50 @@ impl RouterInfoStore {
                     .total_encoded_bytes
                     .checked_sub(removed.encoded_len())
                     .expect("accounting underflow on remove");
+                self.ages.remove(&(removed.published().as_millis(), *key));
+                if removed.advertises_floodfill() {
+                    self.adjust_floodfill_advertiser_count(false);
+                }
+                // Plan 541: the index releases the entry with the record.
+                self.note_advertiser(*key, false);
                 true
             }
             None => false,
+        }
+    }
+
+    /// Notes the record's floodfill capability in the advertiser index.
+    ///
+    /// Plan 541: the index is maintained at the **same** decision points as
+    /// the floodfill advertiser count, so the count and the set can never
+    /// disagree about which records are advertisers. The call is idempotent:
+    /// noting the same capability twice changes nothing.
+    fn note_advertiser(&mut self, key: RouterHash, is_advertiser: bool) {
+        if is_advertiser {
+            self.advertisers.insert(key);
+        } else {
+            self.advertisers.remove(&key);
+        }
+    }
+
+    /// Adjusts the maintained floodfill advertiser count.
+    ///
+    /// Plan 538: the count is **accounted** on the same paths that maintain
+    /// the byte total, so it can never disagree with the set of retained
+    /// records. An adjustment that would drive the count below zero, or past
+    /// the platform's `usize` ceiling, is a defect in the accounting, and it
+    /// is refused rather than wrapped.
+    fn adjust_floodfill_advertiser_count(&mut self, add: bool) {
+        if add {
+            self.floodfill_advertiser_count = self
+                .floodfill_advertiser_count
+                .checked_add(1)
+                .expect("floodfill advertiser count overflow");
+        } else {
+            self.floodfill_advertiser_count = self
+                .floodfill_advertiser_count
+                .checked_sub(1)
+                .expect("floodfill advertiser count underflow");
         }
     }
 
@@ -222,18 +321,18 @@ impl RouterInfoStore {
     }
 
     /// Returns a privacy-safe aggregate snapshot.
+    ///
+    /// Plan 538: every number here is **maintained**, not derived, so this
+    /// method is O(1) and never walks the record map. The floodfill
+    /// advertiser count is maintained on the same paths that maintain the
+    /// byte total, so it is exact at every point in time.
     pub fn stats(&self) -> RouterInfoStoreStats {
-        let floodfill_advertiser_count = self
-            .records
-            .values()
-            .filter(|record| record.advertises_floodfill())
-            .count();
         RouterInfoStoreStats {
             record_count: self.records.len(),
             total_encoded_bytes: self.total_encoded_bytes,
             max_records: self.config.max_records,
             max_total_encoded_bytes: self.config.max_total_encoded_bytes,
-            floodfill_advertiser_count,
+            floodfill_advertiser_count: self.floodfill_advertiser_count,
         }
     }
 
@@ -249,17 +348,24 @@ impl RouterInfoStore {
     /// caller supplies the current `now` so the operation is
     /// deterministic.
     pub fn prune(&mut self, now: Date, max_age_ms: u64) -> usize {
-        let mut removed = 0usize;
+        // Plan 540: a record is stale when its age exceeds the window, and
+        // the age is a **saturating** subtraction, so a record published in
+        // the future is not stale and a `now` below the window has no stale
+        // record at all. That is exactly a publication time strictly before
+        // `now - max_age_ms`, with the subtraction saturating too.
+        //
+        // The index is ordered by publication time first, so the stale
+        // records are a contiguous prefix of it and the walk is proportional
+        // to the number of records this prune removes, not to the
+        // population it does not remove.
+        let threshold = now.as_millis().saturating_sub(max_age_ms);
         let stale_keys: Vec<RouterHash> = self
-            .records
-            .iter()
-            .filter_map(|(key, record)| {
-                let age = now
-                    .as_millis()
-                    .saturating_sub(record.published().as_millis());
-                if age > max_age_ms { Some(*key) } else { None }
-            })
+            .ages
+            .range(..)
+            .take_while(|entry| entry.0 < threshold)
+            .map(|entry| entry.1)
             .collect();
+        let mut removed = 0usize;
         for key in stale_keys {
             if self.remove(&key) {
                 removed += 1;
@@ -271,9 +377,25 @@ impl RouterInfoStore {
     /// Returns an iterator over records that advertise the
     /// `f` capability.
     pub fn floodfill_advertisers(&self) -> impl Iterator<Item = &ValidatedRouterInfo> {
-        self.records
-            .values()
+        // Plan 541: the walk is over the maintained advertiser index, so it
+        // is proportional to the number of advertisers and not to the
+        // population. The filter is what makes the selection **exact**: a
+        // peer whose own record does not advertise `f` is never yielded,
+        // whatever the index says.
+        self.advertisers
+            .iter()
+            .filter_map(|key| self.records.get(key))
             .filter(|record| record.advertises_floodfill())
+    }
+
+    /// Returns the retained floodfill advertisers' records.
+    ///
+    /// Plan 541: this is the set the router's floodfill **selection** needs,
+    /// and it is **not** an arbitrary prefix of the population. The copy is
+    /// bounded by the store's own record ceiling, so it cannot become an
+    /// unbounded one.
+    pub fn floodfill_advertiser_snapshot(&self) -> Vec<ValidatedRouterInfo> {
+        self.floodfill_advertisers().cloned().collect()
     }
 }
 

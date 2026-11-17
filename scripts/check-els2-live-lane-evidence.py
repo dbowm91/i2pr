@@ -259,8 +259,8 @@ REQUIRED_IN_PRODUCTION: list[tuple[str, str, str]] = [
     ),
     (
         "crates/i2pr-daemon/src/service_product.rs",
-        "ExploratoryBuildCoordinator::new_with_service_destination_capacity(",
-        "Plan 390: both product composition paths must select the aggregate role bound",
+        "ExploratoryBuildCoordinator::try_new_with_service_destination_capacity(",
+        "Plan 390: both product composition paths must select the OS-seeded aggregate role bound",
     ),
     (
         "crates/i2pr-tunnel/src/data_plane_registry.rs",
@@ -587,7 +587,11 @@ def check(report: Report) -> None:
     driver = read(DRIVER)
     driver_code = strip_comments(driver)
     product = read("crates/i2pr-daemon/src/service_product.rs")
-    service_coordinator = "ExploratoryBuildCoordinator::new_with_service_destination_capacity("
+    # Production construction is fallible so its creator tunnel id is OS
+    # seeded. The `try_` constructor delegates to the aggregate-capacity
+    # constructor above; requiring the fallible wrapper preserves that bound
+    # without accepting the deterministic test constructor.
+    service_coordinator = "ExploratoryBuildCoordinator::try_new_with_service_destination_capacity("
     if product.count(service_coordinator) != 2:
         report.failures.append(
             "Plan 390: both product composition paths must select the aggregate role bound"
@@ -793,7 +797,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ("crates/i2pr-daemon/src/service_product.rs", "pub service_garlic_authenticated: u64,", "pub service_garlic_valid: u64,", "authenticated inbound Garlic attribution is removed"),
     ("crates/i2pr-daemon/src/service_product.rs", "pub service_sender_ls2_freshness_rejected: u64,", "pub service_sender_ls2_fresh_rejected: u64,", "fine-grained sender LeaseSet2 validation attribution is removed"),
     ("crates/i2pr-daemon/src/sam/streams.rs", "i2pr_crypto::CryptoError::Protocol(_),\n        )) => RouterGarlicRejection::LeaseSet2CryptoProtocol", "i2pr_crypto::CryptoError::Protocol(_),\n        )) => RouterGarlicRejection::LeaseSet2Crypto", "LeaseSet2 validation crypto failures lose protocol subtype attribution"),
-    ("crates/i2pr-daemon/src/service_product.rs", "ExploratoryBuildCoordinator::new_with_service_destination_capacity(", "ExploratoryBuildCoordinator::new(", "product composition falls back to the exploratory-only role bound"),
+    ("crates/i2pr-daemon/src/service_product.rs", "ExploratoryBuildCoordinator::try_new_with_service_destination_capacity(", "ExploratoryBuildCoordinator::new(", "product composition falls back to the exploratory-only role bound"),
     ("crates/i2pr-daemon/src/exploratory_build.rs", "i2pr_service_tunnels::MAX_EFFECTIVE_DIRECTION_TUNNELS,", "i2pr_service_tunnels::MAX_SERVICE_TUNNELS,", "aggregate inbound capacity stops using the per-direction ceiling"),
     ("crates/i2pr-daemon/src/service_product.rs", "RouterDestinationNetworkState::new_staged(", "RouterDestinationNetworkState::new_with_outbound_roles(", "post-start generation stops initializing staged bridge state"),
     ("crates/i2pr-daemon/src/service_product.rs", ".cancel_ls2_publication(request_id)", ".retry_ls2_publication(request_id)", "a publication failure path stops releasing its coordinator intent"),

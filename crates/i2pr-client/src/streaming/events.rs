@@ -104,3 +104,252 @@ pub struct WirePacketObservation {
     /// Payload length in bytes.
     pub payload_len: usize,
 }
+
+/// Redacted ingress accounting for inbound SYN-response (SYN-ACK)
+/// packets observed by one [`crate::streaming::StreamingManager`].
+///
+/// Counts only: no stream ids, ports, hashes, or payload material.
+/// `observed` advances once per packet the header peek classifies as
+/// a SYN response; exactly one of `accepted` / `rejected` advances
+/// per observed packet, so `accepted + rejected == observed` always
+/// holds. A SYN response that arrives but never establishes (unknown
+/// connection, port-tuple mismatch, bad signature) is visible as
+/// `observed > accepted`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SynResponseIngressAccounting {
+    /// SYN-response packets classified by the header peek.
+    pub observed: u64,
+    /// Observed packets that transitioned an outbound connection.
+    pub accepted: u64,
+    /// Observed packets discarded with a typed error.
+    pub rejected: u64,
+}
+
+impl SynResponseIngressAccounting {
+    /// Returns saturating fieldwise deltas from an earlier snapshot.
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            observed: self.observed.saturating_sub(earlier.observed),
+            accepted: self.accepted.saturating_sub(earlier.accepted),
+            rejected: self.rejected.saturating_sub(earlier.rejected),
+        }
+    }
+}
+
+/// Redacted ingress accounting for inbound SYN (originator)
+/// packets observed by one [`crate::streaming::StreamingManager`]
+/// acting as acceptor.
+///
+/// Counts only: no stream ids, ports, hashes, or payload material.
+/// `observed` advances once per packet the header peek classifies
+/// as an inbound SYN; exactly one of `accepted` / `rejected`
+/// advances per observed packet, so `accepted + rejected ==
+/// observed` always holds. `accepted` means the SYN reached a
+/// listener backlog (the application may still need to accept it).
+/// `rejected` is additionally split by cause so a refused SYN names
+/// its owner (undecodable wire vs policy validation vs signature
+/// authentication vs listener selection vs backlog capacity); the
+/// five split fields always sum to `rejected`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SynIngressAccounting {
+    /// Inbound SYN packets classified by the header peek.
+    pub observed: u64,
+    /// Observed packets that reached a listener backlog.
+    pub accepted: u64,
+    /// Observed packets discarded with a typed error.
+    pub rejected: u64,
+    /// Split of `rejected`: the anonymous decode failed.
+    pub rejected_decode: u64,
+    /// Split of `rejected`: initial-SYN policy validation failed.
+    pub rejected_validation: u64,
+    /// Split of `rejected`: FROM/signature authentication failed.
+    pub rejected_signature: u64,
+    /// Split of `rejected`: no listener claimed the port.
+    pub rejected_no_listener: u64,
+    /// Split of `rejected`: the listener backlog was full.
+    pub rejected_backlog_full: u64,
+}
+
+/// Typed inbound-SYN rejection cause for the
+/// [`SynIngressAccounting`] split. Counts only; no identities,
+/// keys, or payload material.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SynIngressRejectCause {
+    /// The anonymous decode failed.
+    Decode,
+    /// Initial-SYN policy validation failed.
+    Validation,
+    /// FROM/signature authentication failed.
+    Signature,
+    /// No listener claimed the destination port.
+    NoListener,
+    /// The listener backlog was full.
+    BacklogFull,
+}
+
+impl SynIngressAccounting {
+    /// Records one typed inbound-SYN rejection: increments the
+    /// aggregate and exactly the matching split field, with
+    /// saturating arithmetic. Every `rejected` site must go through
+    /// here so the split sum invariant holds structurally.
+    pub fn note_rejected(&mut self, cause: SynIngressRejectCause) {
+        self.rejected = self.rejected.saturating_add(1);
+        match cause {
+            SynIngressRejectCause::Decode => {
+                self.rejected_decode = self.rejected_decode.saturating_add(1);
+            }
+            SynIngressRejectCause::Validation => {
+                self.rejected_validation = self.rejected_validation.saturating_add(1);
+            }
+            SynIngressRejectCause::Signature => {
+                self.rejected_signature = self.rejected_signature.saturating_add(1);
+            }
+            SynIngressRejectCause::NoListener => {
+                self.rejected_no_listener = self.rejected_no_listener.saturating_add(1);
+            }
+            SynIngressRejectCause::BacklogFull => {
+                self.rejected_backlog_full = self.rejected_backlog_full.saturating_add(1);
+            }
+        }
+    }
+
+    /// Sum of the five split fields. Equals `rejected` when every
+    /// rejection site used [`SynIngressAccounting::note_rejected`].
+    pub fn split_rejected_sum(&self) -> u64 {
+        self.rejected_decode
+            .saturating_add(self.rejected_validation)
+            .saturating_add(self.rejected_signature)
+            .saturating_add(self.rejected_no_listener)
+            .saturating_add(self.rejected_backlog_full)
+    }
+
+    /// Returns saturating fieldwise deltas from an earlier snapshot.
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            observed: self.observed.saturating_sub(earlier.observed),
+            accepted: self.accepted.saturating_sub(earlier.accepted),
+            rejected: self.rejected.saturating_sub(earlier.rejected),
+            rejected_decode: self.rejected_decode.saturating_sub(earlier.rejected_decode),
+            rejected_validation: self
+                .rejected_validation
+                .saturating_sub(earlier.rejected_validation),
+            rejected_signature: self
+                .rejected_signature
+                .saturating_sub(earlier.rejected_signature),
+            rejected_no_listener: self
+                .rejected_no_listener
+                .saturating_sub(earlier.rejected_no_listener),
+            rejected_backlog_full: self
+                .rejected_backlog_full
+                .saturating_sub(earlier.rejected_backlog_full),
+        }
+    }
+}
+
+/// Redacted ingress accounting for established-connection (data /
+/// CLOSE / RESET / plain-ACK) packets observed by one
+/// [`crate::streaming::StreamingManager`].
+///
+/// Counts only: no stream ids, ports, hashes, or payload material.
+/// `observed` advances once per packet the header peek classifies as
+/// established-connection traffic; exactly one of `accepted` /
+/// `rejected` advances per observed packet, so `accepted + rejected
+/// == observed` always holds. `payload_bytes_admitted` accumulates
+/// only application payload bytes the receive window admitted
+/// (in-order delivery plus reorder-buffer admission, including
+/// backlog drains released by the arriving packet), so a data-phase
+/// stall splits into "nothing arrived" (`observed == 0`),
+/// "arrived but rejected" (`rejected > 0`), "only control arrived"
+/// (`accepted > 0` with `payload_bytes_admitted == 0`), and
+/// "payload admitted but never drained" (admitted bytes with no
+/// application read).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DataPacketIngressAccounting {
+    /// Established-traffic packets classified by the header peek.
+    pub observed: u64,
+    /// Observed packets the connection processed without error
+    /// (includes payload-free control: plain ACKs, CLOSE/RESET).
+    pub accepted: u64,
+    /// Observed packets discarded with a typed error (unknown
+    /// connection, port-tuple mismatch, decode failure, or a
+    /// receive-window rejection).
+    pub rejected: u64,
+    /// Application payload bytes admitted by the receive window.
+    pub payload_bytes_admitted: u64,
+    /// Plan 487 WP2 **manager-arrival** stage: inbound packets that
+    /// reached the manager's application receive window as *new* data
+    /// (the `Delivered` decision). This is strictly narrower than
+    /// `accepted`: a control packet is accepted but is not a manager
+    /// arrival, and an over-cap payload is neither — it is dropped
+    /// before the receive window, so the acknowledgement ceiling does
+    /// not advance and the peer will retransmit.
+    ///
+    /// A receipt must never infer this stage from `accepted`, from
+    /// `payload_bytes_admitted`, or from any later stage's count.
+    pub data_arrived: u64,
+}
+
+impl DataPacketIngressAccounting {
+    /// Returns saturating fieldwise deltas from an earlier snapshot.
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            observed: self.observed.saturating_sub(earlier.observed),
+            accepted: self.accepted.saturating_sub(earlier.accepted),
+            rejected: self.rejected.saturating_sub(earlier.rejected),
+            payload_bytes_admitted: self
+                .payload_bytes_admitted
+                .saturating_sub(earlier.payload_bytes_admitted),
+            data_arrived: self.data_arrived.saturating_sub(earlier.data_arrived),
+        }
+    }
+}
+
+/// Plan 487 WP2 **ACK-generated** stage: the acknowledgements the
+/// manager produced, and the negative control that proves none of
+/// them were suppressed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AckGenerationAccounting {
+    /// Acknowledgements the manager **produced** in response to
+    /// received DATA: the acknowledgement state was armed (the
+    /// peer is owed an acknowledgement) for an inbound DATA packet
+    /// that advanced the acknowledgement ceiling.
+    ///
+    /// This is the stage-2 count the DATA-phase attribution reads: it
+    /// answers "did the manager produce an acknowledgement for the
+    /// DATA it received?" A non-zero count with a zero
+    /// [`Self::transmitted`] count means the acknowledgement was
+    /// produced but never turned into a packet.
+    pub generated: u64,
+    /// Acknowledgement **transmissions** the manager actually
+    /// produced: a standalone ACK packet, plus a data packet that
+    /// piggybacks a non-empty acknowledgement view.
+    pub transmitted: u64,
+    /// Emitted packets that carried `FLAG_NO_ACK`, i.e. that
+    /// **suppressed** an acknowledgement.
+    ///
+    /// This is a permanent negative control. Plan 487 WP1 removed the
+    /// Plan 152 D1 drain-coupled suppression, so this counter must
+    /// stay at zero; a non-zero value means an acknowledgement was
+    /// withheld from the peer and the receiver-ACK contract regressed.
+    pub no_ack_emitted: u64,
+    /// Acknowledgements produced for a payload the manager had to
+    /// **drop** because the connection's inbound buffer was full.
+    /// The reference implementations acknowledge in this case too
+    /// (i2pd `libi2pd/Streaming.cpp:256-269`; I2P Java
+    /// `.../impl/ConnectionPacketHandler.java:145-161`).
+    pub generated_after_drop: u64,
+}
+
+impl AckGenerationAccounting {
+    /// Returns saturating fieldwise deltas from an earlier snapshot.
+    pub fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            generated: self.generated.saturating_sub(earlier.generated),
+            transmitted: self.transmitted.saturating_sub(earlier.transmitted),
+            no_ack_emitted: self.no_ack_emitted.saturating_sub(earlier.no_ack_emitted),
+            generated_after_drop: self
+                .generated_after_drop
+                .saturating_sub(earlier.generated_after_drop),
+        }
+    }
+}

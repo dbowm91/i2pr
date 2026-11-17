@@ -24,6 +24,7 @@ mod ntcp2_runtime;
 mod observability;
 mod ssu2_controlled_peer_test;
 mod ssu2_peer_relay;
+mod ssu2_qualification_observer;
 mod ssu2_runtime;
 mod supervisor;
 
@@ -78,10 +79,10 @@ pub use ntcp2_runtime::{
     DialBackoffDecision, DialBackoffSnapshot, DialKey, DialKeyError, DialOutcome, ExactIoError,
     InboundAdmission, InboundChunk, InboundPermit, IoErrorKind, IpPrefixPolicy, LinkHandle, LinkId,
     LinkSendError, LinkSnapshot, LinkStartError, LinkTermination, ListenerHandle, ListenerSnapshot,
-    Ntcp2Deadline, Ntcp2DeadlineError, Ntcp2Event, Ntcp2EventKind, Ntcp2ResponderIdentity,
-    Ntcp2RuntimeConfig, Ntcp2RuntimeConfigError, Ntcp2RuntimeDeadlines, Ntcp2RuntimeLimits,
-    Ntcp2RuntimeService, ReplayCache, ReplayCacheDecision, ReplayCacheSnapshot, RuntimeLimitKind,
-    WriteOutcome, read_exact, write_all_exact,
+    Ntcp2Deadline, Ntcp2DeadlineError, Ntcp2DialScope, Ntcp2Event, Ntcp2EventKind,
+    Ntcp2ResponderIdentity, Ntcp2RuntimeConfig, Ntcp2RuntimeConfigError, Ntcp2RuntimeDeadlines,
+    Ntcp2RuntimeLimits, Ntcp2RuntimeService, ReplayCache, ReplayCacheDecision, ReplayCacheSnapshot,
+    RuntimeLimitKind, WriteOutcome, read_exact, write_all_exact,
 };
 pub use observability::{
     MAX_SNAPSHOT_CHANNELS, MAX_SNAPSHOT_RESOURCES, RouterLifecycle, RuntimeSnapshot,
@@ -92,23 +93,44 @@ pub use ssu2_controlled_peer_test::{
     run_controlled_peer_test,
 };
 pub use ssu2_peer_relay::{
-    PEER_RELAY_DATAGRAMS_PER_SECOND, PEER_RELAY_MAX_SIGNERS, PEER_RELAY_RATE_SOURCES,
-    PEER_RELAY_RESPONSE_BUDGET_NUMERATOR, PeerRelayAdmission, Ssu2PeerRelayConfig,
-    Ssu2PeerRelayService, Ssu2PeerRelaySnapshot,
+    INTRODUCER_EXPIRY_MARGIN_SECS, PEER_RELAY_DATAGRAMS_PER_SECOND, PEER_RELAY_MAX_SIGNERS,
+    PEER_RELAY_RATE_SOURCES, PEER_RELAY_RESPONSE_BUDGET_NUMERATOR, PeerRelayAdmission,
+    Ssu2PeerRelayConfig, Ssu2PeerRelayService, Ssu2PeerRelaySnapshot,
+};
+pub use ssu2_qualification_observer::{
+    Ssu2QualificationEvent, Ssu2QualificationEventKind, Ssu2QualificationObserver,
 };
 pub use ssu2_runtime::{
-    ControlledPeerTestError, MAX_SSU2_ACTIVE_CEILING, MAX_SSU2_INBOUND_QUEUE_CEILING,
+    ControlledPeerTestError, KEEPALIVE_INTERVAL_MS, KEEPALIVE_TIMEOUT_INTERVALS,
+    MAX_OUTSTANDING_TAG_REQUESTS, MAX_SSU2_ACTIVE_CEILING, MAX_SSU2_INBOUND_QUEUE_CEILING,
     MAX_SSU2_PENDING_CEILING, MAX_SSU2_RUNTIME_DURATION, MAX_SSU2_STAGED_BYTES_CEILING,
-    MAX_SSU2_STAGED_DATAGRAMS_CEILING, SSU2_BACKOFF_ENTRIES, SSU2_CACHED_TOKEN_GRACE,
+    MAX_SSU2_STAGED_DATAGRAMS_CEILING, PATH_REVALIDATION_INTERVAL_MS,
+    RELAY_TAG_INTRODUCER_TTL_SECS, SSU2_BACKOFF_ENTRIES, SSU2_CACHED_TOKEN_GRACE,
     SSU2_CONFIRMED_MTU_PAYLOAD, SSU2_DEFAULT_MTU, SSU2_LINKS_PER_PEER, SSU2_MANAGER_BYTES_PER_LINK,
     SSU2_MANAGER_MESSAGES_PER_LINK, SSU2_MAX_DRAIN_PER_SESSION, SSU2_MAX_PATH_CANDIDATES_GLOBAL,
     SSU2_SEND_QUEUE_BYTES, SSU2_SEND_QUEUE_MESSAGES, SSU2_TOKEN_CACHE_PEERS,
     SSU2_TOKEN_CACHE_PER_PEER, SSU2_TOKEN_REQUEST_SOURCES, SSU2_TOKEN_REQUESTS_PER_SECOND,
     Ssu2BindError, Ssu2DialOutcome, Ssu2DialTarget, Ssu2DialTargetError, Ssu2EstablishedLink,
-    Ssu2IdentityMaterial, Ssu2InboundI2np, Ssu2LimitKind, Ssu2LinkHandle, Ssu2NetworkCondition,
-    Ssu2PublicationMaterial, Ssu2PublicationUnavailable, Ssu2RuntimeConfig, Ssu2RuntimeConfigError,
-    Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome,
-    Ssu2ServiceHandle, Ssu2Snapshot, Ssu2SocketConfig, Ssu2TestFaults,
+    Ssu2IdentityMaterial, Ssu2InboundBatch, Ssu2InboundHolePunch, Ssu2InboundI2np,
+    Ssu2InboundRelay, Ssu2InboundRequesterEvent, Ssu2InboundTarget, Ssu2LimitKind, Ssu2LinkHandle,
+    Ssu2NetworkCondition, Ssu2PeerTestEvidenceError, Ssu2PeerTestMessages, Ssu2PeerTestVerdict,
+    Ssu2PublicationForm, Ssu2PublicationMaterial, Ssu2PublicationUnavailable, Ssu2RelayCounters,
+    Ssu2RelayEvent, Ssu2RelayQueueError, Ssu2RelayRequestState, Ssu2RelayTargetError,
+    Ssu2RuntimeConfig, Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines, Ssu2RuntimeLimits,
+    Ssu2RuntimeReachability, Ssu2RuntimeService, Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot,
+    Ssu2SocketConfig, Ssu2TagRequestError, Ssu2TestFaults, explicit_bind_refresh_due,
+    may_publish_bound_address,
+};
+// Plan 490 daemon-owned SSU2 relay re-exports: the daemon owns the
+// introducer (Bob) role and must reach the relay blocks without a
+// direct `i2pr-transport-ssu2` dependency. The transport stays the
+// codec owner; the runtime re-exports the bounded vocabulary the
+// daemon's role owner needs.
+pub use i2pr_transport_ssu2::{
+    HolePunchMessage, IntroducerResponseOutcome, PEER_TEST_RESULT_TABLE, PeerTestResult,
+    PeerTestResultRow, RelayError, RelayIntroBlock, RelayRequestBlock, RelayResponseBlock,
+    RelayResponseCode, Ssu2Endpoint, build_hole_punch, hole_punch_conn_ids, peer_test_result,
+    relay_request_preimage, relay_response_preimage,
 };
 // Plan 184 daemon-owned SSU2 re-exports: the daemon composes the
 // controlled SSU2 identity/address surface through the runtime so it

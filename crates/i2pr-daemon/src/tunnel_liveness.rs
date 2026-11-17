@@ -29,6 +29,18 @@
 //! - the scheduler reuses the canonical outbound
 //!   [`i2pr_tunnel::roles::OutboundGatewayRole`] to emit the
 //!   DeliveryStatus test cell, never a private parallel pipeline.
+//!
+//! Plan 504 additions:
+//!
+//! - the probe carries a scheduler-allocated identifier in the
+//!   `DeliveryStatus` body, and the dispatcher carries the
+//!   acknowledged identifier back out, so a response is attributed to
+//!   one specific pending test instead of to "the only pending test";
+//! - a pair becomes *proven* only when it has produced such an
+//!   authenticated response, and only a proven pair may ever be
+//!   marked unhealthy: a pair that has never answered must not be
+//!   torn down on the strength of a signal the router cannot
+//!   distinguish from its own negation.
 
 #![forbid(unsafe_code)]
 
@@ -53,6 +65,15 @@ pub const REPEAT_LIVENESS_INTERVAL_MS: u64 = 60_000;
 /// ceiling stays safely below the canonical two-minute idle
 /// deletion boundary.
 pub const LIVENESS_RESPONSE_TIMEOUT_MS: u64 = 60_000;
+/// Plan 504 — the first identifier the scheduler hands to a probe.
+///
+/// The identifier is the value the remote echoes in the
+/// `DeliveryStatus` body, so it shares its space with every other
+/// `DeliveryStatus` correlation token on the router. The NetDB
+/// publication reply tokens are a monotonic counter that starts at
+/// one, so the liveness probes take the *high* half of the `u32`
+/// range and the two spaces cannot overlap.
+pub const LIVENESS_PROBE_MESSAGE_ID_BASE: u32 = 0x8000_0000;
 /// Bounded consecutive-failure threshold before the scheduler
 /// asks the coordinator to remove the affected pair.
 pub const LIVENESS_FAILURE_THRESHOLD: u8 = 2;
@@ -123,6 +144,11 @@ pub enum LivenessAction {
         /// Test id the caller must echo back to the scheduler on
         /// response / timeout.
         test_id: LivenessTestId,
+        /// Identifier the probe carries in the `DeliveryStatus`
+        /// body. The remote echoes it back, so the scheduler can
+        /// attribute the response to this exact test instead of
+        /// guessing. Plan 504.
+        probe_message_id: u32,
     },
     /// The scheduler observed too many consecutive failures for
     /// the supplied pair; the pump must remove the slots from the
@@ -174,6 +200,25 @@ pub struct LivenessCounters {
     pub pending: usize,
     /// Active pairs the scheduler is tracking.
     pub active_pairs: usize,
+    /// Pairs that have never produced an authenticated response.
+    ///
+    /// Plan 504 invariant 9: such a pair is never torn down, because
+    /// a missing response is indistinguishable from "this peer does
+    /// not answer".
+    pub unproven_pairs: usize,
+    /// Pairs that reached the failure threshold while still
+    /// unproven, so the teardown was withheld.
+    ///
+    /// Plan 504: the count is the operator-visible signal that the
+    /// liveness probe is not being answered at all.
+    pub unproven_failures: u64,
+    /// Responses that carried no identifier matching a pending
+    /// probe.
+    ///
+    /// Plan 504: such a response is not evidence and never refreshes
+    /// a pair; the count makes the unauthenticated correlation
+    /// visible instead of silent.
+    pub unauthenticated_responses: u64,
 }
 
 /// State of one active pair the scheduler tracks.
@@ -186,6 +231,17 @@ struct PairState {
     /// Whether the first test has been scheduled. Plan 185 §7
     /// delays the first test by `first_test_delay_ms`.
     first_test_due_at_ms: u64,
+    /// Whether the pair has ever produced an *authenticated*
+    /// response.
+    ///
+    /// Plan 504 invariant 9: only an authenticated response proves
+    /// the pair can answer, so only a proven pair may be marked
+    /// unhealthy. An unproven pair is never torn down.
+    proven: bool,
+    /// Whether the withheld teardown for this unproven pair has
+    /// already been counted, so the count is reported once per pair
+    /// rather than once per tick.
+    unproven_reported: bool,
 }
 
 impl PairState {
@@ -206,6 +262,11 @@ struct PendingTest {
     inbound_slot: TunnelSlot,
     scheduled_at_ms: u64,
     deadline_ms: u64,
+    /// Identifier the probe carried in its `DeliveryStatus` body.
+    ///
+    /// Plan 504: the remote echoes this value back, so it is the
+    /// only authenticated way to attribute a response to a test.
+    probe_message_id: u32,
 }
 
 /// Daemon-owned creator-side tunnel liveness scheduler.
@@ -215,6 +276,7 @@ pub struct TunnelLivenessScheduler {
     pairs: BTreeMap<TunnelSlot, PairState>,
     pending: BTreeMap<LivenessTestId, PendingTest>,
     next_test_id: u64,
+    next_probe_message_id: u32,
     counters: LivenessCounters,
     now_ms: u64,
 }
@@ -227,6 +289,7 @@ impl TunnelLivenessScheduler {
             pairs: BTreeMap::new(),
             pending: BTreeMap::new(),
             next_test_id: 1,
+            next_probe_message_id: LIVENESS_PROBE_MESSAGE_ID_BASE,
             counters: LivenessCounters::default(),
             now_ms: 0,
         }
@@ -242,6 +305,7 @@ impl TunnelLivenessScheduler {
         let mut snapshot = self.counters;
         snapshot.pending = self.pending.len();
         snapshot.active_pairs = self.pairs.len();
+        snapshot.unproven_pairs = self.pairs.values().filter(|pair| !pair.proven).count();
         snapshot
     }
 
@@ -255,6 +319,15 @@ impl TunnelLivenessScheduler {
     /// awaiting responses for.
     pub fn pending_tests(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Returns the outbound slots of the pairs the scheduler is
+    /// tracking.
+    ///
+    /// Plan 504: the pump uses this to unregister the pairs the
+    /// coordinator no longer installs.
+    pub fn tracked_outbound_slots(&self) -> Vec<TunnelSlot> {
+        self.pairs.keys().copied().collect()
     }
 
     /// Advances the scheduler's wall-clock view. The pump must
@@ -290,6 +363,8 @@ impl TunnelLivenessScheduler {
                 last_test_at_ms: 0,
                 consecutive_failures: 0,
                 first_test_due_at_ms: first_due,
+                proven: false,
+                unproven_reported: false,
             },
         );
         Ok(())
@@ -317,6 +392,17 @@ impl TunnelLivenessScheduler {
             }
         }
         removed
+    }
+
+    /// Drops one pending test without counting a failure.
+    ///
+    /// Plan 504: the pump uses this when the probe could not be
+    /// emitted at all — a local composition fault, or a pair that went
+    /// away between the scheduler's decision and the emission. The
+    /// peer never saw the probe, so the peer is not at fault and the
+    /// test must not count against the pair's failure threshold.
+    pub fn abandon_test(&mut self, test_id: LivenessTestId) -> bool {
+        self.pending.remove(&test_id).is_some()
     }
 
     /// Drives the scheduler one tick at the current wall-clock.
@@ -351,8 +437,17 @@ impl TunnelLivenessScheduler {
         // Now check for any pair that has hit the failure
         // threshold; the pump must remove those before the next
         // scheduled test.
+        //
+        // Plan 504 invariant 9: only a *proven* pair may be marked
+        // unhealthy. A pair that has never produced an
+        // authenticated response must never be torn down, because a
+        // missing response is indistinguishable from "this peer does
+        // not answer" — acting on it would remove a healthy pair the
+        // router cannot prove is broken. The withheld teardown is
+        // counted instead, so an operator can see the probe is not
+        // being answered.
         for pair in self.pairs.values() {
-            if pair.consecutive_failures >= self.config.failure_threshold {
+            if pair.proven && pair.consecutive_failures >= self.config.failure_threshold {
                 let outbound_slot = pair.outbound_slot;
                 let inbound_slot = pair.inbound_slot;
                 let consecutive_failures = pair.consecutive_failures;
@@ -365,6 +460,18 @@ impl TunnelLivenessScheduler {
                 };
             }
         }
+        // Count the withheld teardown once per unproven pair.
+        let mut withheld = 0_u64;
+        for pair in self.pairs.values_mut() {
+            if !pair.proven
+                && !pair.unproven_reported
+                && pair.consecutive_failures >= self.config.failure_threshold
+            {
+                pair.unproven_reported = true;
+                withheld = withheld.saturating_add(1);
+            }
+        }
+        self.counters.unproven_failures = self.counters.unproven_failures.saturating_add(withheld);
         // Otherwise, emit the next due test (oldest first).
         let next_due = self
             .pairs
@@ -386,6 +493,11 @@ impl TunnelLivenessScheduler {
                     active_pairs: self.pairs.len(),
                 };
             }
+            let Some(probe_message_id) = self.allocate_probe_message_id() else {
+                return LivenessAction::Idle {
+                    active_pairs: self.pairs.len(),
+                };
+            };
             let test_id = self.allocate_test_id();
             let deadline_ms = now_ms.saturating_add(self.config.response_timeout_ms);
             self.pending.insert(
@@ -395,6 +507,7 @@ impl TunnelLivenessScheduler {
                     inbound_slot: pair.inbound_slot,
                     scheduled_at_ms: now_ms,
                     deadline_ms,
+                    probe_message_id,
                 },
             );
             if let Some(state) = self.pairs.get_mut(&pair.outbound_slot) {
@@ -405,6 +518,7 @@ impl TunnelLivenessScheduler {
                 outbound_slot: pair.outbound_slot,
                 inbound_slot: pair.inbound_slot,
                 test_id,
+                probe_message_id,
             };
         }
         LivenessAction::Idle {
@@ -414,6 +528,11 @@ impl TunnelLivenessScheduler {
 
     /// Records one successful response from the supplied test id.
     /// Returns the pair the scheduler refreshed.
+    ///
+    /// The function does **not** mark the pair proven: only an
+    /// authenticated response ([`Self::record_authenticated_response`])
+    /// proves that the pair can answer, and a proven pair is the only
+    /// pair that may be marked unhealthy.
     pub fn record_response(&mut self, test_id: LivenessTestId) -> Option<LivenessAction> {
         let test = self.pending.remove(&test_id)?;
         self.counters.successful_responses = self.counters.successful_responses.saturating_add(1);
@@ -425,10 +544,57 @@ impl TunnelLivenessScheduler {
         })
     }
 
+    /// Records one inbound response whose body names the message it
+    /// acknowledges.
+    ///
+    /// Plan 504: the acknowledged identifier is the only
+    /// authenticated way to attribute a response to the probe that
+    /// caused it. The function returns the test whose probe carried
+    /// that identifier and nothing else.
+    ///
+    /// A response whose identifier matches no pending probe is **not**
+    /// evidence: it refreshes no pair and marks no pair proven. It
+    /// is counted in [`LivenessCounters::unauthenticated_responses`]
+    /// so the unauthenticated correlation is visible instead of
+    /// silent.
+    pub fn record_authenticated_response(
+        &mut self,
+        acknowledged_message_id: u32,
+    ) -> Option<LivenessTestId> {
+        let matched = self
+            .pending
+            .iter()
+            .find(|(_, test)| test.probe_message_id == acknowledged_message_id)
+            .map(|(id, _)| *id);
+        let Some(test_id) = matched else {
+            self.counters.unauthenticated_responses =
+                self.counters.unauthenticated_responses.saturating_add(1);
+            return None;
+        };
+        let test = self.pending.remove(&test_id)?;
+        self.counters.successful_responses = self.counters.successful_responses.saturating_add(1);
+        if let Some(state) = self.pairs.get_mut(&test.outbound_slot) {
+            state.consecutive_failures = 0;
+            // Plan 504 invariant 9: an authenticated response is the
+            // only proof that the pair answers, so only now may the
+            // pair be torn down if it later stops answering.
+            state.proven = true;
+        }
+        Some(test_id)
+    }
+
     /// Records one inbound router-I2NP outcome that carries the
     /// supplied test id. The function matches the inbound
     /// `DeliveryStatus` echo against the pending tests and
     /// refreshes the matching pair's health.
+    ///
+    /// Plan 504: this helper is the *fallback* correlation and it is
+    /// unauthenticated — it matches any `DeliveryStatus` when exactly
+    /// one test is pending, because the outcome could not name the
+    /// message it acknowledged. It stays as it is for the lanes that
+    /// use it; the live product path uses
+    /// [`Self::record_authenticated_response`], which matches the
+    /// acknowledged identifier the dispatcher now carries.
     pub fn record_inbound_outcome(
         &mut self,
         outcome: &RouterI2npOutcome,
@@ -508,6 +674,39 @@ impl TunnelLivenessScheduler {
         LivenessTestId(value)
     }
 
+    /// Allocates the identifier the next probe carries in its
+    /// `DeliveryStatus` body.
+    ///
+    /// Plan 504: the identifier must be nonzero (zero is not a
+    /// usable I2NP message id) and must not collide with a probe
+    /// that is still pending, otherwise a response could not be
+    /// attributed to one specific test. The scan is bounded by the
+    /// pending-table ceiling, so the loop always terminates.
+    fn allocate_probe_message_id(&mut self) -> Option<u32> {
+        let mut candidate = self.next_probe_message_id;
+        for _ in 0..=MAX_PENDING_LIVENESS_TESTS {
+            if candidate >= LIVENESS_PROBE_MESSAGE_ID_BASE
+                && !self
+                    .pending
+                    .values()
+                    .any(|test| test.probe_message_id == candidate)
+            {
+                self.next_probe_message_id = if candidate == u32::MAX {
+                    LIVENESS_PROBE_MESSAGE_ID_BASE
+                } else {
+                    candidate + 1
+                };
+                return Some(candidate);
+            }
+            candidate = if candidate == u32::MAX {
+                LIVENESS_PROBE_MESSAGE_ID_BASE
+            } else {
+                candidate + 1
+            };
+        }
+        None
+    }
+
     fn record_failure(&mut self, outbound_slot: TunnelSlot) {
         if let Some(state) = self.pairs.get_mut(&outbound_slot) {
             state.consecutive_failures = state.consecutive_failures.saturating_add(1);
@@ -532,15 +731,20 @@ pub fn delivery_status_message(message_id: u32, now_ms: u64) -> i2pr_proto::I2np
 /// coordinator's dispatcher and the liveness scheduler's pending
 /// table. The helper exists so the daemon pump can drive both
 /// seams with one call.
+///
+/// The field names mirror
+/// [`crate::exploratory_build::InboundRouteOutcome`] exactly, so a
+/// caller that already consumed the coordinator's routed outcome
+/// consumes this one the same way.
 #[derive(Clone, Debug)]
 pub struct InboundLivenessOutcome {
     /// Inbound dispatcher outcome the coordinator produced.
-    pub coordinator: RouterI2npOutcome,
+    pub dispatcher: RouterI2npOutcome,
     /// Liveness test id the scheduler refreshed, when the inbound
     /// message matched a pending test.
     pub refreshed: Option<LivenessTestId>,
     /// Coordinator build outcomes the build pipeline emitted.
-    pub build_outcomes: Vec<BuildCoordinatorOutcome>,
+    pub coordinator: Vec<BuildCoordinatorOutcome>,
 }
 
 /// Routes one inbound authenticated router-I2NP message through
@@ -548,6 +752,13 @@ pub struct InboundLivenessOutcome {
 /// when the inbound message carries a DeliveryStatus echo. The
 /// helper never weakens any decoder; it only correlates inbound
 /// observations with pending tests.
+///
+/// Plan 504: the correlation is *authenticated*. The inbound
+/// `DeliveryStatus` body names the message it acknowledges, and only
+/// a response whose acknowledged identifier matches a pending probe
+/// refreshes a pair. A response carrying no pending identifier is
+/// not evidence and is counted as
+/// [`LivenessCounters::unauthenticated_responses`].
 pub fn route_inbound_with_liveness(
     coordinator: &mut ExploratoryBuildCoordinator,
     scheduler: &mut TunnelLivenessScheduler,
@@ -555,15 +766,46 @@ pub fn route_inbound_with_liveness(
     now_ms: u64,
 ) -> Result<InboundLivenessOutcome, crate::router_i2np::RouterI2npError> {
     let routed = coordinator.route_inbound_i2np(inbound, now_ms)?;
-    let refreshed = scheduler.record_inbound_outcome(&routed.dispatcher);
-    if let Some(test_id) = refreshed {
-        let _ = scheduler.record_response(test_id);
-    }
+    let refreshed = record_authenticated_outcome(scheduler, &routed.dispatcher);
     Ok(InboundLivenessOutcome {
-        coordinator: routed.dispatcher,
+        dispatcher: routed.dispatcher,
         refreshed,
-        build_outcomes: routed.coordinator,
+        coordinator: routed.coordinator,
     })
+}
+
+/// Routes one inbound authenticated router-I2NP message whose
+/// dispatcher outcome the caller already decoded.
+///
+/// Plan 504: the live pump decodes the inbound message once and
+/// classifies it once; this variant correlates that *same* outcome
+/// with the liveness scheduler without running a second decoder. It
+/// is the same seam as [`route_inbound_with_liveness`], never a
+/// parallel inbound path.
+pub fn route_inbound_with_liveness_classified(
+    coordinator: &mut ExploratoryBuildCoordinator,
+    scheduler: &mut TunnelLivenessScheduler,
+    inbound: &Ssu2InboundI2np,
+    outcome: RouterI2npOutcome,
+) -> InboundLivenessOutcome {
+    let routed = coordinator.route_inbound_i2np_classified(inbound, outcome);
+    let refreshed = record_authenticated_outcome(scheduler, &routed.dispatcher);
+    InboundLivenessOutcome {
+        dispatcher: routed.dispatcher,
+        refreshed,
+        coordinator: routed.coordinator,
+    }
+}
+
+/// Correlates one dispatcher outcome with the scheduler's pending
+/// tests using the acknowledged-message identifier the outcome
+/// carries.
+fn record_authenticated_outcome(
+    scheduler: &mut TunnelLivenessScheduler,
+    outcome: &RouterI2npOutcome,
+) -> Option<LivenessTestId> {
+    let acknowledged = outcome.acknowledged_message_id()?;
+    scheduler.record_authenticated_response(acknowledged)
 }
 
 /// Test-only helper: returns the canonical first-test delay
@@ -639,10 +881,15 @@ mod tests {
                 outbound_slot,
                 inbound_slot,
                 test_id,
+                probe_message_id,
             } => {
                 assert_eq!(outbound_slot, TunnelSlot::from_raw(1));
                 assert_eq!(inbound_slot, TunnelSlot::from_raw(2));
                 assert_eq!(test_id.get(), 1);
+                // Plan 504: the probe identifier lives in the liveness
+                // half of the identifier space, so it can never
+                // collide with a NetDB publication reply token.
+                assert_eq!(probe_message_id, LIVENESS_PROBE_MESSAGE_ID_BASE);
             }
             other => panic!("expected SendTest, got {other:?}"),
         }
@@ -703,5 +950,160 @@ mod tests {
             other => panic!("expected Idle, got {other:?}"),
         }
         assert_eq!(scheduler.counters().successful_responses, 1);
+    }
+
+    /// Plan 504 — an authenticated response is attributed to the
+    /// probe that carried the acknowledged identifier, and it proves
+    /// the pair.
+    #[test]
+    fn authenticated_response_matches_the_probe_that_carried_the_identifier() {
+        let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
+        scheduler.advance_time(1_000);
+        scheduler
+            .register_pair(TunnelSlot::from_raw(1), TunnelSlot::from_raw(2))
+            .expect("register");
+        scheduler.advance_time(1_000 + FIRST_LIVENESS_DELAY_MS + 1);
+        let (test_id, probe_message_id) = match scheduler.drive() {
+            LivenessAction::SendTest {
+                test_id,
+                probe_message_id,
+                ..
+            } => (test_id, probe_message_id),
+            other => panic!("expected SendTest, got {other:?}"),
+        };
+        assert_ne!(probe_message_id, 0, "the probe identifier is nonzero");
+        assert!(
+            probe_message_id >= LIVENESS_PROBE_MESSAGE_ID_BASE,
+            "the probe identifier lives in the liveness half of the identifier space"
+        );
+        // A response that carries no pending identifier is not
+        // evidence and refreshes nothing.
+        assert_eq!(
+            scheduler.record_authenticated_response(probe_message_id ^ 0xFFFF),
+            None
+        );
+        assert_eq!(scheduler.counters().successful_responses, 0);
+        assert_eq!(scheduler.counters().unauthenticated_responses, 1);
+        // The matching identifier is credited to its own test.
+        assert_eq!(
+            scheduler.record_authenticated_response(probe_message_id),
+            Some(test_id)
+        );
+        assert_eq!(scheduler.counters().successful_responses, 1);
+        assert_eq!(scheduler.counters().unproven_pairs, 0);
+    }
+
+    /// Plan 504 invariant 9 — a pair that has never produced an
+    /// authenticated response is never torn down, and the withheld
+    /// teardown is counted instead.
+    #[test]
+    fn unproven_pair_is_never_marked_unhealthy() {
+        let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
+        scheduler.advance_time(1_000);
+        scheduler
+            .register_pair(TunnelSlot::from_raw(1), TunnelSlot::from_raw(2))
+            .expect("register");
+        // Two consecutive timeouts on a pair that never answered.
+        let base = 1_000 + FIRST_LIVENESS_DELAY_MS + 1;
+        scheduler.advance_time(base);
+        assert!(
+            matches!(scheduler.drive(), LivenessAction::SendTest { .. }),
+            "the scheduler probes the pair"
+        );
+        // The first probe times out: the miss is counted, but the
+        // pair is still unproven, so no teardown is emitted and the
+        // scheduler keeps probing it.
+        scheduler.advance_time(base + LIVENESS_RESPONSE_TIMEOUT_MS + 1);
+        match scheduler.drive() {
+            LivenessAction::SendTest { .. } => {}
+            other => panic!("an unproven pair is never marked unhealthy: {other:?}"),
+        }
+        // The second probe times out: the threshold is reached, but
+        // the pair is still unproven, so the teardown is withheld and
+        // counted instead.
+        scheduler.advance_time(base + 2 * (LIVENESS_RESPONSE_TIMEOUT_MS + 1));
+        match scheduler.drive() {
+            LivenessAction::SendTest { .. } => {}
+            other => panic!("an unproven pair is never marked unhealthy: {other:?}"),
+        }
+        let counters = scheduler.counters();
+        assert_eq!(
+            counters.unhealthy_marks, 0,
+            "an unproven pair is never torn down"
+        );
+        assert_eq!(
+            counters.unproven_pairs, 1,
+            "the unproven pair is visible to an operator"
+        );
+        assert_eq!(
+            counters.unproven_failures, 1,
+            "the withheld teardown is counted once per pair"
+        );
+        assert!(counters.missed_responses >= 1, "the miss is counted");
+    }
+
+    /// Plan 504 — once a pair has produced an authenticated response
+    /// it is proven, and only then may two consecutive failures tear
+    /// it down.
+    #[test]
+    fn proven_pair_is_marked_unhealthy_after_two_consecutive_failures() {
+        let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
+        scheduler.advance_time(1_000);
+        scheduler
+            .register_pair(TunnelSlot::from_raw(1), TunnelSlot::from_raw(2))
+            .expect("register");
+        scheduler.advance_time(1_000 + FIRST_LIVENESS_DELAY_MS + 1);
+        let (test_id, probe_message_id) = match scheduler.drive() {
+            LivenessAction::SendTest {
+                test_id,
+                probe_message_id,
+                ..
+            } => (test_id, probe_message_id),
+            other => panic!("expected SendTest, got {other:?}"),
+        };
+        assert_eq!(
+            scheduler.record_authenticated_response(probe_message_id),
+            Some(test_id)
+        );
+        // Two consecutive misses on the proven pair tear it down.
+        let base = 1_000 + FIRST_LIVENESS_DELAY_MS + 1;
+        for round in 1..=3_u64 {
+            scheduler.advance_time(base + round * (LIVENESS_RESPONSE_TIMEOUT_MS + 1));
+            match scheduler.drive() {
+                LivenessAction::SendTest { .. } => {}
+                LivenessAction::MarkUnhealthy {
+                    outbound_slot,
+                    consecutive_failures,
+                    ..
+                } => {
+                    assert_eq!(outbound_slot, TunnelSlot::from_raw(1));
+                    assert_eq!(consecutive_failures, LIVENESS_FAILURE_THRESHOLD);
+                    assert_eq!(scheduler.counters().unhealthy_marks, 1);
+                    return;
+                }
+                LivenessAction::Idle { .. } => {}
+            }
+        }
+        panic!("a proven pair with two consecutive failures is marked unhealthy");
+    }
+
+    /// Plan 504 — abandoning a probe that was never emitted must not
+    /// count against the pair's failure threshold.
+    #[test]
+    fn abandoned_test_does_not_count_a_failure() {
+        let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
+        scheduler.advance_time(1_000);
+        scheduler
+            .register_pair(TunnelSlot::from_raw(1), TunnelSlot::from_raw(2))
+            .expect("register");
+        scheduler.advance_time(1_000 + FIRST_LIVENESS_DELAY_MS + 1);
+        let test_id = match scheduler.drive() {
+            LivenessAction::SendTest { test_id, .. } => test_id,
+            other => panic!("expected SendTest, got {other:?}"),
+        };
+        assert!(scheduler.abandon_test(test_id));
+        assert_eq!(scheduler.pending_tests(), 0);
+        assert_eq!(scheduler.counters().missed_responses, 0);
+        assert!(!scheduler.abandon_test(test_id), "the test is gone");
     }
 }

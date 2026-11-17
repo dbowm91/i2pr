@@ -307,6 +307,15 @@ impl StreamingConnection {
         self.remote_port == source_port && self.local_port == destination_port
     }
 
+    /// Returns the streaming-clock millisecond timestamp at which
+    /// the connection was created (Plan 486: the backlog-entry age
+    /// basis — for inbound connections this is the SYN arrival
+    /// instant recorded by `process_inbound_packet`). Counts only;
+    /// no identities or payload material.
+    pub const fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
     /// Returns the peer destination hash retained for outbound
     /// addressing (Plan 130 §7 D2).
     pub const fn peer_destination_hash(&self) -> &[u8; 32] {

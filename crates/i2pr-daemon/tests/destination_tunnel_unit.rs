@@ -328,6 +328,39 @@ fn empty_store_has_no_candidates_and_lookup_terminates_honestly() {
 }
 
 #[test]
+fn lookup_timeout_advance_rotates_floodfill_then_terminates_honestly() {
+    let mut coord = coordinator();
+    let first = router_bundle(0xD011);
+    bootstrap_floodfill(&mut coord, &first, NOW_MS);
+    let second = router_bundle(0xD012);
+    bootstrap_floodfill(&mut coord, &second, NOW_MS);
+    let target = destination_hash(0x37);
+    let routing_key = router_hash_from_destination(target);
+    let (request_id, first_action) = coord
+        .begin_lease_lookup(target, &routing_key, reply_path())
+        .expect("send");
+    let first_peer = first_action.send_peer().expect("first peer");
+    let second_action = coord
+        .advance_lease_lookup_after_timeout(request_id, &routing_key)
+        .expect("rotate");
+    let second_peer = second_action.send_peer().expect("second peer");
+    assert_ne!(first_peer, second_peer);
+    // Both candidates are now queried: the next advance exhausts
+    // honestly and frees the slot; a further advance fails closed.
+    let exhausted = coord.advance_lease_lookup_after_timeout(request_id, &routing_key);
+    assert_eq!(
+        exhausted.expect_err("exhaustion must terminate"),
+        DestinationTunnelError::NoEligibleCandidates
+    );
+    assert_eq!(
+        coord
+            .advance_lease_lookup_after_timeout(request_id, &routing_key)
+            .expect_err("stale id must fail closed"),
+        DestinationTunnelError::UnknownLookup
+    );
+}
+
+#[test]
 fn bootstrapped_store_produces_lease_send_action() {
     let mut coord = coordinator();
     let floodfill = router_bundle(0xD003);
@@ -768,12 +801,15 @@ fn ls2_publication_requires_eligible_floodfill() {
         .expect("compose publication");
     assert!(proof.via_tunnel);
     // Protocol-derived acknowledgement completes the row.
-    let acked = coord.correlate_ls2_publication_status(0xD113).expect("ack");
-    assert_eq!(acked, request_id);
+    let acked = coord
+        .correlate_ls2_publication_status(0xD113, 0x5151)
+        .expect("ack");
+    assert_eq!(acked.request_id, request_id);
+    assert_eq!(acked.inbound_tunnel_id, 0x5151);
     assert_eq!(coord.counters().publications_acked, 1);
     // A mismatched token is a typed rejection.
     let error = coord
-        .correlate_ls2_publication_status(0xBEEF)
+        .correlate_ls2_publication_status(0xBEEF, 0x5151)
         .expect_err("token mismatch");
     assert!(matches!(error, DestinationTunnelError::Publication(_)));
 }
@@ -944,6 +980,86 @@ fn failed_publication_cancellation_releases_bounded_capacity() {
             .expect("cleanup pending attempt");
     }
     assert_eq!(coord.publications_len(), 0);
+}
+
+#[test]
+fn reserved_publication_intent_covers_the_compose_phase() {
+    // Plan 487 WP5 (Plan 393): a publication intent is reserved
+    // **before** the record is composed, so the compose and
+    // request-construction failure classes have an intent to release.
+    // A reservation that is never attached is released by
+    // `cancel_ls2_publication`, and the bounded capacity is restored.
+    let mut coord = coordinator();
+    let floodfill = router_bundle(0xD150);
+    let floodfill_hash = bootstrap_floodfill(&mut coord, &floodfill, NOW_MS);
+    let identity = destination_identity(0xD151);
+    let pool = pool_with_real_material(0xD151);
+    let now_u32 = u32::try_from(NOW_SECONDS).expect("fits");
+    let ls2 = signed_ls2(&identity, &pool, now_u32);
+    let message = ls2_store_message(&ls2);
+
+    // The reservation exists before the record is attached.
+    let request_id = coord
+        .reserve_ls2_publication()
+        .expect("reserve publication capacity");
+    assert_eq!(coord.publications_len(), 1);
+
+    // A record that fails validation leaves the reservation in place;
+    // the caller releases it. A store key equal to the floodfill's own
+    // hash is a destination-derived-key violation for every record
+    // kind.
+    let floodfill_keyed = DatabaseStoreMessage {
+        key: Hash::from_bytes(*floodfill_hash.as_bytes()),
+        ..message.clone()
+    };
+    assert!(matches!(
+        coord.attach_ls2_publication(request_id, floodfill_keyed, floodfill_hash),
+        Err(DestinationTunnelError::Publication(_))
+    ));
+    assert_eq!(
+        coord.publications_len(),
+        1,
+        "a rejected attachment keeps the reservation so the caller can release it"
+    );
+    coord
+        .cancel_ls2_publication(request_id)
+        .expect("release the reserved intent");
+    assert_eq!(coord.publications_len(), 0);
+
+    // The happy path: reserve, attach, then cancel.
+    let request_id = coord
+        .reserve_ls2_publication()
+        .expect("reserve publication capacity");
+    coord
+        .attach_ls2_publication(request_id, message, floodfill_hash)
+        .expect("attach the composed record");
+    assert_eq!(coord.publications_len(), 1);
+    coord
+        .cancel_ls2_publication(request_id)
+        .expect("cancel the composed intent");
+    assert_eq!(coord.publications_len(), 0);
+
+    // The bounded capacity is restored after every release.
+    let mut attempts = Vec::new();
+    for _ in 0..MAX_CONCURRENT_LEASE_PUBLICATIONS {
+        attempts.push(
+            coord
+                .reserve_ls2_publication()
+                .expect("fill bounded publication capacity"),
+        );
+    }
+    assert_eq!(coord.publications_len(), MAX_CONCURRENT_LEASE_PUBLICATIONS);
+    assert_eq!(
+        coord.reserve_ls2_publication(),
+        Err(DestinationTunnelError::TooManyPublications)
+    );
+    coord
+        .cancel_ls2_publication(attempts[0])
+        .expect("release one reservation");
+    assert_eq!(
+        coord.reserve_ls2_publication(),
+        Ok(attempts[MAX_CONCURRENT_LEASE_PUBLICATIONS - 1].wrapping_add(1))
+    );
 }
 
 #[test]
@@ -1501,3 +1617,180 @@ fn plan217_outbound_role_transfer_once_invariant() {
 // its own unit rows in `java_tunnel_external.rs` (ordinary
 // workspace floor, no external environment).
 // ---------------------------------------------------------------------
+
+// ---------------------------------------------------------------------
+// Plan 487 WP4 — the publish-and-acknowledge loop's publication
+// bounds and its correlated acknowledgement.
+// ---------------------------------------------------------------------
+
+/// Plan 487 WP4 — the first publication of a destination is admitted
+/// unconditionally, and the ledger records it.
+#[test]
+fn plan487_first_publication_is_admitted_and_recorded() {
+    let mut coord = coordinator();
+    let destination = i2pr_client::DestinationId::from_hash(Hash::from_bytes([0x71; 32]));
+    coord
+        .admit_ls2_publication(destination, 1_000, 700_000, NOW_MS)
+        .expect("the first publication is admitted");
+    let request_id = coord.reserve_ls2_publication().expect("reserve");
+    coord
+        .note_ls2_publication_sent(request_id, destination, 0x0BAD_F00D, 1_000, 700_000, NOW_MS)
+        .expect("note sent");
+    assert_eq!(coord.publications_len(), 1);
+}
+
+/// Plan 487 WP4 — the publish is rate limited to less than once per
+/// second per destination.
+#[test]
+fn plan487_publication_is_rate_limited_to_one_per_second() {
+    let mut coord = coordinator();
+    let destination = i2pr_client::DestinationId::from_hash(Hash::from_bytes([0x72; 32]));
+    coord
+        .admit_ls2_publication(destination, 1_000, 700_000, NOW_MS)
+        .expect("first admitted");
+    let request_id = coord.reserve_ls2_publication().expect("reserve");
+    coord
+        .note_ls2_publication_sent(request_id, destination, 0x0BAD_F00D, 1_000, 700_000, NOW_MS)
+        .expect("note sent");
+    // A second publication inside the same second is refused.
+    let error = coord
+        .admit_ls2_publication(destination, 1_001, 700_000, NOW_MS + 999)
+        .expect_err("rate limited");
+    assert!(matches!(
+        error,
+        DestinationTunnelError::PublicationRateLimited
+    ));
+    // One second later the publication is admitted again.
+    coord
+        .admit_ls2_publication(destination, 1_001, 700_000, NOW_MS + 1_000)
+        .expect("admitted after the interval");
+}
+
+/// Plan 487 WP4 — a rotation must republish with `published` at least
+/// one second later than the previous publication. The pinned
+/// reference replaces a stored LeaseSet2 only when the incoming
+/// record's published timestamp is strictly greater, so a record that
+/// repeats the previous second is silently ignored by the floodfill.
+#[test]
+fn plan487_rotation_requires_a_strictly_newer_published_second() {
+    let mut coord = coordinator();
+    let destination = i2pr_client::DestinationId::from_hash(Hash::from_bytes([0x73; 32]));
+    coord
+        .admit_ls2_publication(destination, 1_000, 700_000, NOW_MS)
+        .expect("first admitted");
+    let request_id = coord.reserve_ls2_publication().expect("reserve");
+    coord
+        .note_ls2_publication_sent(request_id, destination, 0x0BAD_F00D, 1_000, 700_000, NOW_MS)
+        .expect("note sent");
+    let error = coord
+        .admit_ls2_publication(destination, 1_000, 700_000, NOW_MS + 1_000)
+        .expect_err("same published second");
+    assert!(matches!(
+        error,
+        DestinationTunnelError::PublicationNotMonotonic
+    ));
+    // One second later the rotation is admitted.
+    coord
+        .admit_ls2_publication(destination, 1_001, 700_000, NOW_MS + 1_000)
+        .expect("admitted");
+}
+
+/// Plan 487 WP4 — the replacement must never advertise a lease that
+/// dies earlier than the record it replaces.
+#[test]
+fn plan487_publication_never_regresses_the_oldest_lease_expiry() {
+    let mut coord = coordinator();
+    let destination = i2pr_client::DestinationId::from_hash(Hash::from_bytes([0x74; 32]));
+    coord
+        .admit_ls2_publication(destination, 1_000, 700_000, NOW_MS)
+        .expect("first admitted");
+    let request_id = coord.reserve_ls2_publication().expect("reserve");
+    coord
+        .note_ls2_publication_sent(request_id, destination, 0x0BAD_F00D, 1_000, 700_000, NOW_MS)
+        .expect("note sent");
+    let error = coord
+        .admit_ls2_publication(destination, 1_001, 699_000, NOW_MS + 1_000)
+        .expect_err("regressed expiry");
+    assert!(matches!(
+        error,
+        DestinationTunnelError::PublicationExpiryRegressed
+    ));
+}
+
+/// Plan 487 WP4 — the correlated `DeliveryStatus` is attributed to the
+/// inbound tunnel it arrived on, and the acknowledgement records how
+/// far the rotation advanced the record.
+#[test]
+fn plan487_acknowledgement_is_attributed_to_its_inbound_tunnel() {
+    let mut coord = coordinator();
+    let destination = i2pr_client::DestinationId::from_hash(Hash::from_bytes([0x75; 32]));
+    coord
+        .admit_ls2_publication(destination, 1_000, 700_000, NOW_MS)
+        .expect("first admitted");
+    let first = coord.reserve_ls2_publication().expect("reserve");
+    coord
+        .note_ls2_publication_sent(first, destination, 0x1111_2222, 1_000, 700_000, NOW_MS)
+        .expect("note sent");
+    // The rotation advances the published second and the oldest lease
+    // expiration.
+    coord
+        .admit_ls2_publication(destination, 1_001, 700_001, NOW_MS + 1_000)
+        .expect("rotation admitted");
+    let second = coord.reserve_ls2_publication().expect("reserve");
+    coord
+        .note_ls2_publication_sent(
+            second,
+            destination,
+            0x3333_4444,
+            1_001,
+            700_001,
+            NOW_MS + 1_000,
+        )
+        .expect("note sent");
+
+    let acknowledgement = coord
+        .correlate_ls2_publication_status(0x3333_4444, 0xABCD)
+        .expect("ack");
+    assert_eq!(acknowledgement.request_id, second);
+    assert_eq!(acknowledgement.inbound_tunnel_id, 0xABCD);
+    assert_eq!(acknowledgement.reply_token, 0x3333_4444);
+    assert_eq!(acknowledgement.destination, Some(destination));
+    assert_eq!(acknowledgement.published_delta_seconds, 1);
+    assert_eq!(acknowledgement.oldest_lease_expiry_delta_ms, 1);
+    // The acknowledged publication is released; the unacknowledged one
+    // is still pending.
+    assert_eq!(coord.publications_len(), 1);
+    assert_eq!(coord.counters().publications_acked, 1);
+    // A mismatched token is a typed rejection.
+    let error = coord
+        .correlate_ls2_publication_status(0xBEEF, 0xABCD)
+        .expect_err("token mismatch");
+    assert!(matches!(error, DestinationTunnelError::Publication(_)));
+}
+
+/// Plan 487 WP4 — a publication the network never confirmed is reaped
+/// after the acknowledgement deadline, and its destination is handed
+/// back for republication.
+#[test]
+fn plan487_unacknowledged_publication_is_reaped() {
+    let mut coord = coordinator();
+    let destination = i2pr_client::DestinationId::from_hash(Hash::from_bytes([0x76; 32]));
+    coord
+        .admit_ls2_publication(destination, 1_000, 700_000, NOW_MS)
+        .expect("first admitted");
+    let request_id = coord.reserve_ls2_publication().expect("reserve");
+    coord
+        .note_ls2_publication_sent(request_id, destination, 0x0BAD_F00D, 1_000, 700_000, NOW_MS)
+        .expect("note sent");
+    // Nothing is reaped before the deadline.
+    assert!(
+        coord
+            .reap_unacknowledged_ls2_publications(NOW_MS + 1_000)
+            .is_empty()
+    );
+    // The deadline releases the slot and reports the destination.
+    let reaped = coord.reap_unacknowledged_ls2_publications(NOW_MS + 30_000);
+    assert_eq!(reaped, vec![destination]);
+    assert_eq!(coord.publications_len(), 0);
+    assert_eq!(coord.counters().publications_timed_out, 1);
+}

@@ -499,6 +499,16 @@ the production answer of `0` / `0` / `0.0` is a property of the enforced
 posture rather than a default, and a participating router's numbers come from
 counters the real `TunnelData` forward path advances.
 
+**Plan 502 (network participation) later made the participating profile
+reachable**, behind the operator's default-off `[transit] participation`
+opt-in: the composition installs the transit owner and republishes the
+posture as `Enabled` with that service's own counters. The **default**
+profile is unchanged and still publishes `Disabled`, so the
+`0` / `0` / `0.0` answer above is still the honest answer for a router that
+did not opt in. The selectors' *semantics* did not change: the posture, not
+the instrumentation, still decides what is reported, and the disabled
+posture is still structurally incapable of reporting a non-zero value.
+
 The participation posture itself stays exactly where Plan 268/269 left it:
 disabled, non-advertised, unclaimed. The 2026-10-05 correction in
 [`265-status.md`](../../closure/transit-tunnels/265-status.md) is what makes

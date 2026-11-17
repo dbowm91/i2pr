@@ -23,6 +23,7 @@ use i2pr_crypto::X25519PrivateKey;
 use i2pr_proto::Hash;
 use thiserror::Error;
 
+use crate::address::Ssu2Endpoint;
 use crate::block::{
     AddressBlock, Block as PayloadBlock, PaddingBlock as Pad, TimestampBlock as Ts, encode_blocks,
 };
@@ -35,8 +36,8 @@ use crate::handshake::{
     AuthenticatedPeer, ClockSkewPolicy, ConfirmedReassembly, HandshakeError, HandshakeReplayCache,
     ReplayDecision, ReplayToken, RouterInfoFreshness, build_confirmed_payload, build_retry,
     build_session_confirmed, build_session_created, build_session_request, build_token_request,
-    find_establishment_token, parse_retry, parse_session_created, parse_session_request,
-    parse_token_request, require_first_router_info, require_timestamp,
+    find_establishment_token, find_observed_address, parse_retry, parse_session_created,
+    parse_session_request, parse_token_request, require_first_router_info, require_timestamp,
     session_confirmed_first_header, split_confirmed_jumbo, validate_router_info,
 };
 use crate::header::{LongHeader, MessageType, SessionConfirmedHeader};
@@ -218,6 +219,18 @@ pub struct AuthenticatedSsu2Session {
     peer_endpoint: SocketAddr,
     local_mtu: u16,
     peer_new_token: Option<PeerNewToken>,
+    /// The address at which the **peer** sees **this** router, as the
+    /// peer reported it in the handshake.
+    ///
+    /// Plan 529: the specification's Address block carries "Alice's
+    /// address, sent to Alice by Bob, or Bob's address, sent to Bob by
+    /// Alice". Read from the authenticated handshake payload, it is an
+    /// authenticated observation of this router's external address -- the
+    /// fact the router's own reachability needs and could not obtain.
+    ///
+    /// `None` when the peer sent no Address block: a missing block is
+    /// evidence absent, never a handshake failure.
+    observed_address: Option<Ssu2Endpoint>,
 }
 
 /// One peer-issued future-handshake token observed in-band during
@@ -293,6 +306,15 @@ impl AuthenticatedSsu2Session {
         self.peer_endpoint
     }
 
+    /// Returns the address at which the peer sees this router, when the
+    /// peer reported one in the handshake.
+    ///
+    /// Plan 529: the value is compared with the router's **own bound
+    /// socket** by the runtime, never with a configured value.
+    pub const fn observed_address(&self) -> Option<Ssu2Endpoint> {
+        self.observed_address
+    }
+
     /// Returns the local MTU constraint.
     pub const fn local_mtu(&self) -> u16 {
         self.local_mtu
@@ -320,6 +342,13 @@ pub struct InitiatorConfig {
     pub clock: ClockSkewPolicy,
     /// Local MTU constraint recorded into the established session.
     pub local_mtu: u16,
+    /// The address at which this initiator sees the responder.
+    ///
+    /// Plan 529: the specification's Address block is symmetric, so the
+    /// initiator reports its view of the responder in the Session
+    /// Request's payload. `None` sends no Address block, and the
+    /// observation is then simply absent.
+    pub remote_address: Option<Ssu2Endpoint>,
 }
 
 /// Caller-supplied secrets and wire values for one initiator attempt.
@@ -487,8 +516,15 @@ impl Initiator {
         timestamp: u32,
         padding: Vec<u8>,
     ) -> Result<Vec<HandshakeAction>, StateMachineError> {
-        let mut blocks = Vec::with_capacity(2);
+        let mut blocks = Vec::with_capacity(3);
         blocks.push(PayloadBlock::Timestamp(Ts::new(timestamp)));
+        // Plan 529: the specification's Session Request payload carries
+        // the Address block -- "Bob's address, sent to Bob by Alice". The
+        // responder compares it with its own bound socket, so it is the
+        // same fact in the other direction.
+        if let Some(remote) = self.config.remote_address {
+            blocks.push(PayloadBlock::Address(AddressBlock::new(remote)));
+        }
         // The DateTime block alone is 7 bytes; the handshake minimum
         // is 8, so an empty caller padding tops up with one zero byte
         // rather than failing the whole handshake.
@@ -735,6 +771,12 @@ impl Initiator {
         // so a redial can skip the Retry round trip.
         let peer_new_token = find_establishment_token(&created_payload)
             .map(|(token, expires)| PeerNewToken::new(token, expires));
+        // Plan 529: the Session Created's Address block is the
+        // responder's authenticated observation of the address at which
+        // it sees this initiator. It was decoded and discarded before
+        // this plan, so the initiator could never learn its own external
+        // address.
+        let observed_address = find_observed_address(&created_payload);
         let session = AuthenticatedSsu2Session {
             peer,
             keys,
@@ -743,6 +785,7 @@ impl Initiator {
             peer_endpoint: confirmed.peer_endpoint,
             local_mtu: self.config.local_mtu,
             peer_new_token,
+            observed_address,
         };
         self.confirmed_datagrams = fragments.clone();
         self.attempts = 1;
@@ -835,6 +878,23 @@ impl Initiator {
     }
 }
 
+/// Builds the Address block that reports the address at which this
+/// router sees a peer.
+///
+/// Plan 529: the specification's Address block carries "Alice's address,
+/// sent to Alice by Bob" -- the address at which the **recipient** sees
+/// the **sender**. The responder learns that address from the request's
+/// own source, so the block is built from the source and never from a
+/// configured or bound value.
+///
+/// A source that cannot be expressed as an SSU2 endpoint yields no block:
+/// the observation is then absent rather than wrong.
+fn observed_address_block(source: SocketAddr) -> Option<AddressBlock> {
+    Ssu2Endpoint::from_socket_addr(source)
+        .ok()
+        .map(AddressBlock::new)
+}
+
 /// Responder configuration: local secrets plus policy.
 pub struct ResponderConfig {
     /// Responder static secret (for `es`/`se`).
@@ -847,8 +907,6 @@ pub struct ResponderConfig {
     pub clock: ClockSkewPolicy,
     /// Local MTU constraint recorded into the established session.
     pub local_mtu: u16,
-    /// Responder address block echoed in Retry payloads.
-    pub local_address: AddressBlock,
 }
 
 /// Per-handshake responder parameters supplied by the driver when a new
@@ -884,6 +942,15 @@ pub struct Responder {
     local_conn_id: u64,
     initiator_eph: Option<Ssu2PublicKey>,
     initiator_conn_id: u64,
+    /// The address at which the **initiator** sees this responder, as
+    /// the initiator reported it in the Session Request's payload.
+    ///
+    /// Plan 529: the specification's Address block is symmetric -- "Bob's
+    /// address, sent to Bob by Alice". The observation is carried
+    /// across the handshake transitions like the other per-handshake
+    /// state, because the Session Request is decrypted in an earlier
+    /// transition than the one that establishes the session.
+    observed_address: Option<Ssu2Endpoint>,
     created_datagram: Vec<u8>,
     reassembly: Option<ConfirmedReassembly>,
     attempts: u8,
@@ -903,6 +970,7 @@ impl Responder {
             local_conn_id: 0,
             initiator_eph: None,
             initiator_conn_id: 0,
+            observed_address: None,
             created_datagram: Vec::new(),
             reassembly: None,
             attempts: 0,
@@ -989,7 +1057,7 @@ impl Responder {
             packet_number,
             token.value(),
             timestamp,
-            self.config.local_address,
+            observed_address_block(source),
             None,
             padding,
         )?;
@@ -1135,7 +1203,15 @@ impl Responder {
             })?;
         let mut blocks = Vec::with_capacity(3);
         blocks.push(PayloadBlock::Timestamp(Ts::new(params.timestamp)));
-        blocks.push(PayloadBlock::Address(self.config.local_address));
+        // Plan 529: the specification's Session Created payload carries
+        // "Alice's address, sent to Alice by Bob" -- the address at which
+        // this responder sees the initiator, which is the **source** of
+        // the request it answers. The responder's own bound address was
+        // never the right value: it told the initiator that the
+        // initiator's address was the responder's.
+        if let Some(address) = observed_address_block(source) {
+            blocks.push(PayloadBlock::Address(address));
+        }
         if !params.padding.is_empty() {
             blocks.push(PayloadBlock::Padding(
                 Pad::new(params.padding).map_err(HandshakeError::Blocks)?,
@@ -1170,6 +1246,12 @@ impl Responder {
             self.config.intro_key.as_bytes(),
             &created_key,
         )?;
+        // Plan 529: the Session Request's Address block is the
+        // initiator's authenticated observation of the address at which
+        // it sees this responder. It is read in the transition that
+        // decrypts the request and carried to the transition that
+        // establishes the session.
+        self.observed_address = find_observed_address(&payload);
         self.created_datagram = created_datagram.clone();
         self.transcript = Some(transcript);
         self.ephemeral_secret = Some(params.ephemeral_secret);
@@ -1248,7 +1330,7 @@ impl Responder {
             params.packet_number,
             token.value(),
             params.timestamp,
-            self.config.local_address,
+            observed_address_block(source),
             None,
             params.padding,
         )?;
@@ -1472,6 +1554,10 @@ impl Responder {
             // SessionCreated (data-phase announcement only); initiator
             // peers fall back to the tokenless Retry path on redial.
             peer_new_token: None,
+            // Plan 529: the observation the initiator reported in the
+            // Session Request, carried across the handshake
+            // transitions.
+            observed_address: self.observed_address,
         };
         Ok((self, vec![HandshakeAction::Established(session)]))
     }

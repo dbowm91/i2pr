@@ -126,6 +126,183 @@ So: parsing a `pq` option proves nothing about key exchange, and no
 SSU2 session in this router is post-quantum. A reader must not come
 away from this crate believing PQ session establishment exists.
 
+## The introducer-only address form's evidence (Plan 525)
+
+The transport's publication builder renders the specification's
+introducer-only form — `caps` (the family letter), `i`, the
+`iexp[N]`/`ih[N]`/`itag[N]` groups, `mtu`, `s` and `v`, and **no** `host`
+and **no** `port`. The form's **evidence** is the introducer set it
+publishes, and the transport's snapshot contract is that a caller must treat
+an expired snapshot as withdrawn.
+
+Plan 525 makes the runtime derive that expiry from the set's own members:
+the **earliest** expiry among the published introducers. The fail-closed
+choice is deliberate — the maximum would let a dead introducer sit in a
+published address until the whole set had expired, while the earliest
+withdraws the form as soon as its first listed introducer dies, so a
+refresh re-selects.
+
+The gate that admits the form is the runtime's install gate, and it binds
+the router's **own** identity and contact material *by the address's form*.
+The transport's parser refuses an address that carries both a direct
+endpoint and introducers, so the two forms are exclusive and the
+classification is total.
+
+## The role letter and the family-and-role combination (Plan 526)
+
+The specification's Relay capability is a `"C"` in the `caps` option, and the
+option's alphabet is `[B,C,4,6]`. This crate **already modelled** the letter
+before any router advertised it: `Ssu2Capabilities` carries a `RELAY` bit
+(`src/address.rs:435`) and `supports_relay` reads it (`src/address.rs:472`), so
+a peer record's advertised role is readable from the transport's own validated
+type.
+
+The parser is **per character** (`src/address.rs:1314`-`:1345`), so it is
+order-independent and accepts a **combination**: `"4C"` yields both the IPv4
+bit and the relay bit. The pinned reference behaves the same way — i2pd's
+`ExtractAddressCaps` is a per-character switch
+(`libi2pd/RouterInfo.cpp:562`-`:581`) — and the pinned Java I2P reads the
+capability with a containment test, so both references read a combination the
+way this crate does.
+
+Plan 526 therefore needed **no change to this crate**. The advertisement lives
+in the runtime, which composes the capability; in the netdb, which qualifies
+the role-bearing address; and in the daemon, which publishes it. The `git
+diff` over `crates/i2pr-transport-ssu2/` for the plan is empty.
+
+The tree publishes the **combination** `"4C"` rather than the reference's
+role-only `"C"`. The reference publishes the role letters on the published
+form only (`libi2pd/RouterInfo.cpp:1350`-`:1373`) and keeps the family
+letters on the form that carries no endpoint; the tree publishes the family
+letter on **both** forms, because its netdb requires the capability string to
+name the address's own family. Adding the role letter to the family letter
+rather than replacing it keeps that stricter check intact, and the result is
+inside the alphabet both references parse.
+
+## The observed endpoint survives the event (Plan 527)
+
+The data-phase **Address block** carries a validated endpoint
+(`AddressBlock::decode`), and the session decodes it on every authenticated
+datagram. Until Plan 527 the session then **threw it away**:
+
+```rust
+                DecodedBlock::Address(_) => {
+                    outcome.events.push(SessionEvent::AddressObserved);
+                }
+```
+
+The event was a **unit** variant, so the router was told that a peer
+observed an external address and never **which** address. It could not
+compare the observation with its own bound address, and could not discover
+that it was behind a NAT.
+
+Plan 527 keeps the endpoint the block already carried:
+
+```rust
+                DecodedBlock::Address(block) => {
+                    outcome.events.push(SessionEvent::AddressObserved {
+                        observed: block.endpoint(),
+                    });
+                }
+```
+
+**No codec, block or option changes.** The Address block's wire format, the
+session's block set and the transport's options are all untouched; the plan
+stops discarding a value that was already decoded and validated.
+
+## The Address block carries what the recipient sees (Plan 529)
+
+The specification's Address block (type 13) is defined as "Alice's address,
+sent to Alice by Bob, or Bob's address, sent to Bob by Alice" — the address
+at which the **recipient** sees the **sender**. The tree sent it with the
+wrong value and threw the answer away.
+
+**What the responder sends.** The responder's Session Created and its Retry
+carry the **observed source address** of the request they answer:
+
+```rust
+fn observed_address_block(source: SocketAddr) -> Option<AddressBlock> {
+    Ssu2Endpoint::from_socket_addr(source)
+        .ok()
+        .map(AddressBlock::new)
+}
+```
+
+The value comes from the datagram's own header, never from a configured or
+bound value. `ResponderConfig::local_address` is gone: the value it held was
+never the right one, and keeping a field for it would keep the wrong
+possibility open. A source that cannot be expressed as an SSU2 endpoint
+yields **no** block, so the observation is absent rather than wrong — and
+`build_retry`'s address became an `Option<AddressBlock>` for that reason.
+
+**What the initiator sends.** The specification's block is symmetric, so the
+initiator reports the address at which it sees the responder in the Session
+Request's payload, from `InitiatorConfig::remote_address`. `None` sends no
+block. The reference does not *send* it in the Session Request, but it does
+**read** it in both directions
+(`libi2pd/SSU2Session.cpp:934`), so the tree's symmetric half is
+specification-conformant and reference-compatible.
+
+**What each side reads.** The initiator reads the Address block out of the
+decrypted Session Created payload with `find_observed_address`, a sibling of
+`find_establishment_token`, and carries it on the established session as
+`observed_address`. The responder reads the Session Request's block in the
+transition that **decrypts** the request and carries it across to the
+transition that **establishes** the session, because those are two different
+transitions.
+
+**The failure posture.** A missing or malformed Address block leaves the
+session **established** and records nothing. `find_observed_address` only
+ever returns `None`; it can never terminate a session. A malformed block
+makes the whole payload unparsable, which the mandatory timestamp check has
+already rejected before the reader is consulted.
+
+**The Retry is still not an observation.** The Retry is sealed outside the
+Noise transcript, so it is a weaker fact, and `parse_retry` keeps discarding
+it. The Retry carries the same observed address — it is sent by the same
+responder for the same request, so it must not carry a different one — but
+it never reaches the reachability tracker.
+
+## The specification's result table, transcribed (Plan 528)
+
+The SSU2 specification states the peer-test result as a **table** over the
+three messages Alice received, and the tree now carries that table as
+**data**:
+
+```rust
+pub const PEER_TEST_RESULT_TABLE: [PeerTestResultRow; 8] = [
+    PeerTestResultRow {
+        msg4: false,
+        msg5: false,
+        msg7: false,
+        result: PeerTestResult::Unknown,
+    },
+    PeerTestResultRow {
+        msg4: true,
+        msg5: false,
+        msg7: false,
+        result: PeerTestResult::Firewalled,
+    },
+    // ...
+];
+```
+
+`peer_test_result(msg4, msg5, msg7)` is a **total** lookup over that table,
+so the tree's rule is checkable against the specification rather than only
+against prose. Two tests pin it: one asserts the transcribed rows against
+the specification's wording, and one asserts that every combination of the
+three messages is a row of the table.
+
+The specification's **ambiguous** row — "FIREWALLED or SYMNAT" — is read
+**conservatively**. It is neither a confirmation nor a firewalled verdict, so
+the tree records nothing for it.
+
+**The table's rows are not the table's outcomes.** `PeerTestOutcome` — the
+transport's typed outcome of a *live* exchange — is untouched, and so is the
+`PeerTestTable` state machine that produces it. Plan 528 adds the
+specification's **verdict** vocabulary beside it; it does not change the
+exchange.
+
 ## Module layout
 
 Declared in `src/lib.rs:27-41` — 15 modules, no subdirectories.
@@ -146,13 +323,13 @@ Integration trajectories live in `tests/handshake.rs`,
 | `packet` | `src/packet.rs` | 256 | Datagram length classes, header/payload split | `DatagramLengthClass`, `PacketHeader`, `SplitPacket`, `PacketError`, `split_packet` |
 | `path` | `src/path.rs` | 713 | Authenticated path validation + per-path MTU | `PathValidator`, `ValidatedPath`, `PathEvent`, `PathError`, `PathCounters`, `MAX_PATH_CANDIDATES`, `MAX_CANDIDATES_PER_FAMILY`, `MAX_PATH_CHALLENGES_PER_SESSION`, `PATH_CANDIDATE_MTU`, `PATH_CHALLENGE_LENGTH`, `PATH_VALIDATION_TIMEOUT_MS` |
 | `peer_test` | `src/peer_test.rs` | 1842 | PeerTest roles/correlation/typed outcomes | `PeerTestTable`, `PeerTestOutcome`, `PeerTestRole`, `PeerTestState`, `PeerTestError`, `PeerTestCounters`, `peer_test_preimage`, `verify_peer_test_signature`, `peer_test_conn_ids`, `build_out_of_session_peer_test`, `parse_out_of_session_peer_test`, `check_peer_test_freshness`, `MAX_PEER_TESTS_GLOBAL`, `MAX_PEER_TESTS_PER_PEER`, `PEER_TEST_TIMEOUT_MS`, `PEER_TEST_MAX_CLOCK_SKEW_SECONDS`, `PEER_TEST_SIGNATURE_PROLOGUE` |
-| `publication` | `src/publication.rs` | 593 | Deterministic publication snapshots | `PublicationRequest`, `PublicationPolicy`, `PublicationOutcome`, `Ssu2PublicationSnapshot`, `WithholdReason`, `PublicationError`, `build_publication_snapshot`, `parse_snapshot` |
-| `relay` | `src/relay.rs` | 1436 | Relay requester/introducer/target + HolePunch | `RelayRequester`, `RelayIntroducer`, `RelayTarget`, `RelayCounters`, `RelayError`, `HolePunchMessage`, `hole_punch_conn_ids`, `build_hole_punch`, `parse_hole_punch`, `relay_request_preimage`, `relay_response_preimage`, `verify_relay_request`, `verify_relay_response`, `check_relay_freshness`, `relay_response_budget`, `MAX_RELAY_REQUESTS_GLOBAL`, `MAX_RELAY_REQUESTS_PER_PEER`, `MAX_RELAY_TAGS_GLOBAL`, `MAX_RELAY_TAGS_PER_PEER`, `RELAY_TAG_LIFETIME_SECS`, `RELAY_REQUEST_TIMEOUT_MS`, `RELAY_MAX_CLOCK_SKEW_SECONDS`, `RELAY_REQUEST_PROLOGUE`, `RELAY_RESPONSE_PROLOGUE`, `MAX_HOLE_PUNCH_PAYLOAD_BYTES` |
-| `session` | `src/session.rs` | 2949 | Authenticated data-phase session (largest module) | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` |
+| `publication` | `src/publication.rs` | 840 | Deterministic publication snapshots | `PublicationRequest`, `PublicationPolicy`, `PublicationOutcome`, `Ssu2PublicationSnapshot`, `WithholdReason`, `PublicationError`, `build_publication_snapshot`, `parse_snapshot` |
+| `relay` | `src/relay.rs` | 1 691 | Relay requester/introducer/target + HolePunch | `RelayRequester`, `RelayIntroducer`, `RelayTarget`, `RelayCounters`, `RelayError`, `HolePunchMessage`, `hole_punch_conn_ids`, `build_hole_punch`, `parse_hole_punch`, `relay_request_preimage`, `relay_response_preimage`, `verify_relay_request`, `verify_relay_response`, `check_relay_freshness`, `relay_response_budget`, `MAX_RELAY_REQUESTS_GLOBAL`, `MAX_RELAY_REQUESTS_PER_PEER`, `MAX_RELAY_TAGS_GLOBAL`, `MAX_RELAY_TAGS_PER_PEER`, `RELAY_TAG_LIFETIME_SECS`, `RELAY_REQUEST_TIMEOUT_MS`, `RELAY_MAX_CLOCK_SKEW_SECONDS`, `RELAY_REQUEST_PROLOGUE`, `RELAY_RESPONSE_PROLOGUE`, `MAX_HOLE_PUNCH_PAYLOAD_BYTES` |
+| `session` | `src/session.rs` | 3066 | Authenticated data-phase session (largest module) | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` |
 | `state_machine` | `src/state_machine.rs` | 1572 | Consuming initiator/responder machines | `Initiator`, `Responder`, `InitiatorConfig`, `InitiatorSecrets`, `ResponderConfig`, `ResponderParams`, `RetryAnswer`, `ConfirmedParams`, `HandshakeAction`, `DatagramBytes`, `DeadlineKind`, `TerminateReason`, `DropCategory`, `AuthenticatedSsu2Session`, `PeerNewToken`, `StateMachineError` |
 | `token` | `src/token.rs` | 435 | Bounded one-use token table | `TokenStore`, `Ssu2Token`, `TokenError`, `retry_response_budget` |
 
-`src/` totals **18,540 lines**; `tests/` totals 4,284.
+`src/` totals **19,057 lines**; `tests/` totals 4,825.
 
 ## Public surface
 
@@ -268,13 +445,20 @@ methods on `Ssu2Session`: `new`, `request_bootstrap_ack`,
   a bounded graphic string (≤ `MAX_SSU2_CAPS_BYTES` = 16) with
   duplicate-known-flag rejection (`4`/`6` families, `B` peer-test,
   `C` relay; other letters ignored for forward compatibility); up to
-  3 introducer groups (`ihostN`/`iportN`/`ikeyN`/`itagN`, dense from
-  0, nonzero tags); unknown options rejected; `pq` tolerated as
+  3 introducer groups (**Plan 523**: `ihN`/`iexpN`/`itagN`, dense
+  from 0, nonzero tags, the introducer's router hash in I2P base64,
+  the expiry optional in the specification's address table). The SSU 1
+  introducer options (`ihostN`/`iportN`/`ikeyN`) are **not** part of an
+  SSU2 address and are refused as unknown options, not ignored. An
+  address that carries both a direct endpoint and introducers is
+  refused: the specification forbids publishing a host or a port
+  alongside introducers. Unknown options rejected; `pq` tolerated as
   described above.
-- `address_class()` — `Direct` / `DirectWithIntroducers` /
-  `IntroducerOnly` / `UnpublishedStatic`. Describes present
-  contact material only; never implies reachability or publication
-  approval.
+- `address_class()` — `Direct` / `IntroducerOnly` /
+  `UnpublishedStatic`. Describes present contact material only; never
+  implies reachability or publication approval. Plan 523 removed the
+  `DirectWithIntroducers` class, because the form it described is
+  forbidden.
 - `ConfiguredListenAddress` / `ResolvedDialTarget` — distinct
   endpoint + material types with no socket ownership; dial targets
   require an exact literal endpoint match.
@@ -579,9 +763,61 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
   promotes; without the requeue, in-flight messages would strand.
 - Outbound controls are single-shot; per-message delivery failure
   past the retransmission ceiling is silent by design.
+- **Plan 499 — the two relay-tag controls.** `queue_relay_tag_request()`
+  (`session.rs:1051`) queues an empty-bodied `RelayTagRequest` (block 15) and
+  `queue_relay_tag(block)` (`session.rs:1067`) queues a `RelayTag` (block 16,
+  a nonzero `u32`). They join the existing `QueuedControl` queue
+  (`session.rs:508-511`) and leave in the next Data packet through the two
+  transmit arms at `session.rs:1243-1244`. Both carry the **same two failure
+  modes as every other queued control**: `SessionError::Terminated` on a
+  terminated session and `SessionError::LocalPolicyDenied` at the
+  `DATA_MAX_SENT_PACKETS` (256) ceiling. The block encoders and decoders for
+  types 15 and 16 already existed (`block.rs:1581-1582`, `block.rs:2020-2034`);
+  **the wire format did not change** — only the session's ability to *emit*
+  these two blocks is new. A zero tag never reaches the queue: the
+  `RelayTagBlock` constructor rejects it, and the runtime's
+  `random_u32_nonzero` (`crates/i2pr-runtime/src/ssu2_runtime.rs:1371`) never mints one. The inbound
+  direction mirrors the pair: `DecodedBlock::RelayTagRequest` and
+  `DecodedBlock::RelayTag(tag)` become `SessionEvent::RelayTagRequest` and
+  `SessionEvent::RelayTag(u32)` (`session.rs:1816-1821`).
 - `SessionCounters` — privacy-safe counts only (packets, ACKs, losses,
   retransmits, flight, cwnd, reassembly, termination). No hashes,
   nonces, or endpoints.
+
+### The outbound session keepalive (Plan 522)
+
+- `SessionConfig::keepalive_interval_ms` — `None` disables the keepalive
+  entirely. The constructor refuses a zero interval, and refuses one whose
+  three-times deadline is not **strictly** below the session's idle timeout,
+  so the keepalive's deadline and the idle timeout can never disagree about
+  when a session dies.
+- `seal_keepalive` — the keepalive is a **padding-only** packet: a
+  `Block::Padding` of `DATA_KEEPALIVE_PAYLOAD_BYTES` (20) and **no** I2NP
+  message. It is sealed by the transport's own `seal_packet`, so it respects
+  the congestion window and the payload budget, and it asks for an
+  **immediate ACK**. The shape is the pinned i2pd 2.61.0 reference's own
+  (`libi2pd/SSU2Session.cpp:269`).
+- The **immediate-ACK request is honoured on a non-eliciting packet.** A
+  packet that carries no ack-eliciting block never asks for an ACK of its
+  own, so the ACK exchange stays loop-free, but the reference's receiver
+  honours the flag unconditionally (`libi2pd/SSU2Session.cpp:1758`) and so
+  does Java I2P 2.13.0
+  (`router/java/src/net/i2p/router/transport/udp/PeerState2.java:628`).
+  Without this the peer would never answer a keepalive at all.
+- **One keepalive is outstanding at a time.** A second would refresh the
+  deadline as well as the session, so an unanswered keepalive would never
+  reach it.
+- The deadline is the keepalive's **own** — `DATA_KEEPALIVE_TIMEOUT_INTERVALS`
+  (3) intervals — because the keepalive refreshes the session's *send*
+  timestamp and the idle timeout reads the **maximum** of the send and
+  receive timestamps. The idle timeout could therefore never detect a dead
+  peer.
+- An unanswered keepalive terminates the session under the specification's
+  own timeout code (**14**, `libi2pd/SSU2Session.h:169`), and the cause is
+  distinguished by the counters rather than by the reason: `keepalives_sent`
+  and `keepalive_timeouts` say which of the two happened.
+- `SessionCounters` gains `keepalives_sent` and `keepalive_timeouts` —
+  counts only, no addresses, keys or payloads.
 
 ### Path validation (`path.rs`)
 
@@ -614,13 +850,29 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
 ### Publication snapshots (`publication.rs`)
 
 - `build_publication_snapshot(PublicationRequest)` — deterministic
-  `Direct` / `Firewalled` / `Withheld` decision from public keys only
-  (zero keys rejected; private material is never an input).
+  `Direct` / `IntroducerOnly` / `Firewalled` / `Withheld` decision from
+  public keys only (zero keys rejected; private material is never an
+  input).
 - Direct host/port requires `Reachable` *plus* explicit
   `allow_direct`; anything weaker yields the unpublished static-only
   firewalled form (no fabricated address). Non-empty introducers
   without `allow_introducers` fail closed
   (`IntroducersUnvalidated`). `TooManyIntroducers` bounds the set.
+- **Plan 490 — the introducer-only form.** An address that publishes
+  introducers omits `host`/`port` entirely and carries the `4`/`6`
+  family capability the specification demands alongside the introducer
+  groups, the local intro and static keys, the MTU, and the version.
+  The builder adds only the family flag implied by the reachability
+  snapshot; it never invents a role capability (`B`, `C`) and never drops
+  a flag the caller asked for.
+- **Plan 523 — the introducer groups are the specification's.** The
+  groups are `ihN` (the introducer's router hash), `iexpN` (its expiry,
+  omitted when zero) and `itagN` (its relay tag). The SSU 1 groups
+  (`ihostN`/`iportN`/`ikeyN`) are not emitted and are not parsed: the
+  specification says they "are for SSU only and are not used for SSU2",
+  and the pinned i2pd 2.61.0 publishes and parses only the
+  specification's three. The builder never produces an address with both
+  an endpoint and introducers.
 - Output options are canonical (sorted); `Ssu2PublicationSnapshot`
   carries `evidence_expires_secs`, and `is_expired(now)` marks
   withdrawal. `parse_snapshot` round-trips through the strict
@@ -669,12 +921,65 @@ State sets are **private** enums (`src/state_machine.rs:366-370`,
   readiness to transition into the normal handshake (never a fake
   session).
 - `RelayIntroducer` (Bob) — disabled unless explicitly enabled
-  (`ServiceDisabled`); live-tag checks bound to Alice
+  (`ServiceDisabled`); live-tag checks bound to the peer the tag names
   (`MAX_RELAY_TAGS_GLOBAL` = 16, `MAX_RELAY_TAGS_PER_PEER` = 4,
   `RELAY_TAG_LIFETIME_SECS` = 120), 3x anti-amplification budget
   enforced before crypto, replay idempotency (no second intro
   emission), deterministic `RELAY_REQUEST_TIMEOUT_MS` = 10,000 expiry,
   and `shutdown` clearing all state.
+- **Plan 490 — the Bob-side response path.** `RelayIntroducer::on_response`
+  correlates Charlie's Relay Response against the live request table by
+  nonce, requires the sender to be the peer the request named, refuses a
+  Bob-coded rejection (Charlie never sends one), verifies Charlie's
+  signature over the `RelayAgreementOK` preimage, and **consumes** the
+  tracked request so a replay is refused as an unknown correlation. The
+  outcome is typed: `IntroducerResponseOutcome::Forwarded { alice_hash,
+  code }` or `UnknownRequest`.
+- **Plan 490 — the tag identifies the target.** `RelayIntroducer::tag_owner`
+  is a read-only accessor that resolves the peer a live relay tag names.
+  In the specification the target asks the introducer for a tag and
+  publishes it, and a requester presents that tag to name the target; the
+  tag is therefore the only in-band link between the requester and the
+  target. `issue_tag`'s bound peer is that target (the parameter name is
+  historical). No preimage, block format, or codec changed.
+- **The `alice_hash` parameter name is a trap, and the source says so in
+  two places that do not agree.** `issue_tag` (`relay.rs:794`) and
+  `on_request` (`relay.rs:846`) both name their bound-peer parameter
+  `alice_hash`. In the **live target-shaped path** that parameter carries
+  the **tag owner's** hash — the *target's* — and never the requester's.
+  `issue_tag`'s own doc comment already flags the name as historical
+  ("The bound hash is therefore the introduction target, and the parameter
+  name is historical", `relay.rs:789-793`). The comment immediately above
+  the binding check does **not**:
+  `// Tag must be live and bound to this Alice.` (`relay.rs:877`), above
+  `if tag.expired(now_secs) || tag.alice_hash != *alice_hash`
+  (`relay.rs:881`). That comment describes the *parameter's name*, not its
+  binding, and it is **misleading in the live path**: the caller
+  `Ssu2PeerRelayService::on_relay_request_for_target` passes `target_hash`
+  as the transport's `alice_hash` **and** as the preimage's `charlie_hash`,
+  and its requester-hash argument is literally unused
+  (`crates/i2pr-runtime/src/ssu2_peer_relay.rs:733-756`, parameter named
+  `_requester_hash` at
+  `:736`). Read the parameter as *"the peer the tag names"*, not *"the
+  requester"*.
+- **The requester's own router hash is not in the request's signature
+  preimage.** `relay_request_preimage(bob_hash, charlie_hash, nonce, tag,
+  timestamp, version, endpoint)` (`relay.rs:144-166`) binds **Bob's** and
+  **Charlie's** hashes and nothing else. The requester's identity comes
+  from the *session* and only selects **which key verifies** the signature;
+  it is not a signed field. A request is therefore **not** cryptographically
+  bound to the requester's hash.
+- **The response's nonce must equal the request's nonce, and the response's
+  sender must be the target.** `RelayIntroducer::on_response`
+  (`relay.rs:925`) correlates by nonce against the live request table
+  (`self.requests.get(&block.nonce())`, `relay.rs:948`), refuses a nonce
+  it does not know as `UnknownCorrelation`, and requires
+  `tracked.charlie_hash == *sender_hash` (`relay.rs:951-953`) before it
+  verifies the target's signature over the `RelayAgreementOK` preimage.
+  It **consumes** the tracked request, so a replayed response is refused as
+  an unknown correlation rather than forwarded twice.
+- `RelayIntroducer::enabled()` is the production constructor;
+  `enabled_for_tests()` is retained as an alias.
 - `RelayTarget` (Charlie) — introducer-context validation of
   `RelayIntro` (Alice's forwarded signature under the
   `RelayRequestData` preimage), single HolePunch emission per intro
@@ -843,22 +1148,39 @@ banned literal in the crate's own source.
 
 ## Tests
 
-**189 tests in the crate**, all passing
+**218 tests in the crate**, all passing
 (`cargo test -p i2pr-transport-ssu2 --all-targets`):
 
 | Target | Count |
 | --- | --- |
-| `src/lib.rs` inline unit tests (133 total across 15 modules) | 133 |
+| `src/lib.rs` inline unit tests (145 total across 15 modules) | 145 |
 | `tests/handshake.rs` | 22 |
-| `tests/data_phase.rs` | 17 |
+| `tests/data_phase.rs` | 19 |
 | `tests/path_validation.rs` | 9 |
-| `tests/peer_relay.rs` | 8 |
+| `tests/peer_relay.rs` | 13 |
+| `tests/profile_boundary.rs` (Plan 490 static guard) | 10 |
 
 Inline unit-test distribution by module: `address.rs` 27,
 `path.rs` 13, `session.rs` 13, `peer_test.rs` 12, `handshake.rs` 11,
-`crypto.rs` 10, `token.rs` 9, `publication.rs` 8, `relay.rs` 7,
+`crypto.rs` 10, `token.rs` 9, `publication.rs` 14, `relay.rs` 13,
 `block.rs` 6, `header.rs` 6, `introducer.rs` 4, `constants.rs` 3,
 `packet.rs` 3, `state_machine.rs` 1, `lib.rs` 0.
+
+**Plan 490 static boundary guard** (`tests/profile_boundary.rs`): the
+crate's own production sources carry no `tokio::`, no `std::net`, no
+`std::fs`, no `async fn`, no `JoinHandle`, no `std::process`, no
+`std::thread`, and — the Plan 490 invariant — no `std::time::Instant`
+or `std::time::SystemTime` clock read. Every time input the role and
+the publication builder use is supplied by the caller, so the same
+inputs always produce the same decision. The `core::net` address path
+is deliberately allowed (pure endpoint values, never a socket). The
+guard carries inverted probes: a synthetic socket use, a synthetic
+clock read, a synthetic task owner and a synthetic asynchronous function
+must all be reported, and a source that only *mentions* a forbidden
+construct in a comment or in a `#[cfg(test)]` block must not. The
+asynchronous-function token is assembled at compile time, so the guard's
+own source stays clean for the repository's whole-directory transport
+scan; the probe proves the assembly did not blind the scanner.
 
 **Committed vector corpus.** 13 fixtures (13 `.hex` files; the
 directory also holds `README.md` and `manifest.tsv`) under
@@ -902,7 +1224,7 @@ Fixture bytes are committed and must not be edited; after any change
 | `peer_test.rs` (unit) | Spec preimage field order, full Alice trajectory to direct confirmation, unsigned-Msg 7 downgrade, contradiction without last-wins, invalid/stale/wrong-role/unknown boundedness, duplicate idempotency, concurrent isolation, exact quotas, expiry/cancel baselines, refusal/inconclusive neutrality, signer rejection, v6 separation |
 | `relay.rs` (unit) | Request/response preimage order, HolePunch conn-ID rule, HolePunch round trip with wrong-key rejection, requester correlation with distinct-tag isolation, disabled-by-default quotas with replay idempotency, target validation with replay suppression, quota/expiry baselines |
 | `introducer.rs` (unit) | Bounded deterministic live selection, failed-peer withdrawal, zero-tag/overflow eviction, publication-shape conversion |
-| `tests/peer_relay.rs` | Sealed-session carriage of RelayRequest/Response/Intro and PeerTest Msg 4 into their tables, out-of-session PeerTest/HolePunch round trips, introducer→publication→expiry integration, conservative reachability consumption, privacy regression |
+| `tests/peer_relay.rs` | Sealed-session carriage of RelayRequest/Response/Intro and PeerTest Msg 4 into their tables, out-of-session PeerTest/HolePunch round trips, introducer→publication→expiry integration, conservative reachability consumption, privacy regression. **Plan 499** adds five rows for the two new outbound relay-tag controls: the tag request traverses the session to the introducer, the tag traverses the session with the exact value, a terminated session refuses both, the control-queue ceiling refuses both, and a zero tag is rejected before it reaches the queue |
 
 Determinism: every secret, connection ID, packet number, token byte,
 challenge, timestamp, and both clocks is a caller-supplied
@@ -912,7 +1234,7 @@ deterministic generator.
 
 Runtime-side suites that exercise this crate's machines over real
 sockets (owned by `i2pr-runtime`, not by this crate) live in
-`crates/i2pr-runtime/tests/ssu2_local.rs` (10 tests),
+`crates/i2pr-runtime/tests/ssu2_local.rs` (19 tests),
 `crates/i2pr-runtime/tests/ssu2_peer_relay.rs` (7 tests), and the
 inline module tests in `crates/i2pr-runtime/src/ssu2_runtime.rs`; see
 [i2pr-runtime](i2pr-runtime.md).
@@ -1001,6 +1323,13 @@ inline module tests in `crates/i2pr-runtime/src/ssu2_runtime.rs`; see
   `159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
   `160-m8-ssu2-peer-test-and-relay-reachability.md`,
   `162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`.
+- Relay-role plans of record (this crate's relay machinery and the
+  introducer's session controls): Plan 490 (the introducer's bounded tables
+  and tag vocabulary),
+  [`499`](../../plans/implementation/network-participation/499-ssu2-introducer-live-tag-request-and-relay-block-carriage.md)
+  (the two outbound relay-tag controls and the live tag request). Closure:
+  [`490`](../../plans/closure/network-participation/490-status.md),
+  [`499`](../../plans/closure/network-participation/499-status.md).
 - Closure: `plans/closure/ssu2/155-status.md` through
   `plans/closure/ssu2/160-status.md`, and
   `plans/closure/ssu2/161-status.md` (**PASSED** — the external

@@ -202,6 +202,26 @@ jobs:
         run: |
           python3 scripts/plan449-ssu2-preflight.py --self-test
           python3 tests/integration/ssu2/plan472_live.py --self-test
+      # Plan 495. The external qualification gate's offline checker: it
+      # evaluates the pinned peers' admission and selection predicates
+      # against a candidate lab RouterInfo, validates the tier ladder and
+      # the outcome taxonomy, and proves it opens no socket and starts no
+      # process. It is pure and offline, so it is safe on every runner.
+      - name: Check Plan 495 peer-eligibility gate
+        run: |
+          python3 scripts/plan495-peer-eligibility.py --self-test
+          python3 scripts/plan495-peer-eligibility.py --profile-drift
+      # Plan 476. The guarded per-host executor must stay bound to the Plan
+      # 495 gate: the Rust export's phase vocabulary and the Python receipt
+      # contract are compared element by element, the executor must really
+      # call the gate rather than import it, and the simulator must be
+      # unable to connect. The checker runs the executor's own controls.
+      - name: Check Plan 476 gate binding
+        run: |
+          python3 scripts/check-plan476-gate-binding.py
+          python3 scripts/check-plan476-gate-binding.py --self-test
+          python3 tests/integration/ssu2/plan476_live_executor.py --self-test
+          python3 tests/integration/ssu2/test_plan476_live_executor.py
       - name: Check router-console ownership boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-console-boundaries.sh

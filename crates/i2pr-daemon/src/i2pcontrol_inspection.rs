@@ -40,6 +40,62 @@ use crate::i2cp::I2cpServiceState;
 use crate::sam::SamServiceState;
 use crate::service_tunnels::ServiceTunnelManager;
 use crate::transit_volume::{TransitParticipation, transit_share_ratio};
+use crate::version_eligibility::VersionEligibilityOwner;
+
+/// Plan 504 — the live tunnel-liveness counter cell.
+///
+/// The daemon product owns the cell and refreshes it on its product
+/// tick; the composition root publishes the same `Arc` into the
+/// inspection seam, so a reader observes the running router's
+/// liveness posture without polling the product. The counters are
+/// counts only: they name no peer, no tunnel and no payload.
+pub type LivenessCounterCell = std::sync::Mutex<crate::tunnel_liveness::LivenessCounters>;
+
+/// Plan 505 — the live exploratory-build driver counter cell.
+///
+/// The daemon product owns the cell and refreshes it on its product
+/// tick; the composition root publishes the same `Arc` into the
+/// inspection seam, so a reader observes the running router's
+/// exploratory-build posture without polling the product. The counters
+/// are counts only: they name no peer, no address, no key and no
+/// payload.
+pub type ExploratoryDriverCounterCell =
+    std::sync::Mutex<crate::exploratory_driver::ExploratoryDriverCounters>;
+
+/// Plan 506 — the live peer-knowledge reconcile counter cell.
+///
+/// The daemon product owns the cell and refreshes it on its product
+/// tick; the composition root publishes the same `Arc` into the
+/// inspection seam, so a reader observes the running router's
+/// peer-knowledge posture without polling the product. The counters are
+/// counts only: they name no peer, no address, no key and no payload.
+pub type PeerReconcileCounterCell = std::sync::Mutex<crate::peer_reconcile::PeerReconcileCounters>;
+/// Plan 521: the live counters of this router's own peer test.
+///
+/// The counters are counts only: they name no peer, address, key or payload.
+pub type PeerTestCounterCell = std::sync::Mutex<crate::peer_test::PeerTestOwnerCounters>;
+
+/// Plan 524: the live counters of this router's relay-tag requests.
+///
+/// The counters are counts only: they name no peer, address, key or tag.
+pub type IntroducerRequestCounterCell =
+    std::sync::Mutex<crate::introducer_request::IntroducerRequestCounters>;
+
+/// Live counters of this router's outbound peer-session pool, published
+/// by the composition root (Plan 522). The pool's own task refreshes
+/// the cell on its period; the counters are counts only and name no
+/// peer, address or key.
+pub type PeerPoolCounterCell = std::sync::Mutex<crate::peer_pool::PeerPoolCounters>;
+/// Plan 533: the live counters of this router's relay establishments.
+pub type RelayEstablishmentCounterCell =
+    std::sync::Mutex<crate::relay_establishment::RelayEstablishmentCounters>;
+
+/// Plan 525: the live counters of this router's own published address.
+///
+/// The cell carries counts and stable reason labels only: it names no
+/// peer, no address, no key and no payload.
+pub type SelfPublicationCounterCell =
+    std::sync::Mutex<crate::self_publication::SelfPublicationCounterSnapshot>;
 
 /// Control-plane API version declared by `router.api_version`.
 pub const ROUTER_API_VERSION: u64 = 1;
@@ -237,6 +293,48 @@ pub struct InspectionHandles {
     /// cannot report non-zero volume; a controlled lane publishes the
     /// counters its real forward path advances.
     transit_live: Mutex<Option<TransitParticipation>>,
+    /// Live peer-eligibility receipt owner, published by the composition
+    /// root (Plan 503). The log holds counts and stable reason labels only.
+    version_live: Mutex<Option<Arc<VersionEligibilityOwner>>>,
+    /// Live tunnel-liveness counters, published by the composition root
+    /// (Plan 504). The product refreshes the cell on its tick; the
+    /// counters are counts only and name no peer, tunnel or payload.
+    liveness_live: Mutex<Option<Arc<LivenessCounterCell>>>,
+    /// Live exploratory-build driver counters, published by the
+    /// composition root (Plan 505). The product refreshes the cell on its
+    /// tick; the counters are counts only and name no peer, address or key.
+    exploratory_driver_live: Mutex<Option<Arc<ExploratoryDriverCounterCell>>>,
+    /// Live peer-knowledge reconcile counters, published by the
+    /// composition root (Plan 506). The product refreshes the cell on its
+    /// tick; the counters are counts only and name no peer, address or key.
+    peer_reconcile_live: Mutex<Option<Arc<PeerReconcileCounterCell>>>,
+    /// Live counters of this router's own peer test, published by the
+    /// composition root (Plan 521). The product refreshes the cell on its
+    /// tick; the counters are counts only and name no peer, address or key.
+    peer_test_live: Mutex<Option<Arc<PeerTestCounterCell>>>,
+    /// Live counters of this router's relay-tag requests, published by the
+    /// composition root (Plan 524). The product refreshes the cell on its
+    /// tick; the counters are counts only and name no peer, address, key
+    /// or tag.
+    introducer_request_live: Mutex<Option<Arc<IntroducerRequestCounterCell>>>,
+    /// Live counters of this router's outbound peer-session pool,
+    /// published by the composition root (Plan 522).
+    peer_pool_live: Mutex<Option<Arc<PeerPoolCounterCell>>>,
+    /// Live counters of this router's own published address, published by
+    /// the composition root (Plan 525). The publication's own task
+    /// refreshes the cell on its cycle; the counters are counts only and
+    /// name no peer, address, key or payload.
+    self_publication_live: Mutex<Option<Arc<SelfPublicationCounterCell>>>,
+    /// Plan 534: the local observations of the peers this router reached
+    /// through a relay. The handle is published by the composition root and
+    /// the seam exposes the **counts only**: no peer, no address and no key
+    /// is readable through it.
+    relay_session_peer_live: Mutex<Option<crate::relay_session_peer::RelaySessionPeerHandle>>,
+    /// Live counters of this router's relay establishments, published by
+    /// the composition root (Plan 533). The establishment's own task
+    /// refreshes the cell; the counters are counts only and name no peer,
+    /// address, key or token.
+    relay_establishment_live: Mutex<Option<Arc<RelayEstablishmentCounterCell>>>,
 }
 
 impl InspectionHandles {
@@ -262,6 +360,16 @@ impl InspectionHandles {
             ssu2_live: Mutex::new(None),
             news_live: Mutex::new(None),
             transit_live: Mutex::new(None),
+            version_live: Mutex::new(None),
+            liveness_live: Mutex::new(None),
+            exploratory_driver_live: Mutex::new(None),
+            peer_reconcile_live: Mutex::new(None),
+            peer_test_live: Mutex::new(None),
+            introducer_request_live: Mutex::new(None),
+            peer_pool_live: Mutex::new(None),
+            self_publication_live: Mutex::new(None),
+            relay_establishment_live: Mutex::new(None),
+            relay_session_peer_live: Mutex::new(None),
         }
     }
 
@@ -507,8 +615,304 @@ impl InspectionHandles {
 
     /// Reads the published transit participation posture. A poisoned lock
     /// or an unpublished slot is a gap, never a zero.
-    pub(crate) fn transit_participation(&self) -> Option<TransitParticipation> {
+    ///
+    /// Plan 502: the reader is public so an out-of-crate evidence lane can
+    /// observe the published posture through the same value the
+    /// Proposal-170 selectors project. It is read-only: publishing is the
+    /// owner's privilege.
+    pub fn transit_participation(&self) -> Option<TransitParticipation> {
         self.transit_live.lock().ok().and_then(|live| live.clone())
+    }
+
+    /// Publishes the live tunnel-liveness counter cell.
+    ///
+    /// Plan 504: the composition root publishes the cell the daemon
+    /// product refreshes on its tick, so the running router's
+    /// liveness posture is observable through the inspection seam.
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_liveness_counters(&self, cell: Arc<LivenessCounterCell>) {
+        if let Ok(mut slot) = self.liveness_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published tunnel-liveness counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn liveness_counters(&self) -> Option<Arc<LivenessCounterCell>> {
+        self.liveness_live.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published tunnel-liveness
+    /// counters.
+    ///
+    /// Plan 504: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn liveness_counters_snapshot(&self) -> Option<crate::tunnel_liveness::LivenessCounters> {
+        let cell = self.liveness_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 505: the composition root publishes the cell the daemon
+    /// product refreshes on its tick, so the running router's
+    /// exploratory-build posture is observable through the inspection seam.
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_exploratory_driver_counters(&self, cell: Arc<ExploratoryDriverCounterCell>) {
+        if let Ok(mut slot) = self.exploratory_driver_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published exploratory-build driver counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn exploratory_driver_counters(&self) -> Option<Arc<ExploratoryDriverCounterCell>> {
+        self.exploratory_driver_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published exploratory-build
+    /// driver counters.
+    ///
+    /// Plan 505: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn exploratory_driver_counters_snapshot(
+        &self,
+    ) -> Option<crate::exploratory_driver::ExploratoryDriverCounters> {
+        let cell = self.exploratory_driver_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 506: the composition root publishes the cell the daemon
+    /// product refreshes on its tick, so the running router's
+    /// peer-knowledge posture is observable through the inspection seam.
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_peer_reconcile_counters(&self, cell: Arc<PeerReconcileCounterCell>) {
+        if let Ok(mut slot) = self.peer_reconcile_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published peer-knowledge reconcile counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn peer_reconcile_counters(&self) -> Option<Arc<PeerReconcileCounterCell>> {
+        self.peer_reconcile_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published peer-knowledge
+    /// reconcile counters.
+    ///
+    /// Plan 506: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn peer_reconcile_counters_snapshot(
+        &self,
+    ) -> Option<crate::peer_reconcile::PeerReconcileCounters> {
+        let cell = self.peer_reconcile_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 521: the composition root publishes the cell the daemon product
+    /// refreshes on its tick, so the running router's own peer-test posture
+    /// is observable through the inspection seam.
+    ///
+    /// Publishing is the owner's privilege; the cell itself is read-only for
+    /// a reader.
+    pub fn publish_peer_test_counters(&self, cell: Arc<PeerTestCounterCell>) {
+        if let Ok(mut slot) = self.peer_test_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published peer-test counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn peer_test_counters(&self) -> Option<Arc<PeerTestCounterCell>> {
+        self.peer_test_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Plan 524: publishes the cell the daemon product refreshes on its
+    /// tick, so the running router's relay-tag request posture is
+    /// observable through the inspection seam.
+    ///
+    /// Publishing is the composition root's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_introducer_request_counters(&self, cell: Arc<IntroducerRequestCounterCell>) {
+        if let Ok(mut slot) = self.introducer_request_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published relay-tag request counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn introducer_request_counters(&self) -> Option<Arc<IntroducerRequestCounterCell>> {
+        self.introducer_request_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published relay-tag request
+    /// counters.
+    ///
+    /// Plan 524: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn introducer_request_counters_snapshot(
+        &self,
+    ) -> Option<crate::introducer_request::IntroducerRequestCounters> {
+        let cell = self.introducer_request_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Reads a point-in-time snapshot of the published peer-test counters.
+    ///
+    /// Plan 521: an unpublished or poisoned slot is a gap, never a fabricated
+    /// zero.
+    pub fn peer_test_counters_snapshot(&self) -> Option<crate::peer_test::PeerTestOwnerCounters> {
+        let cell = self.peer_test_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 522: the composition root publishes the cell the pool's own
+    /// task refreshes on its period, so the running router's pooled
+    /// session posture is observable through the inspection seam.
+    ///
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_peer_pool_counters(&self, cell: Arc<PeerPoolCounterCell>) {
+        if let Ok(mut slot) = self.peer_pool_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Plan 525: publishes the cell the publication's own task refreshes
+    /// on its cycle, so the running router's own published-address
+    /// posture is observable through the inspection seam.
+    ///
+    /// Publishing is the composition root's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_self_publication_counters(&self, cell: Arc<SelfPublicationCounterCell>) {
+        if let Ok(mut slot) = self.self_publication_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published self-publication counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn self_publication_counters(&self) -> Option<Arc<SelfPublicationCounterCell>> {
+        self.self_publication_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published self-publication
+    /// counters.
+    ///
+    /// Plan 525: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn self_publication_counters_snapshot(
+        &self,
+    ) -> Option<crate::self_publication::SelfPublicationCounterSnapshot> {
+        let cell = self.self_publication_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 533: the composition root publishes the cell the
+    /// establishment's own task refreshes, so the running router's relay
+    /// establishment posture is observable through the inspection seam.
+    ///
+    /// Publishing is the owner's privilege; the cell itself is
+    /// read-only for a reader.
+    pub fn publish_relay_establishment_counters(&self, cell: Arc<RelayEstablishmentCounterCell>) {
+        if let Ok(mut slot) = self.relay_establishment_live.lock() {
+            *slot = Some(cell);
+        }
+    }
+
+    /// Reads the published relay-establishment counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn relay_establishment_counters(&self) -> Option<Arc<RelayEstablishmentCounterCell>> {
+        self.relay_establishment_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published relay-establishment
+    /// counters.
+    ///
+    /// Plan 533: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn relay_establishment_counters_snapshot(
+        &self,
+    ) -> Option<crate::relay_establishment::RelayEstablishmentCounters> {
+        let cell = self.relay_establishment_counters()?;
+        cell.lock().ok().map(|counters| *counters)
+    }
+
+    /// Plan 534: the composition root publishes the local observation
+    /// table, so the running router's relayed-peer posture is observable
+    /// through the inspection seam.
+    ///
+    /// Publishing is the owner's privilege; the seam reads the **counts
+    /// only** and never the observations themselves.
+    pub fn publish_relay_session_peers(
+        &self,
+        handle: crate::relay_session_peer::RelaySessionPeerHandle,
+    ) {
+        if let Ok(mut slot) = self.relay_session_peer_live.lock() {
+            *slot = Some(handle);
+        }
+    }
+
+    /// Reads a point-in-time snapshot of the local observation counters.
+    ///
+    /// Plan 534: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero. The snapshot carries counts only.
+    pub fn relay_session_peer_counters_snapshot(
+        &self,
+    ) -> Option<crate::relay_session_peer::RelaySessionPeerCounters> {
+        let handle = self
+            .relay_session_peer_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())?;
+        crate::relay_session_peer::relay_session_peer_counters(&handle)
+    }
+
+    /// Reads the published peer-pool counter cell.
+    ///
+    /// A poisoned lock or an unpublished slot is a gap, never a zero.
+    pub fn peer_pool_counters(&self) -> Option<Arc<PeerPoolCounterCell>> {
+        self.peer_pool_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Reads a point-in-time snapshot of the published peer-pool
+    /// counters.
+    ///
+    /// Plan 522: an unpublished or poisoned slot is a gap, never a
+    /// fabricated zero.
+    pub fn peer_pool_counters_snapshot(&self) -> Option<crate::peer_pool::PeerPoolCounters> {
+        let cell = self.peer_pool_counters()?;
+        cell.lock().ok().map(|counters| *counters)
     }
 
     pub(crate) fn publish_news_manager(&self, manager: Arc<crate::news::NewsManager>) {
@@ -530,6 +934,26 @@ impl InspectionHandles {
         if let Ok(mut live) = self.ssu2_live.lock() {
             *live = Some(service);
         }
+    }
+
+    /// Publishes the live peer-eligibility receipt owner (called once by the
+    /// composition root, Plan 503).
+    ///
+    /// The owner is shared as a plain `Arc`; the handles keep only the
+    /// handle, so the receipts stay observable while the router runs.
+    pub fn publish_version_eligibility(&self, owner: Arc<VersionEligibilityOwner>) {
+        if let Ok(mut live) = self.version_live.lock() {
+            *live = Some(owner);
+        }
+    }
+
+    /// Reads the published peer-eligibility receipt owner.
+    ///
+    /// The read is cheap and non-async: the `Arc` is cloned out from under
+    /// the slot lock and the lock is released before the owner is returned.
+    /// An unpublished slot is a gap, never an empty receipt.
+    pub fn version_eligibility(&self) -> Option<Arc<VersionEligibilityOwner>> {
+        self.version_live.lock().ok().and_then(|live| live.clone())
     }
 
     /// Publishes the live SAM state (called once by the SAM factory).
@@ -629,6 +1053,14 @@ impl core::fmt::Debug for InspectionHandles {
                 "manager_live",
                 &self
                     .manager_live
+                    .lock()
+                    .map(|live| live.is_some())
+                    .unwrap_or(false),
+            )
+            .field(
+                "version_live",
+                &self
+                    .version_live
                     .lock()
                     .map(|live| live.is_some())
                     .unwrap_or(false),
@@ -890,11 +1322,13 @@ pub(crate) fn proposal_network_condition_value(
 /// participation posture (Plan 340).
 ///
 /// The value is a property of the enforced transit posture, not a
-/// substituted placeholder. A product router publishes
+/// substituted placeholder. The **default** product profile publishes
 /// `TransitParticipation::Disabled`, which owns no counters, so the zeros
 /// it reports are the truth about a router that relays nothing. A
-/// participating router reports counters its real `TunnelData` forward
-/// dispatches advanced.
+/// participating router — one whose operator opted in, so that Plan 502's
+/// composition installed the owner — publishes
+/// `TransitParticipation::Enabled` with that service's own counters, and
+/// reports what its real `TunnelData` forward dispatches advanced.
 ///
 /// Per-key gating is deliberate: `tunnels.shareratio` is a ratio, so while
 /// the router actually participates it additionally needs an attested
@@ -902,7 +1336,7 @@ pub(crate) fn proposal_network_condition_value(
 /// A disabled router short-circuits to `0.0`, which is true regardless of
 /// the denominator. An unpublished posture, an unreadable counter, or a
 /// missing denominator is a gap — never a zero.
-pub(crate) fn proposal_transit_volume(
+pub fn proposal_transit_volume(
     key: &'static str,
     handles: &InspectionHandles,
 ) -> Result<serde_json::Value, InspectionGap> {
@@ -2697,5 +3131,46 @@ mod tests {
             client_service_result(ClientService::HttpProxy, &handles)["enabled"],
             serde_json::json!(true)
         );
+    }
+
+    #[test]
+    fn the_peer_eligibility_owner_is_published_and_readable() {
+        use crate::version_eligibility::VersionEligibilityReceipt;
+
+        let handles = test_handles();
+        // An unpublished slot is a gap, never an empty receipt log.
+        assert!(handles.version_eligibility().is_none());
+
+        let owner = Arc::new(VersionEligibilityOwner::new(4));
+        owner.record(VersionEligibilityReceipt::dsm_target(
+            3,
+            0,
+            &i2pr_netdb::VersionRefusalCounts {
+                unknown_version: 0,
+                uncomparable_version: 0,
+                below_floor: 3,
+            },
+        ));
+        handles.publish_version_eligibility(Arc::clone(&owner));
+
+        let published = handles
+            .version_eligibility()
+            .expect("the owner is published");
+        assert_eq!(published.receipt_count(), 1);
+        assert_eq!(published.last().map(|receipt| receipt.examined), Some(3));
+        // The published handle is the same owner the composition root holds.
+        owner.record(VersionEligibilityReceipt::dsm_target(
+            4,
+            1,
+            &i2pr_netdb::VersionRefusalCounts::default(),
+        ));
+        assert_eq!(
+            handles
+                .version_eligibility()
+                .expect("the owner is published")
+                .receipt_count(),
+            2
+        );
+        assert!(format!("{handles:?}").contains("version_live: true"));
     }
 }

@@ -695,6 +695,32 @@ impl SamStreamRegistry {
         Ok(true)
     }
 
+    /// Plan 486 — returns whether any `STREAM ACCEPT` waiter is
+    /// currently parked for the supplied destination, across every
+    /// session. A waiter counts while its stream id is a member of
+    /// its session's `pending_accepts` FIFO and its attachment names
+    /// the destination; claiming, releasing, or timing out the waiter
+    /// removes it from the FIFO (or drops the attachment), so this
+    /// derives from authoritative registry state on every call and
+    /// cannot drift from the waiter lifecycle. FORWARD attachments
+    /// are deliberately excluded: they are never members of
+    /// `pending_accepts`, so FORWARD routing behavior is unchanged
+    /// by the waiter-scoped dispatch. Fail-closed `false` when the
+    /// registry lock is unavailable.
+    pub fn has_parked_accept_for_destination(&self, destination_id: DestinationId) -> bool {
+        let Ok(sessions) = self.sessions.lock() else {
+            return false;
+        };
+        sessions.values().any(|entry| {
+            entry.pending_accepts.iter().any(|stream_id| {
+                entry
+                    .attachments
+                    .get(stream_id)
+                    .is_some_and(|attachment| attachment.owning_destination() == destination_id)
+            })
+        })
+    }
+
     /// Returns a snapshot clone of the attachment metadata for the
     /// supplied stream id.
     pub fn attachment(
@@ -950,5 +976,61 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn parked_accept_query_tracks_waiter_lifecycle_per_destination() {
+        let registry = SamStreamRegistry::new(SamLimits::defaults());
+        let session = SamSessionId::new("alpha").unwrap();
+        let other = SamSessionId::new("beta").unwrap();
+        registry.register_session(session.clone()).unwrap();
+        registry.register_session(other.clone()).unwrap();
+        // No waiter parked: no destination reports parked.
+        assert!(!registry.has_parked_accept_for_destination(destination(1)));
+        assert!(!registry.has_parked_accept_for_destination(destination(2)));
+        // A waiter for destination 1 parks only destination 1.
+        let waiter = registry
+            .register_inbound_waiter(&session, destination(1))
+            .unwrap();
+        assert!(registry.has_parked_accept_for_destination(destination(1)));
+        assert!(!registry.has_parked_accept_for_destination(destination(2)));
+        // A second session parking the same destination keeps it parked.
+        let waiter_two = registry
+            .register_inbound_waiter(&other, destination(1))
+            .unwrap();
+        assert!(registry.has_parked_accept_for_destination(destination(1)));
+        // Claiming one waiter leaves the destination parked via the other.
+        assert!(
+            registry
+                .claim_pending_accept(&session, waiter.stream_id)
+                .unwrap()
+        );
+        assert!(registry.has_parked_accept_for_destination(destination(1)));
+        // Releasing the last waiter unparks the destination.
+        assert!(
+            registry
+                .release_attachment(&other, waiter_two.stream_id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(!registry.has_parked_accept_for_destination(destination(1)));
+    }
+
+    #[test]
+    fn parked_accept_query_ignores_outbound_and_forward_state() {
+        let registry = SamStreamRegistry::new(SamLimits::defaults());
+        let session = SamSessionId::new("alpha").unwrap();
+        registry.register_session(session.clone()).unwrap();
+        // Outbound CONNECT attachments never park an ACCEPT waiter.
+        registry
+            .register_outbound(&session, destination(1), None)
+            .unwrap();
+        assert!(!registry.has_parked_accept_for_destination(destination(1)));
+        // FORWARD attachments are never ACCEPT waiters either.
+        registry.register_forward(&session, 7).unwrap();
+        registry
+            .register_forward_attachment(&session, destination(1))
+            .unwrap();
+        assert!(!registry.has_parked_accept_for_destination(destination(1)));
     }
 }

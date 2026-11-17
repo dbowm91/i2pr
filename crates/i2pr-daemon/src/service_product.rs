@@ -61,23 +61,26 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use i2pr_crypto::RouterIdentityBundle;
 use i2pr_netdb::{
     DestinationHash, LeaseSet2ValidationContext, LookupPolicy, RouterHash, RouterInfoStoreConfig,
-    ValidatedLeaseSet2,
+    ValidatedLeaseSet2, ValidatedRouterInfo,
 };
 use i2pr_proto::{Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2InboundI2np};
 use i2pr_service_tunnels::{ServiceTunnelSet, StaticAliasTable};
 use i2pr_transport::Deadline;
+use i2pr_transport::PeerId;
 use i2pr_tunnel::bridge::{BridgeHeader, ShortBuildI2npBridge};
 use i2pr_tunnel::config::ExploratoryPoolConfig;
 use i2pr_tunnel::identity::TunnelId;
 use i2pr_tunnel::pool::TunnelSlot;
 use i2pr_tunnel::short_record::HopRole;
 use rand_chacha::ChaCha8Rng;
-use rand_core::SeedableRng;
+use rand_core::{RngCore, SeedableRng};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::destination_peers::{DestinationPeerCandidate, select_destination_path_os};
+use crate::destination_peers::{
+    DestinationPeerCandidate, select_destination_path_os, select_projected_destination_path_os,
+};
 use crate::destination_tunnels::{
     DestinationTunnelCoordinator, LeaseStoreIngestOutcome, reply_path_for_inbound_route,
 };
@@ -85,8 +88,8 @@ use crate::encrypted_service_resolver::{
     EncryptedServiceConsumerError, EncryptedServiceResolver, bind_inner_to_address,
 };
 use crate::exploratory_build::{
-    BuildCoordinatorOutcome, BuildDirection, DestinationBuildRequest, ExploratoryBuildCoordinator,
-    PeerBuildMaterial, SubmitResult,
+    BuildCoordinatorOutcome, BuildDirection, BuildEmissionDisposition, DestinationBuildRequest,
+    ExploratoryBuildCoordinator, PeerBuildMaterial, SubmitResult, is_destination_role_slot,
 };
 use crate::inbound_dispatch::{self, InboundDispatchOutcome};
 use crate::router_i2np::{
@@ -99,8 +102,8 @@ use crate::service_delivery::{
 };
 use crate::service_tunnels::{
     DeferredActivationRequest, DestinationProductOperation, EncryptedTargetStatus,
-    RemoteTargetProjection, RouterNetworkSamProvisioningFailure, ServiceTunnelManager,
-    ServiceTunnelManagerConfig,
+    InboundOwnerMissClass, RemoteTargetProjection, RouterNetworkSamProvisioningFailure,
+    ServiceTunnelManager, ServiceTunnelManagerConfig,
 };
 
 /// Plan 212 §9 — per-process tunnel-id allocator for real
@@ -113,10 +116,89 @@ use crate::service_tunnels::{
 ///   disjointness across every build request);
 /// - allocate a disjoint set for every build request;
 /// - bounded/wrapping collision search;
-/// - deterministic unit tests allowed with an injected seed/start.
+/// - production receives its process-local starting point from the OS CSPRNG;
+///   deterministic unit tests may inject a seed/start.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Plan212TunnelIdAllocator {
     next: u32,
+}
+
+fn fresh_message_id<R: RngCore>(rng: &mut R, excluded: &[u32]) -> Result<u32, ServiceProductError> {
+    for _ in 0..32 {
+        let candidate = rng.next_u32();
+        if candidate != 0 && !excluded.contains(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(ServiceProductError::Provisioning(
+        "bounded message-id allocation exhausted".to_owned(),
+    ))
+}
+
+#[cfg(test)]
+mod plan477_message_id_tests {
+    use super::{Plan212TunnelIdAllocator, fresh_message_id};
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    #[test]
+    fn allocation_excludes_live_pending_and_sibling_ids() {
+        let mut rng = ChaCha8Rng::seed_from_u64(0x477);
+        let mut excluded = vec![0, 0x1020_3040, 0x5060_7080];
+        for _ in 0..32 {
+            let id = fresh_message_id(&mut rng, &excluded).expect("bounded fresh id");
+            assert_ne!(id, 0);
+            assert!(!excluded.contains(&id));
+            excluded.push(id);
+        }
+    }
+
+    #[test]
+    fn same_start_replays_same_sequence_so_fixed_starts_stay_test_only() {
+        // The retired production seed replayed one tunnel-id sequence on
+        // every restart. Identical starts must still reproduce their
+        // sequence, which keeps the defect mechanism visible and pins
+        // why production starts go through `os_seeded`, never a constant.
+        let replay = |mut allocator: Plan212TunnelIdAllocator| {
+            allocator.allocate_set(8, &[]).expect("bounded set")
+        };
+        let first = replay(Plan212TunnelIdAllocator::new(0x51A7_9300));
+        let second = replay(Plan212TunnelIdAllocator::new(0x51A7_9300));
+        assert_eq!(first, second, "a fixed start replays its sequence");
+        assert!(first.iter().all(|id| *id != 0));
+        // A restarted process excludes the previous run's live ids
+        // through the caller registry check and stays disjoint.
+        let mut restarted = Plan212TunnelIdAllocator::new(0x51A7_9400);
+        let disjoint = restarted.allocate_set(8, &first).expect("bounded set");
+        assert!(disjoint.iter().all(|id| !first.contains(id)));
+    }
+
+    #[test]
+    fn os_seeded_allocator_allocates_valid_disjoint_sets() {
+        // Independent restarts must draw independent starts; a fixed
+        // constant here would replay one sequence on every restart.
+        // (Two consecutive OS draws collide with probability 2^-32.)
+        let first_start = Plan212TunnelIdAllocator::os_seeded()
+            .expect("os randomness")
+            .next;
+        let second_start = Plan212TunnelIdAllocator::os_seeded()
+            .expect("os randomness")
+            .next;
+        assert_ne!(
+            first_start, second_start,
+            "independent restarts draw independent starts"
+        );
+        let mut allocator = Plan212TunnelIdAllocator::os_seeded().expect("os randomness");
+        let first = allocator.allocate_set(8, &[]).expect("bounded set");
+        assert_eq!(first.len(), 8);
+        assert!(first.iter().all(|id| *id != 0));
+        let mut sorted = first.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 8, "one process never aliases itself");
+        let second = allocator.allocate_set(8, &first).expect("bounded set");
+        assert!(second.iter().all(|id| !first.contains(id)));
+    }
 }
 
 impl Plan212TunnelIdAllocator {
@@ -124,6 +206,17 @@ impl Plan212TunnelIdAllocator {
     /// preferred; zero start wraps to 1 on first allocation).
     pub(crate) const fn new(start: u32) -> Self {
         Self { next: start }
+    }
+
+    /// Production constructor: the start is one OS-CSPRNG draw. A fixed
+    /// start would replay the same tunnel-id sequence on every restart,
+    /// so production construction goes through this function and never
+    /// a constant; deterministic starts stay test-only.
+    pub(crate) fn os_seeded() -> Result<Self, ServiceProductError> {
+        let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+            ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
+        })?;
+        Ok(Self::new(rng.next_u32()))
     }
 
     /// Allocates one non-zero tunnel id, wrapping on overflow and
@@ -141,12 +234,31 @@ impl Plan212TunnelIdAllocator {
     }
 
     /// Allocates `count` disjoint non-zero ids.
-    pub(crate) fn allocate_set(&mut self, count: usize) -> Vec<u32> {
+    pub(crate) fn allocate_set(
+        &mut self,
+        count: usize,
+        excluded: &[u32],
+    ) -> Result<Vec<u32>, ServiceProductError> {
         let mut out = Vec::with_capacity(count);
+        let mut reserved = excluded.to_vec();
         for _ in 0..count {
-            out.push(self.allocate());
+            let mut allocated = None;
+            for _ in 0..=excluded.len().saturating_add(count).saturating_add(32) {
+                let candidate = self.allocate();
+                if candidate != 0 && !reserved.contains(&candidate) {
+                    allocated = Some(candidate);
+                    break;
+                }
+            }
+            let Some(id) = allocated else {
+                return Err(ServiceProductError::Provisioning(
+                    "bounded tunnel-id collision search exhausted".to_owned(),
+                ));
+            };
+            reserved.push(id);
+            out.push(id);
         }
-        out
+        Ok(out)
     }
 }
 
@@ -178,6 +290,39 @@ const IBGW_NEXT: u32 = 0x9682;
 
 /// Default bounded dial deadline for the controlled lane SSU2 session.
 const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Plan 524 — builds the owner of this router's relay-tag requests.
+///
+/// The owner is installed only when the operator enabled the request, so a
+/// default router has no owner and never sends a relay-tag request.
+fn build_introducer_request_owner(
+    enabled: bool,
+) -> Option<crate::introducer_request::IntroducerRequestOwner> {
+    if !enabled {
+        return None;
+    }
+    Some(crate::introducer_request::IntroducerRequestOwner::new(true))
+}
+
+/// Plan 524 — reads one peer's advertised introducer capability from the
+/// authoritative store.
+///
+/// The read is the daemon's, because the daemon is the tree's authority for
+/// peer records. The lock is taken for the read only and the read itself is
+/// the pure function the owner module owns.
+async fn read_introducer_capability(
+    destinations: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    peer: PeerId,
+) -> crate::introducer_request::IntroducerCapability {
+    let store = destinations.lock().await;
+    crate::introducer_request::read_capability(store.store(), peer)
+}
+
+/// Plan 487 WP4 — the minimum interval between two replenishment
+/// notices for the same destination. The notices make the replenishment
+/// decision visible; the interval keeps a permanently failing
+/// destination from flooding the log.
+const REPLENISHMENT_NOTICE_INTERVAL_MS: u64 = 30_000;
 /// Default bounded inbound poll interval.
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Default bounded wait for one exploratory build to install.
@@ -191,6 +336,28 @@ const DEFAULT_TUNNEL_DEADLINE: Duration = Duration::from_secs(60);
 /// router/floodfill dispatcher, within explicit message and byte bounds.
 const MAX_STARTUP_REPLAY_MESSAGES: usize = 1024;
 const MAX_STARTUP_REPLAY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Plan 504 — the bounded number of liveness actions one product tick
+/// may act on.
+///
+/// The scheduler's `drive()` returns one action per call, so a tick
+/// keeps driving until the scheduler reports `Idle`. The bound stops
+/// a large backlog of due pairs from turning one tick into an
+/// unbounded burst of tunnel traffic.
+const MAX_LIVENESS_DRIVES_PER_TICK: usize = 8;
+
+/// Plan 513 — the I2NP message identifier the discovery requests carry.
+///
+/// The identifier is a fixed, non-secret value: the discovery requests are
+/// ordinary I2NP `DatabaseLookup` messages, and the identifier only needs
+/// to be unique within the router's own replay window.
+const DISCOVERY_MESSAGE_ID: u32 = 0x5130_0D01;
+
+/// Plan 513 — the lifetime the discovery requests carry.
+///
+/// A discovery request is a single attempt against one peer. It expires
+/// quickly so a request the peer never answered cannot be replayed.
+const DISCOVERY_MESSAGE_LIFETIME_MS: u64 = 60_000;
 
 /// Tunable bound for the production composition.
 #[derive(Clone, Copy, Debug)]
@@ -208,6 +375,12 @@ pub struct ServiceProductOptions {
     pub delivery_timeout: Duration,
     /// Lookup / reply deadline.
     pub tunnel_deadline: Duration,
+    /// Plan 524 — whether this router asks a peer for a relay tag.
+    ///
+    /// The switch is an explicit opt-in and it is off by default. A router
+    /// that has not asked to learn an introducer never sends a relay-tag
+    /// request.
+    pub introducer_request: bool,
 }
 
 impl Default for ServiceProductOptions {
@@ -219,6 +392,7 @@ impl Default for ServiceProductOptions {
             i2pd_accept_timeout: DEFAULT_I2PD_ACCEPT_TIMEOUT,
             delivery_timeout: DEFAULT_DELIVERY_TIMEOUT,
             tunnel_deadline: DEFAULT_TUNNEL_DEADLINE,
+            introducer_request: false,
         }
     }
 }
@@ -278,6 +452,52 @@ pub struct ServiceProductSpec {
     /// router delivery backend before any control reconcile can run —
     /// the SSU2 service starts ahead of the I2PControl service.
     pub shared_manager: Option<Arc<ServiceTunnelManager>>,
+    /// Plan 505 — the exploratory build driver, when the composition root
+    /// built one.
+    ///
+    /// The driver names a peer through Plan 491's version-gated selection,
+    /// builds a one-hop exploratory tunnel toward it through the **existing**
+    /// build path, and records the outcome in the peer-profile store.
+    ///
+    /// `None` means the driver's path is inert: no peer is named, no tunnel
+    /// is built, and the product's exploratory step is a no-op. The
+    /// composition root passes `None` unless the operator has enabled the
+    /// `[exploratory]` posture, so a router that has never opted in behaves
+    /// exactly as it does today.
+    pub exploratory_driver: Option<crate::exploratory_driver::ExploratoryDriver>,
+    /// Plan 506 — the daemon's live bootstrap store, when the composition
+    /// root built one.
+    ///
+    /// The reconcile snapshots the bootstrap's validated RouterInfos under
+    /// this handle's lock, so a peer the router accepts on a **live**
+    /// session becomes known to the stores the router builds with. `None`
+    /// means the composition has no bootstrap store, and the reconcile's
+    /// source is unavailable: the reconcile counts that and never fails.
+    pub bootstrap: Option<Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+    /// Plan 506 — the daemon's live peer-profile handle, when the
+    /// composition root built one.
+    ///
+    /// The reconcile learns the bootstrap's validated RouterInfos into the
+    /// peer-profile store, so Plan 505's exploratory build driver selects
+    /// from a **live** population rather than the startup snapshot.
+    pub peer_profiles: Option<crate::netdb_participation::PeerParticipationHandle>,
+    /// Plan 506 — the cadence of the peer-knowledge reconcile, in
+    /// milliseconds.
+    ///
+    /// The composition root supplies the **existing** NetDB participation
+    /// maintenance period, so the reconcile shares one source of truth and
+    /// the router has no second cadence knob. The reconcile refuses an
+    /// out-of-range cadence at construction.
+    pub reconcile_period_ms: u64,
+    /// Plan 513 — the live NetDB discovery spine, when the composition root
+    /// built one.
+    ///
+    /// The product's tick drives the spine: it refreshes the inbound
+    /// exploratory tunnel's reply path and delivers the exploratory request
+    /// the NetDB participation owner composed. The spine shares the one
+    /// routing table with that owner, so the table's preference and the
+    /// exploration's suggestions are the same state.
+    pub discovery: Option<Arc<crate::netdb_participation::NetDbDiscoverySpine>>,
 }
 
 /// Reference peer the controlled lane dials + bootstraps.
@@ -447,6 +667,19 @@ mod normal_daemon_owner_tests {
             )
             .shared(),
             shared_manager: None,
+            // Plan 505 — the controlled helper and the controlled lanes do
+            // not enable the exploratory build posture, so they own no
+            // driver.
+            exploratory_driver: None,
+            // Plan 506 — the controlled helper owns no bootstrap store and
+            // no peer-profile handle, so its reconcile has no source. The
+            // cadence is still bounded, so the step is inert and counted.
+            bootstrap: None,
+            peer_profiles: None,
+            reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+            // Plan 513 — the controlled helper owns no discovery spine:
+            // the discovery step is inert and counted.
+            discovery: None,
         };
         let product = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -522,6 +755,19 @@ mod normal_daemon_owner_tests {
             )
             .shared(),
             shared_manager: None,
+            // Plan 505 — the controlled helper and the controlled lanes do
+            // not enable the exploratory build posture, so they own no
+            // driver.
+            exploratory_driver: None,
+            // Plan 506 — the controlled helper owns no bootstrap store and
+            // no peer-profile handle, so its reconcile has no source. The
+            // cadence is still bounded, so the step is inert and counted.
+            bootstrap: None,
+            peer_profiles: None,
+            reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+            // Plan 513 — the controlled helper owns no discovery spine:
+            // the discovery step is inert and counted.
+            discovery: None,
         };
         let result = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -599,6 +845,19 @@ mod normal_daemon_owner_tests {
             )
             .shared(),
             shared_manager: None,
+            // Plan 505 — the controlled helper and the controlled lanes do
+            // not enable the exploratory build posture, so they own no
+            // driver.
+            exploratory_driver: None,
+            // Plan 506 — the controlled helper owns no bootstrap store and
+            // no peer-profile handle, so its reconcile has no source. The
+            // cadence is still bounded, so the step is inert and counted.
+            bootstrap: None,
+            peer_profiles: None,
+            reconcile_period_ms: crate::peer_reconcile::MIN_RECONCILE_PERIOD_MS,
+            // Plan 513 — the controlled helper owns no discovery spine:
+            // the discovery step is inert and counted.
+            discovery: None,
         };
         let router_infos = Vec::new();
         let mut product = ServiceProduct::start_over_existing_daemon(
@@ -875,6 +1134,46 @@ enum ServicePublicationError {
         rejection: PublicationBeginRejection,
         pending: usize,
     },
+    /// Plan 487 WP5 (Plan 393): a publication attempt failed in one of
+    /// the three classes that release the coordinator's publication
+    /// intent. The class is the failure's *stage*, not its cause, and
+    /// it is individually attributable.
+    Stage {
+        class: PublicationFailureClass,
+        /// The underlying product error, when the class carries one
+        /// (the compose class). Never error contents: the redaction
+        /// taxonomy classifies it.
+        product: Option<ServiceProductError>,
+        pending: usize,
+    },
+}
+
+/// Plan 487 WP5 (Plan 393): the publication attempt's failure classes.
+///
+/// Every class releases exactly one coordinator publication slot
+/// through `cancel_ls2_publication`, and the intent is reserved
+/// *before* the record is composed so that the first two classes have
+/// an intent to release.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationFailureClass {
+    /// The signed store record could not be obtained or composed.
+    Compose,
+    /// The outbound publication request could not be constructed: no
+    /// eligible floodfill, or a rejected record attachment.
+    RequestConstruction,
+    /// The composed publication could not be delivered.
+    Delivery,
+}
+
+impl PublicationFailureClass {
+    /// The redacted stage label used in the failure taxonomy.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Compose => "publication-compose",
+            Self::RequestConstruction => "publication-request-construction",
+            Self::Delivery => "publication-delivery",
+        }
+    }
 }
 
 impl From<ServiceProductError> for ServicePublicationError {
@@ -901,11 +1200,94 @@ impl From<crate::router_i2np::Ssu2ServiceError> for ServiceProductError {
     }
 }
 
+/// Plan 506 — builds the peer-knowledge reconcile over the three handles
+/// the product needs.
+///
+/// The reconcile is **one** bounded operation: it snapshots the
+/// bootstrap's validated RouterInfos under the bootstrap's lock, releases
+/// it, inserts the records into the destination store and learns them into
+/// the peer-profile store. An out-of-range cadence is a configuration
+/// error: the router does not run with a reconcile it cannot bound.
+///
+/// The production composition supplies the **existing** NetDB
+/// participation maintenance period, which the configuration parser has
+/// already bounded to the same range, so the refusal cannot fire on a
+/// configured router.
+fn build_peer_reconcile(
+    spec: &ServiceProductSpec,
+    destinations: &Arc<Mutex<DestinationTunnelCoordinator>>,
+) -> Result<crate::peer_reconcile::PeerReconcile, ServiceProductError> {
+    crate::peer_reconcile::PeerReconcile::new(
+        spec.bootstrap.clone(),
+        Arc::clone(destinations),
+        spec.peer_profiles.clone(),
+        spec.reconcile_period_ms,
+    )
+    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))
+}
+
 /// Inner composition state the helper owns but the driver never sees.
 struct ProductInner {
     coordinator: ExploratoryBuildCoordinator,
+    /// Plan 504 — the live owner of the creator-side tunnel-liveness
+    /// scheduler. The scheduler tracks the *exploratory* tunnel pairs
+    /// the coordinator installed and never a destination tunnel; it
+    /// owns no task and no timer, and the product tick drives it.
+    liveness: crate::tunnel_liveness::TunnelLivenessScheduler,
+    /// Plan 504 — the live counter cell the composition root
+    /// publishes into the inspection seam. The product refreshes it on
+    /// its tick; it holds counts only.
+    liveness_counters_cell: Arc<crate::i2pcontrol_inspection::LivenessCounterCell>,
+    /// Plan 505 — the live exploratory build driver. It names a peer
+    /// through Plan 491's version-gated selection, builds a one-hop
+    /// exploratory tunnel toward it, and records the outcome in the
+    /// peer-profile store. `None` means the operator has not enabled the
+    /// `[exploratory]` posture and the driver's path is inert.
+    exploratory_driver: Option<crate::exploratory_driver::ExploratoryDriver>,
+    /// Plan 505 — the live counter cell the composition root publishes
+    /// into the inspection seam. The product refreshes it on its tick; it
+    /// holds counts only.
+    exploratory_driver_counters_cell:
+        Arc<crate::i2pcontrol_inspection::ExploratoryDriverCounterCell>,
+    /// Plan 506 — the live peer-knowledge reconcile. It carries the
+    /// bootstrap's validated RouterInfos into the two stores the router
+    /// builds with: the destination coordinator's authoritative store and
+    /// the peer-profile store. It owns no task and no timer; the product
+    /// tick drives it on a bounded cadence.
+    peer_reconcile: Option<crate::peer_reconcile::PeerReconcile>,
+    /// Plan 506 — the live counter cell the composition root publishes
+    /// into the inspection seam. The product refreshes it on its tick; it
+    /// holds counts only.
+    peer_reconcile_counters_cell: Arc<crate::i2pcontrol_inspection::PeerReconcileCounterCell>,
     ssu2_handle: Ssu2DaemonHandle,
     destination_tunnels: Arc<Mutex<DestinationTunnelCoordinator>>,
+    /// Plan 513 — the live NetDB discovery spine.
+    ///
+    /// The spine owns no task, no timer, no listener and no socket: the
+    /// product's existing tick drives it.
+    discovery: Option<Arc<crate::netdb_participation::NetDbDiscoverySpine>>,
+    /// Plan 524 — the live owner of this router's relay-tag requests.
+    ///
+    /// The owner selects the peer to ask and records every outcome. It owns
+    /// no task, no timer, no listener and no socket: the product's tick
+    /// drives it. `None` means the operator has not enabled the request.
+    introducer_request: Option<crate::introducer_request::IntroducerRequestOwner>,
+    /// Plan 524 — the live counter cell the composition root publishes into
+    /// the inspection seam. The product refreshes it on its tick; it holds
+    /// counts only.
+    introducer_request_counters_cell:
+        Arc<crate::i2pcontrol_inspection::IntroducerRequestCounterCell>,
+    /// Plan 513 — the live bootstrap store the discovery spine writes a
+    /// resolved record into.
+    ///
+    /// The spine's RouterInfo-kind lookup inserts the signed record it
+    /// resolved into this store, so the peer an exploration named becomes
+    /// a peer the router can ask.
+    bootstrap: Option<Arc<std::sync::Mutex<crate::bootstrap::Bootstrap>>>,
+    /// Plan 503 — the live owner of the peer-eligibility receipts. The
+    /// destination coordinator records one receipt per live
+    /// peer-eligibility decision through this owner.
+    version_eligibility: Arc<crate::version_eligibility::VersionEligibilityOwner>,
     destination_ids: Vec<i2pr_client::DestinationId>,
     destination_runtimes: std::collections::HashMap<
         i2pr_client::DestinationId,
@@ -913,8 +1295,24 @@ struct ProductInner {
     >,
     sam_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
     sam_destination_slots: std::collections::HashMap<i2pr_client::DestinationId, Vec<TunnelSlot>>,
+    /// Plan 512 — the destination-role bindings, keyed by the
+    /// coordinator's destination-role slot.
+    ///
+    /// The liveness scheduler tracks the coordinator's slot while a
+    /// failure has to be applied to the destination runtime's pool
+    /// slot. The binding keeps the two together with the destination
+    /// that owns the tunnel, so a failure is routed to the destination
+    /// that owns the failing inbound and never to another one.
+    destination_role_bindings: std::collections::BTreeMap<TunnelSlot, DestinationRoleBinding>,
+    /// Plan 512 — the destination-role liveness counters.
+    destination_liveness: DestinationLivenessCounters,
     deferred_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
     deferred_activation_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
+    /// Plan 487 WP4 — destinations whose last lease-set refresh failed.
+    /// The entry is the last failure reason; it is removed as soon as a
+    /// later refresh succeeds. The map is bounded by the number of
+    /// destinations the product owns.
+    lease_refresh_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
     deferred_activation_requests: mpsc::Receiver<DeferredActivationRequest>,
     destination_build_progress:
         std::collections::HashMap<i2pr_client::DestinationId, DestinationBuildProgress>,
@@ -1065,6 +1463,182 @@ mod startup_inbound_replay_tests {
     }
 }
 
+/// Plan 512 — hard ceiling on the destination-role bindings the product
+/// holds.
+///
+/// Each binding is one installed destination tunnel, so the ceiling is a
+/// bound on the product's own destination-tunnel population. A binding
+/// beyond the ceiling is refused and counted, never silently dropped.
+pub const MAX_DESTINATION_ROLE_BINDINGS: usize = 256;
+
+/// Plan 512 — one installed destination-role tunnel's binding.
+///
+/// The coordinator allocates the destination-role slot and the
+/// destination runtime allocates the pool slot. The liveness scheduler
+/// tracks the coordinator's slot, while a failure has to be applied to
+/// the destination runtime's pool slot, so the two are kept together
+/// here together with the destination that owns the tunnel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DestinationRoleBinding {
+    /// The destination that owns the tunnel.
+    pub destination_id: i2pr_client::DestinationId,
+    /// The destination runtime's pool slot for this tunnel.
+    pub pool_slot: TunnelSlot,
+    /// The direction the tunnel was built in.
+    pub direction: BuildDirection,
+    /// The local endpoint receive id, for an inbound role.
+    pub local_receive_tunnel: Option<TunnelId>,
+}
+
+/// Plan 512 — one destination-role liveness pair.
+///
+/// The pair is the destination's **outbound** role, which carries the
+/// probe out, and the destination's **inbound** role, which carries the
+/// answer back. The local receive id is the shared registry's key for
+/// the inbound role's typed gateway route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DestinationLivenessPair {
+    /// The coordinator's destination-role outbound slot.
+    pub outbound_slot: TunnelSlot,
+    /// The coordinator's destination-role inbound slot.
+    pub inbound_slot: TunnelSlot,
+    /// The local endpoint receive id of the inbound role.
+    pub local_receive_tunnel: TunnelId,
+}
+
+/// Plan 512 — the decision the destination liveness failure arm makes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DestinationLivenessFailureDecision {
+    /// The failing inbound slot carries no destination-role binding, so
+    /// the failure belongs to another population.
+    Unbound,
+    /// The destination holds a single inbound tunnel. Failing it would
+    /// leave the destination with no path and no advertisement, so the
+    /// reference's "don't fail last tunnel" rule refuses the failure.
+    LastTunnelRefused,
+    /// The named pool slot must be failed.
+    Fail {
+        /// The destination runtime's pool slot to fail.
+        pool_slot: TunnelSlot,
+    },
+}
+
+/// Plan 512 — forms the destination-role liveness pairs.
+///
+/// The pairs are formed **within one destination**: the destination's
+/// outbound role carries the probe out and the same destination's
+/// inbound role carries the answer back. Pairing across destinations
+/// would let one destination's dead outbound fail another
+/// destination's inbound, which is a false failure this plan must not
+/// produce.
+///
+/// The function is pure and total. The result is sorted, so the
+/// population is stable across ticks, and it is bounded by the number
+/// of bindings the product holds.
+pub fn destination_liveness_pairs(
+    bindings: &std::collections::BTreeMap<TunnelSlot, DestinationRoleBinding>,
+) -> Vec<DestinationLivenessPair> {
+    let mut outbounds: std::collections::HashMap<i2pr_client::DestinationId, Vec<TunnelSlot>> =
+        std::collections::HashMap::new();
+    let mut inbounds: std::collections::HashMap<
+        i2pr_client::DestinationId,
+        Vec<(TunnelSlot, TunnelId)>,
+    > = std::collections::HashMap::new();
+    for (role_slot, binding) in bindings {
+        match binding.direction {
+            BuildDirection::Outbound => outbounds
+                .entry(binding.destination_id)
+                .or_default()
+                .push(*role_slot),
+            BuildDirection::Inbound => {
+                let Some(local_receive) = binding.local_receive_tunnel else {
+                    continue;
+                };
+                inbounds
+                    .entry(binding.destination_id)
+                    .or_default()
+                    .push((*role_slot, local_receive));
+            }
+        }
+    }
+    let mut pairs = Vec::new();
+    for (destination_id, mut outbound_slots) in outbounds {
+        outbound_slots.sort_unstable();
+        let Some(mut inbound_entries) = inbounds.remove(&destination_id) else {
+            continue;
+        };
+        inbound_entries.sort_unstable();
+        for (outbound_slot, (inbound_slot, local_receive_tunnel)) in
+            outbound_slots.into_iter().zip(inbound_entries)
+        {
+            pairs.push(DestinationLivenessPair {
+                outbound_slot,
+                inbound_slot,
+                local_receive_tunnel,
+            });
+        }
+    }
+    pairs.sort_unstable_by_key(|pair| (pair.outbound_slot, pair.inbound_slot));
+    pairs
+}
+
+/// Plan 512 — decides what a destination liveness failure must do.
+///
+/// The decision is pure so the rule can be proved on its own surface.
+/// The last-tunnel rule is the reference's rule (i2pd 2.61.0,
+/// `libi2pd/TunnelPool.cpp:360` — *"don't fail last tunnel"*): a
+/// destination that holds a single inbound tunnel is not failed,
+/// because failing it would leave the destination with no path and no
+/// advertisement.
+pub fn destination_liveness_failure_decision(
+    binding: Option<&DestinationRoleBinding>,
+    inbound_len: usize,
+) -> DestinationLivenessFailureDecision {
+    let Some(binding) = binding else {
+        return DestinationLivenessFailureDecision::Unbound;
+    };
+    if inbound_len <= 1 {
+        return DestinationLivenessFailureDecision::LastTunnelRefused;
+    }
+    DestinationLivenessFailureDecision::Fail {
+        pool_slot: binding.pool_slot,
+    }
+}
+
+/// Plan 512 — bounded, secret-free counters for the destination-role
+/// liveness arm.
+///
+/// The counters name no peer, no tunnel, no address and no payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DestinationLivenessCounters {
+    /// Destination-role pairs the scheduler currently tracks.
+    pub tracked_pairs: usize,
+    /// Destination-role bindings the product holds.
+    pub bindings: usize,
+    /// Destination-role liveness failures applied to a destination's
+    /// inbound tunnel.
+    pub failures_applied: u64,
+    /// Failures refused because the destination held a single inbound
+    /// tunnel. The refusal is counted, never silent.
+    pub last_tunnel_refusals: u64,
+    /// Failures that found no binding for the failing inbound slot.
+    pub binding_misses: u64,
+    /// Bindings refused because the product's binding table was full.
+    pub binding_refusals: u64,
+    /// Failures refused because the destination runtime was gone.
+    pub runtime_missing: u64,
+}
+
+/// Plan 512 — the outcome of applying a destination liveness failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DestinationLivenessFailureOutcome {
+    /// The destination holds a single inbound tunnel, so the failure
+    /// was refused.
+    LastTunnelRefused,
+    /// The failing inbound slot carried no destination-role binding.
+    Unbound,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ActivatedDestinationBinding {
     pool_slot: i2pr_tunnel::pool::TunnelSlot,
@@ -1120,6 +1694,11 @@ pub struct LeasePublicationSnapshot {
     pub begin_rejected_invalid_record: u64,
     pub begin_rejected_other: u64,
     pub coordinator_pending_publications: usize,
+    /// Plan 487 WP4 — destinations whose last lease-set refresh failed.
+    /// A refresh failure is destination-scoped: it degrades that
+    /// destination and is retried on the next tick. It never fails the
+    /// router's SSU2 service.
+    pub lease_refresh_failures: usize,
 }
 
 /// Saturating transaction-boundary counters for the inbound SSU2 →
@@ -1132,6 +1711,15 @@ pub struct InboundTrafficSnapshot {
     pub complete_garlic_envelopes: u64,
     pub service_owner_matches: u64,
     pub service_owner_misses: u64,
+    /// Plan 478 owner-miss taxonomy: the miss split by where the
+    /// receive tunnel id pointed (live destination role without an
+    /// owner, own exploratory pool endpoint, retired service
+    /// generation, never-known). Mirrored into the manager per class
+    /// so SAM can report it on CONNECT timeout.
+    pub service_owner_miss_service_unowned: u64,
+    pub service_owner_miss_exploratory: u64,
+    pub service_owner_miss_retired: u64,
+    pub service_owner_miss_unknown: u64,
     pub service_dispatch_errors: u64,
     pub service_garlic_authenticated: u64,
     pub service_garlic_rejected: u64,
@@ -1158,6 +1746,12 @@ pub struct InboundTrafficSnapshot {
     pub service_other_garlic_rejected: u64,
     pub service_payloads_dequeued: u64,
     pub service_streaming_rejected: u64,
+    /// Inbound SYN-response (SYN-ACK) packets the target Streaming
+    /// manager classified while draining this product's Garlic
+    /// traffic (arrival count, Plan 478 handshake attribution).
+    pub service_synack_observed: u64,
+    /// Of those, how many transitioned an outbound connection.
+    pub service_synack_accepted: u64,
     pub direct_garlic_received: u64,
     pub streaming_packets_accepted: u64,
 }
@@ -1184,6 +1778,18 @@ impl InboundTrafficSnapshot {
             service_owner_misses: self
                 .service_owner_misses
                 .saturating_sub(earlier.service_owner_misses),
+            service_owner_miss_service_unowned: self
+                .service_owner_miss_service_unowned
+                .saturating_sub(earlier.service_owner_miss_service_unowned),
+            service_owner_miss_exploratory: self
+                .service_owner_miss_exploratory
+                .saturating_sub(earlier.service_owner_miss_exploratory),
+            service_owner_miss_retired: self
+                .service_owner_miss_retired
+                .saturating_sub(earlier.service_owner_miss_retired),
+            service_owner_miss_unknown: self
+                .service_owner_miss_unknown
+                .saturating_sub(earlier.service_owner_miss_unknown),
             service_dispatch_errors: self
                 .service_dispatch_errors
                 .saturating_sub(earlier.service_dispatch_errors),
@@ -1263,6 +1869,12 @@ impl InboundTrafficSnapshot {
             service_streaming_rejected: self
                 .service_streaming_rejected
                 .saturating_sub(earlier.service_streaming_rejected),
+            service_synack_observed: self
+                .service_synack_observed
+                .saturating_sub(earlier.service_synack_observed),
+            service_synack_accepted: self
+                .service_synack_accepted
+                .saturating_sub(earlier.service_synack_accepted),
             direct_garlic_received: self
                 .direct_garlic_received
                 .saturating_sub(earlier.direct_garlic_received),
@@ -1282,12 +1894,17 @@ mod inbound_traffic_snapshot_tests {
         let earlier = InboundTrafficSnapshot {
             tunnel_data_received: 4,
             service_owner_misses: 2,
+            service_owner_miss_retired: 1,
             streaming_packets_accepted: u64::MAX,
             ..InboundTrafficSnapshot::default()
         };
         let later = InboundTrafficSnapshot {
             tunnel_data_received: 9,
             service_owner_misses: 1,
+            service_owner_miss_service_unowned: 1,
+            service_owner_miss_exploratory: 2,
+            service_owner_miss_retired: 3,
+            service_owner_miss_unknown: 1,
             streaming_packets_accepted: 3,
             ..InboundTrafficSnapshot::default()
         };
@@ -1296,6 +1913,10 @@ mod inbound_traffic_snapshot_tests {
             InboundTrafficSnapshot {
                 tunnel_data_received: 5,
                 service_owner_misses: 0,
+                service_owner_miss_service_unowned: 1,
+                service_owner_miss_exploratory: 2,
+                service_owner_miss_retired: 2,
+                service_owner_miss_unknown: 1,
                 streaming_packets_accepted: 0,
                 ..InboundTrafficSnapshot::default()
             }
@@ -1379,6 +2000,15 @@ struct DestinationBuildProgress {
     post_activation_bridge_state_missing: u64,
     post_activation_bridge_duplicate_receive: u64,
     post_activation_inbound_installed: u64,
+    /// Wall-clock millisecond of the last replenishment notice emitted
+    /// for this destination. Plan 487 WP4 — a destination build
+    /// submission that fails is a *visible* receipt, not a silent
+    /// counter: the live qualification could not tell "nothing was due"
+    /// from "the replacement was due and could not be submitted"
+    /// without it. The notice is rate-limited to one per 30 s per
+    /// destination so a permanently failing destination cannot flood
+    /// the log.
+    last_replenishment_notice_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1412,7 +2042,9 @@ fn classify_publication_failure(error: &ServiceProductError) -> LeasePublication
     };
     if detail.contains("LS2 missing") {
         LeasePublicationFailureStage::MissingLeaseSet
-    } else if detail.contains("type-5 record construction") {
+    } else if detail.contains("type-5 record construction")
+        || detail.contains("publication store envelope")
+    {
         LeasePublicationFailureStage::StoreConstruction
     } else if detail.contains("no floodfill") {
         LeasePublicationFailureStage::FloodfillSelection
@@ -1420,7 +2052,10 @@ fn classify_publication_failure(error: &ServiceProductError) -> LeasePublication
         LeasePublicationFailureStage::PublicationCoordination
     } else if detail.contains("publication compose") {
         LeasePublicationFailureStage::TunnelComposition
-    } else if detail.contains("publication transport") || detail.contains("publication delivery") {
+    } else if detail.contains("publication transport")
+        || detail.contains("publication delivery")
+        || detail.contains("publication session")
+    {
         LeasePublicationFailureStage::DeliveryAdmission
     } else {
         LeasePublicationFailureStage::Other
@@ -1491,6 +2126,71 @@ mod destination_replenishment_tests {
         );
         assert_eq!(destination_replenishment_order(6, 6, 13).len(), 12);
         assert!(destination_replenishment_order(6, 6, 13).len() <= 12);
+    }
+}
+
+/// Plan 478 local-id translation: the refresh/eviction lists carry
+/// the data-plane endpoint ids, never pool registration (creator)
+/// ids. Inversion probe: mapping from `registration.tunnel_id()`
+/// instead of the locals table fails the mismatch case (probe
+/// reverted, zero markers).
+#[cfg(test)]
+mod local_inbound_receive_id_tests {
+    use super::TunnelSlot;
+    use super::local_inbound_receive_ids;
+    use i2pr_proto::Hash;
+    use i2pr_tunnel::{TunnelDirection, TunnelId, TunnelPeer, TunnelRegistration, TunnelState};
+    use std::collections::HashSet;
+
+    fn registration(slot: u32, creator_id: u32) -> TunnelRegistration {
+        TunnelRegistration::new(
+            TunnelSlot::from_raw(slot),
+            TunnelId::new(creator_id).expect("nonzero creator id"),
+            TunnelDirection::Inbound,
+            TunnelState::Established,
+            vec![TunnelPeer::from_hash(Hash::from_bytes([0x11; 32]))],
+            1_000,
+        )
+        .expect("registration")
+    }
+
+    #[test]
+    fn live_registrations_translate_to_local_ids_and_skip_evicted() {
+        let registrations = vec![registration(1, 0xC001), registration(2, 0xC002)];
+        let locals = vec![
+            (TunnelSlot::from_raw(1), 0xA001),
+            (TunnelSlot::from_raw(2), 0xA002),
+        ];
+        let none = HashSet::new();
+        assert_eq!(
+            local_inbound_receive_ids(&registrations, &locals, &none),
+            Some(vec![0xA001, 0xA002])
+        );
+        // Evicted slots leave the list even when translated.
+        let evicted: HashSet<TunnelSlot> = HashSet::from([TunnelSlot::from_raw(1)]);
+        assert_eq!(
+            local_inbound_receive_ids(&registrations, &locals, &evicted),
+            Some(vec![0xA002])
+        );
+    }
+
+    #[test]
+    fn missing_translation_fails_closed_instead_of_partial_list() {
+        let registrations = vec![registration(1, 0xC001), registration(2, 0xC002)];
+        // Slot 2 has no local translation: no partial list.
+        let locals = vec![(TunnelSlot::from_raw(1), 0xA001)];
+        let none = HashSet::new();
+        assert_eq!(
+            local_inbound_receive_ids(&registrations, &locals, &none),
+            None
+        );
+        // The creator ids must never leak into the list: with no
+        // translations at all the answer is None, not creators.
+        let empty: Vec<(TunnelSlot, u32)> = Vec::new();
+        assert_eq!(
+            local_inbound_receive_ids(&registrations, &empty, &none),
+            None
+        );
     }
 }
 
@@ -1793,14 +2493,38 @@ impl ServiceProduct {
         // exploratory coordinator, one authoritative NetDB store —
         // services consume typed handles/material, never owned
         // transports (Plan 212 §4).
-        let destination_tunnels = Arc::new(Mutex::new(DestinationTunnelCoordinator::new(
-            LookupPolicy::default(),
-            RouterInfoStoreConfig::default(),
-        )));
-        let mut coordinator = ExploratoryBuildCoordinator::new_with_service_destination_capacity(
-            ExploratoryPoolConfig::balanced(),
-        );
+        // Plan 503: the live owner of the peer-eligibility receipts. The
+        // destination coordinator records one receipt per live
+        // peer-eligibility decision through it, so the running router's
+        // decisions are observable.
+        let version_eligibility =
+            Arc::new(crate::version_eligibility::VersionEligibilityOwner::new(
+                crate::version_eligibility::MAX_VERSION_ELIGIBILITY_RECEIPTS,
+            ));
+        let destination_tunnels = Arc::new(Mutex::new(
+            DestinationTunnelCoordinator::new(
+                LookupPolicy::default(),
+                RouterInfoStoreConfig::default(),
+            )
+            .with_version_eligibility(Arc::clone(&version_eligibility)),
+        ));
+        // Plan 506 — the peer-knowledge reconcile. It carries the
+        // bootstrap's validated RouterInfos into the two stores the router
+        // builds with, so a peer the router accepts on a live session is
+        // not remembered by the bootstrap alone.
+        let peer_reconcile = build_peer_reconcile(&spec, &destination_tunnels)?;
+        let mut coordinator =
+            ExploratoryBuildCoordinator::try_new_with_service_destination_capacity(
+                ExploratoryPoolConfig::balanced(),
+            )
+            .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
         coordinator.advance_time(wall_ms());
+        // Plan 504 — the live owner of the creator-side tunnel-liveness
+        // scheduler. The same bounded defaults Plan 185 fixed, so the
+        // live policy and the tested policy are one.
+        let mut liveness = crate::tunnel_liveness::TunnelLivenessScheduler::new(
+            crate::tunnel_liveness::LivenessConfig::plan_185_defaults(),
+        );
 
         // Plan 212 §8 — router bootstrap only (no application
         // LeaseSet2 lookup). Application lookup is per-service
@@ -1916,7 +2640,7 @@ impl ServiceProduct {
         // traffic. When no reference peer is configured (local
         // product) this is a no-op and supervisors start
         // immediately.
-        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(0x51A7_9300);
+        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::os_seeded()?;
         let mut startup_inbound = VecDeque::new();
         let mut startup_inbound_bytes = 0;
         let readiness = if router_bootstrap.is_some() && !deferred_destination_ids.is_empty() {
@@ -1941,6 +2665,7 @@ impl ServiceProduct {
             && let Err(error) = provision_all_service_router_material(
                 &manager,
                 &mut coordinator,
+                &mut liveness,
                 &destination_tunnels,
                 &mut ssu2_handle,
                 &peer,
@@ -1976,14 +2701,44 @@ impl ServiceProduct {
             manager,
             inner: ProductInner {
                 coordinator,
+                liveness,
+                liveness_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::tunnel_liveness::LivenessCounters::default(),
+                )),
+                exploratory_driver: spec.exploratory_driver,
+                exploratory_driver_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::exploratory_driver::ExploratoryDriverCounters::default(),
+                )),
+                // Plan 513 — the live NetDB discovery spine. The product's
+                // tick drives it: it refreshes the inbound exploratory
+                // tunnel's reply path and delivers the composed request.
+                discovery: spec.discovery,
+                // Plan 513 — the live bootstrap store a resolved record is
+                // written into.
+                bootstrap: spec.bootstrap.clone(),
+                peer_reconcile: Some(peer_reconcile),
+                peer_reconcile_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::peer_reconcile::PeerReconcileCounters::default(),
+                )),
+                // Plan 524 — the router's relay-tag requests. The owner is
+                // installed only when the operator enabled it, so a default
+                // router has no owner and the tick's step costs nothing.
+                introducer_request: build_introducer_request_owner(spec.options.introducer_request),
+                introducer_request_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::introducer_request::IntroducerRequestCounters::default(),
+                )),
                 ssu2_handle,
                 destination_tunnels,
+                version_eligibility,
                 destination_ids,
                 destination_runtimes,
                 sam_destination_ids: std::collections::HashSet::new(),
                 sam_destination_slots: std::collections::HashMap::new(),
+                destination_role_bindings: std::collections::BTreeMap::new(),
+                destination_liveness: DestinationLivenessCounters::default(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
+                lease_refresh_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
                 destination_build_progress: std::collections::HashMap::new(),
                 service_generation_id,
@@ -2052,10 +2807,23 @@ impl ServiceProduct {
                 )));
             }
         };
-        let destination_tunnels = Arc::new(Mutex::new(DestinationTunnelCoordinator::new(
-            LookupPolicy::default(),
-            store_config,
-        )));
+        // Plan 503: the live owner of the peer-eligibility receipts. The
+        // destination coordinator records one receipt per live
+        // peer-eligibility decision through it, so the running router's
+        // decisions are observable.
+        let version_eligibility =
+            Arc::new(crate::version_eligibility::VersionEligibilityOwner::new(
+                crate::version_eligibility::MAX_VERSION_ELIGIBILITY_RECEIPTS,
+            ));
+        let destination_tunnels = Arc::new(Mutex::new(
+            DestinationTunnelCoordinator::new(LookupPolicy::default(), store_config)
+                .with_version_eligibility(Arc::clone(&version_eligibility)),
+        ));
+        // Plan 506 — the peer-knowledge reconcile. It carries the
+        // bootstrap's validated RouterInfos into the two stores the router
+        // builds with, so a peer the router accepts on a live session is
+        // not remembered by the bootstrap alone.
+        let peer_reconcile = build_peer_reconcile(&spec, &destination_tunnels)?;
         let mut seed_failed = false;
         {
             let mut guard = destination_tunnels.lock().await;
@@ -2081,10 +2849,18 @@ impl ServiceProduct {
                 "validated bootstrap snapshot could not seed the bounded group store".to_owned(),
             ));
         }
-        let mut coordinator = ExploratoryBuildCoordinator::new_with_service_destination_capacity(
-            ExploratoryPoolConfig::balanced(),
-        );
+        let mut coordinator =
+            ExploratoryBuildCoordinator::try_new_with_service_destination_capacity(
+                ExploratoryPoolConfig::balanced(),
+            )
+            .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
         coordinator.advance_time(wall_ms());
+        // Plan 504 — the live owner of the creator-side tunnel-liveness
+        // scheduler. The same bounded defaults Plan 185 fixed, so the
+        // live policy and the tested policy are one.
+        let mut liveness = crate::tunnel_liveness::TunnelLivenessScheduler::new(
+            crate::tunnel_liveness::LivenessConfig::plan_185_defaults(),
+        );
         let backend = Arc::new(RemoteDestinationBackend::new(
             Arc::clone(&destination_tunnels),
             ssu2_handle.delivery().clone(),
@@ -2148,7 +2924,7 @@ impl ServiceProduct {
                 destination_ids.push(runtime.destination_id);
             }
         }
-        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(0x51A7_9300);
+        let mut tunnel_id_allocator = Plan212TunnelIdAllocator::os_seeded()?;
         let mut startup_inbound = VecDeque::new();
         let mut startup_inbound_bytes = 0;
         let peer = RouterBootstrapMaterial {
@@ -2162,6 +2938,7 @@ impl ServiceProduct {
         if let Err(error) = provision_all_service_router_material(
             &manager,
             &mut coordinator,
+            &mut liveness,
             &destination_tunnels,
             &mut ssu2_handle,
             &peer,
@@ -2206,14 +2983,44 @@ impl ServiceProduct {
             manager,
             inner: ProductInner {
                 coordinator,
+                liveness,
+                liveness_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::tunnel_liveness::LivenessCounters::default(),
+                )),
+                exploratory_driver: spec.exploratory_driver,
+                exploratory_driver_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::exploratory_driver::ExploratoryDriverCounters::default(),
+                )),
+                // Plan 513 — the live NetDB discovery spine. The product's
+                // tick drives it: it refreshes the inbound exploratory
+                // tunnel's reply path and delivers the composed request.
+                discovery: spec.discovery,
+                // Plan 513 — the live bootstrap store a resolved record is
+                // written into.
+                bootstrap: spec.bootstrap.clone(),
+                peer_reconcile: Some(peer_reconcile),
+                peer_reconcile_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::peer_reconcile::PeerReconcileCounters::default(),
+                )),
+                // Plan 524 — the router's relay-tag requests. The owner is
+                // installed only when the operator enabled it, so a default
+                // router has no owner and the tick's step costs nothing.
+                introducer_request: build_introducer_request_owner(spec.options.introducer_request),
+                introducer_request_counters_cell: Arc::new(std::sync::Mutex::new(
+                    crate::introducer_request::IntroducerRequestCounters::default(),
+                )),
                 ssu2_handle,
                 destination_tunnels,
+                version_eligibility,
                 destination_ids,
                 destination_runtimes,
                 sam_destination_ids: std::collections::HashSet::new(),
                 sam_destination_slots: std::collections::HashMap::new(),
+                destination_role_bindings: std::collections::BTreeMap::new(),
+                destination_liveness: DestinationLivenessCounters::default(),
                 deferred_destination_ids,
                 deferred_activation_failures: std::collections::HashMap::new(),
+                lease_refresh_failures: std::collections::HashMap::new(),
                 deferred_activation_requests,
                 destination_build_progress: std::collections::HashMap::new(),
                 service_generation_id,
@@ -2329,6 +3136,17 @@ impl ServiceProduct {
         self.inner.inbound_traffic
     }
 
+    /// Returns the live peer-eligibility receipt owner (Plan 503).
+    ///
+    /// The destination coordinator records one receipt per live
+    /// peer-eligibility decision — the tunnel-build gate and the DSM-target
+    /// gate — so a caller that holds this handle can read the running
+    /// router's decisions. The receipts carry counts and stable reason
+    /// labels only: no peer hash, address, key, version string, or payload.
+    pub fn version_eligibility(&self) -> Arc<crate::version_eligibility::VersionEligibilityOwner> {
+        Arc::clone(&self.inner.version_eligibility)
+    }
+
     /// Returns the manager's typed inbound-orphan-receive count
     /// (Plan 210 §F). The counter advances only when a recovered
     /// Garlic envelope arrives on a receive TunnelId with no
@@ -2401,7 +3219,16 @@ impl ServiceProduct {
             begin_rejected_invalid_record: self.inner.publication_begin_rejected_invalid_record,
             begin_rejected_other: self.inner.publication_begin_rejected_other,
             coordinator_pending_publications: self.inner.publication_coordinator_pending,
+            lease_refresh_failures: self.inner.lease_refresh_failures.len(),
         }
+    }
+
+    /// Plan 512 — secret-free counters for the destination-role liveness
+    /// arm.
+    ///
+    /// The counters name no peer, no tunnel, no address and no payload.
+    pub fn destination_liveness_snapshot(&self) -> DestinationLivenessCounters {
+        self.inner.destination_liveness
     }
 
     /// Returns bounded, secret-free pool readiness counts for one service.
@@ -2621,6 +3448,11 @@ impl ServiceProduct {
         self.inner
             .destination_build_progress
             .remove(&destination_id);
+        // Plan 512 — the destination's bindings go with it, so a stale
+        // binding can never fail a tunnel that has already gone.
+        self.inner
+            .destination_role_bindings
+            .retain(|_, binding| binding.destination_id != destination_id);
         self.inner
             .destination_ids
             .retain(|id| *id != destination_id);
@@ -2691,6 +3523,7 @@ impl ServiceProduct {
         let result = provision_all_service_router_material(
             &self.manager,
             &mut self.inner.coordinator,
+            &mut self.inner.liveness,
             &self.inner.destination_tunnels,
             &mut self.inner.ssu2_handle,
             &peer,
@@ -2715,9 +3548,36 @@ impl ServiceProduct {
                         &mut self.inner.ssu2_handle,
                         destination_id,
                         self.inner.options,
+                        &self.token,
                     )
                     .await
                     .map_err(|error| {
+                        // Redacted static reason (never error
+                        // contents): the failure-stage taxonomy
+                        // already classifies product errors without
+                        // identities.
+                        let publication_failure_stage: &'static str = match &error {
+                            ServicePublicationError::Begin { rejection, .. } => match rejection {
+                                PublicationBeginRejection::Capacity => "begin-capacity",
+                                PublicationBeginRejection::NoEligibleFloodfill => {
+                                    "begin-no-floodfill"
+                                }
+                                PublicationBeginRejection::InvalidRecord => "begin-invalid-record",
+                                PublicationBeginRejection::Other => "begin-other",
+                            },
+                            ServicePublicationError::Product(inner) => {
+                                classify_publication_failure(inner).label()
+                            }
+                            ServicePublicationError::Stage {
+                                product: Some(inner),
+                                ..
+                            } => classify_publication_failure(inner).label(),
+                            ServicePublicationError::Stage { class, .. } => class.label(),
+                        };
+                        tracing::warn!(
+                            publication_failure_stage,
+                            "SAM destination LS2 publication failed"
+                        );
                         ServiceProductError::Provisioning(format!(
                             "SAM destination LS2 publication failed: {error:?}"
                         ))
@@ -2771,6 +3631,1015 @@ impl ServiceProduct {
     /// dispatch services such as floodfill evaluation.
     pub(crate) const fn ssu2_handle(&self) -> &Ssu2DaemonHandle {
         &self.inner.ssu2_handle
+    }
+
+    /// Plan 502: the router's own pending build-reply facts, as the
+    /// `(peer, message_id)` pairs the transit owner's creator correlation
+    /// must bypass.
+    ///
+    /// The peer is the attempt's target peer — the same key the build
+    /// coordinator matches an inbound reply against — so the transit
+    /// owner can never claim the router's own build replies as transit
+    /// work.
+    pub(crate) fn transit_creator_builds(&self) -> Vec<(PeerId, u32)> {
+        self.inner.coordinator.reserved_creator_builds()
+    }
+
+    /// Plan 502: the tunnel ids the router owns as creator/service. The
+    /// transit owner must bypass them so the router's own tunnel traffic
+    /// is never claimed as transit work.
+    pub(crate) fn transit_creator_tunnel_ids(&self) -> Vec<u32> {
+        self.inner.coordinator.reserved_tunnel_ids()
+    }
+
+    /// Plan 498: pulls the next authenticated inbound relay block without
+    /// waiting.
+    ///
+    /// The runtime's relay handoff is a second bounded channel beside the
+    /// I2NP handoff. The qualification path drains it into the introducer
+    /// (Bob) role owner exactly as the daemon's live inbound loop does.
+    pub(crate) fn try_next_relay_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundRelay> {
+        self.inner.ssu2_handle.try_next_relay_event()
+    }
+
+    /// Plan 531 -- pulls the next inbound requester event without waiting.
+    ///
+    /// The requester's events have their own bounded handoff beside the
+    /// relay handoff: a Relay Response that correlates with one of the
+    /// router's own live relay requests, and an out-of-session
+    /// HolePunch.
+    pub(crate) fn try_next_requester_event(
+        &mut self,
+    ) -> Option<i2pr_runtime::Ssu2InboundRequesterEvent> {
+        self.inner.ssu2_handle.try_next_requester_event()
+    }
+
+    /// Receives the next inbound target event without waiting (Plan 532).
+    pub(crate) fn try_next_target_event(&mut self) -> Option<i2pr_runtime::Ssu2InboundTarget> {
+        self.inner.ssu2_handle.try_next_target_event()
+    }
+
+    /// Plan 504 — drives the creator-side tunnel-liveness scheduler on
+    /// the product tick.
+    ///
+    /// The scheduler owns the *exploratory* pairs the coordinator
+    /// installed. The tick:
+    ///
+    /// 1. syncs the pair table with the coordinator — new exploratory
+    ///    pairs are registered, pairs that went away are unregistered
+    ///    (an unregister drops the pair's pending tests **without**
+    ///    counting them as failures);
+    /// 2. drives the scheduler and acts on at most
+    ///    [`MAX_LIVENESS_DRIVES_PER_TICK`] actions, so one tick can
+    ///    never become an unbounded burst;
+    /// 3. publishes the counters so the router's liveness posture is
+    ///    observable.
+    ///
+    /// No task, no timer, no listener and no socket is added: the
+    /// scheduler is a plain value the tick advances.
+    async fn drive_tunnel_liveness(&mut self, now_ms: u64) {
+        self.sync_liveness_pairs();
+        self.inner.liveness.advance_time(now_ms);
+        for _ in 0..MAX_LIVENESS_DRIVES_PER_TICK {
+            match self.inner.liveness.drive() {
+                crate::tunnel_liveness::LivenessAction::SendTest {
+                    outbound_slot,
+                    inbound_slot,
+                    test_id,
+                    probe_message_id,
+                } => {
+                    tracing::debug!(
+                        test_id = test_id.get(),
+                        transition = "liveness_probe_due",
+                        "emitting tunnel liveness probe"
+                    );
+                    self.emit_liveness_probe(
+                        outbound_slot,
+                        inbound_slot,
+                        test_id,
+                        probe_message_id,
+                        now_ms,
+                    );
+                }
+                crate::tunnel_liveness::LivenessAction::MarkUnhealthy {
+                    outbound_slot,
+                    inbound_slot,
+                    consecutive_failures,
+                } => {
+                    // Plan 512 — a destination-role pair's failure is
+                    // routed to the destination that owns the failing
+                    // inbound tunnel. The exploratory arm is unchanged.
+                    if self
+                        .inner
+                        .destination_role_bindings
+                        .contains_key(&inbound_slot)
+                    {
+                        tracing::warn!(
+                            transition = "destination_liveness_pair_unhealthy",
+                            consecutive_failures,
+                            "failing the unhealthy destination inbound tunnel"
+                        );
+                        self.fail_destination_liveness_pair(outbound_slot, inbound_slot)
+                            .await;
+                    } else {
+                        tracing::warn!(
+                            transition = "liveness_pair_unhealthy",
+                            consecutive_failures,
+                            "removing the unhealthy exploratory tunnel pair"
+                        );
+                        self.remove_liveness_pair(outbound_slot, inbound_slot).await;
+                    }
+                }
+                crate::tunnel_liveness::LivenessAction::Idle { .. } => break,
+            }
+        }
+        self.publish_liveness_counters();
+    }
+
+    /// Plan 504 — registers the coordinator's installed exploratory
+    /// pairs with the liveness scheduler and unregisters the pairs
+    /// that went away.
+    fn sync_liveness_pairs(&mut self) {
+        let installed = self.inner.coordinator.exploratory_liveness_pairs();
+        // Plan 512 — the destination role is a second population. The
+        // two populations never share an outbound slot: the
+        // exploratory pool allocates upward from zero and the
+        // destination role upward from `DESTINATION_ROLE_SLOT_BASE`.
+        let destination_pairs = destination_liveness_pairs(&self.inner.destination_role_bindings);
+        let installed_outbound: std::collections::HashSet<TunnelSlot> = installed
+            .iter()
+            .map(|(outbound, _)| *outbound)
+            .chain(destination_pairs.iter().map(|pair| pair.outbound_slot))
+            .collect();
+        for outbound in self.inner.liveness.tracked_outbound_slots() {
+            if !installed_outbound.contains(&outbound) {
+                // Unregistering drops the pair's pending tests without
+                // counting a failure.
+                self.inner.liveness.unregister_pair(outbound);
+            }
+        }
+        for (outbound, inbound) in installed {
+            if let Err(error) = self.inner.liveness.register_pair(outbound, inbound) {
+                tracing::debug!(
+                    transition = "liveness_pair_not_tracked",
+                    reason = %error,
+                    "the liveness pair ceiling rejected an exploratory pair"
+                );
+            }
+        }
+        for pair in &destination_pairs {
+            // A tracked pair whose inbound no longer matches the
+            // installed pairing is stale: it would probe a tunnel that
+            // is gone. Unregistering drops the pair's pending tests
+            // without counting a failure.
+            let stale = self
+                .inner
+                .liveness
+                .inbound_slot_for(pair.outbound_slot)
+                .is_some_and(|current| current != pair.inbound_slot);
+            if stale {
+                self.inner.liveness.unregister_pair(pair.outbound_slot);
+            }
+            if let Err(error) = self
+                .inner
+                .liveness
+                .register_pair(pair.outbound_slot, pair.inbound_slot)
+            {
+                tracing::debug!(
+                    transition = "liveness_pair_not_tracked",
+                    reason = %error,
+                    "the liveness pair ceiling rejected a destination pair"
+                );
+            }
+        }
+        self.inner.destination_liveness.tracked_pairs = destination_pairs.len();
+        self.inner.destination_liveness.bindings = self.inner.destination_role_bindings.len();
+    }
+
+    /// Plan 504 — emits one liveness probe through the coordinator's
+    /// canonical outbound path.
+    ///
+    /// A probe that could not be emitted at all (a local composition
+    /// fault, or a pair that went away between the scheduler's
+    /// decision and the emission) is *abandoned*, not counted as a
+    /// peer failure: the peer never saw the probe.
+    fn emit_liveness_probe(
+        &mut self,
+        outbound_slot: TunnelSlot,
+        inbound_slot: TunnelSlot,
+        test_id: crate::tunnel_liveness::LivenessTestId,
+        probe_message_id: u32,
+        now_ms: u64,
+    ) {
+        let delivery = self.inner.ssu2_handle.delivery().clone();
+        let mut rng = match ChaCha8Rng::try_from_os_rng() {
+            Ok(rng) => rng,
+            Err(_) => {
+                self.inner.liveness.abandon_test(test_id);
+                return;
+            }
+        };
+        // Plan 512 — a destination-role pair's probe is addressed to
+        // the inbound tunnel's gateway, the way i2pd 2.61.0 addresses
+        // it, so the answer returns through the inbound tunnel the
+        // destination advertises. The exploratory arm is unchanged.
+        let destination_receive = self
+            .inner
+            .destination_role_bindings
+            .get(&inbound_slot)
+            .copied()
+            .filter(|binding| binding.direction == BuildDirection::Inbound)
+            .and_then(|binding| binding.local_receive_tunnel);
+        let emitted = match destination_receive {
+            Some(local_receive) => self.inner.coordinator.emit_destination_liveness_probe(
+                outbound_slot,
+                local_receive,
+                probe_message_id,
+                now_ms,
+                &delivery,
+                &mut rng,
+            ),
+            None => self.inner.coordinator.emit_liveness_probe(
+                outbound_slot,
+                inbound_slot,
+                probe_message_id,
+                now_ms,
+                &delivery,
+                &mut rng,
+            ),
+        };
+        if let Err(error) = emitted {
+            tracing::debug!(
+                transition = "liveness_probe_not_emitted",
+                reason = %error,
+                "the liveness probe could not be emitted"
+            );
+            self.inner.liveness.abandon_test(test_id);
+        }
+    }
+
+    /// Plan 512 — fails a destination's inbound tunnel whose liveness
+    /// pair stopped answering.
+    ///
+    /// The failure is applied through the destination runtime's own
+    /// `mark_tunnel_failed` seam, so the pool drops the tunnel, the
+    /// daemon's tick notices the changed lease set and marks the
+    /// destination for republication, and the existing replenishment
+    /// builds the replacement. No second failure path is introduced.
+    ///
+    /// The reference's "don't fail last tunnel" rule is honoured: a
+    /// destination that holds a single inbound tunnel is not failed.
+    /// The refusal is counted, so the situation is observable rather
+    /// than silent.
+    ///
+    /// The failure is a **pair-level** fact and is never written into
+    /// a peer profile. The router's own counters carry it.
+    async fn fail_destination_liveness_pair(
+        &mut self,
+        outbound_slot: TunnelSlot,
+        inbound_slot: TunnelSlot,
+    ) {
+        // The pair's inbound is gone: the scheduler must stop tracking
+        // the pair. Unregistering drops the pair's pending tests
+        // without counting a failure.
+        self.inner.liveness.unregister_pair(outbound_slot);
+
+        let Some(binding) = self
+            .inner
+            .destination_role_bindings
+            .get(&inbound_slot)
+            .copied()
+        else {
+            self.inner.destination_liveness.binding_misses = self
+                .inner
+                .destination_liveness
+                .binding_misses
+                .saturating_add(1);
+            return;
+        };
+        let destination_id = binding.destination_id;
+        let local_receive = binding.local_receive_tunnel;
+
+        let outcome = self
+            .manager
+            .with_destination_runtime(destination_id, |runtime| {
+                let inbound_len = runtime.inbound_registrations().len();
+                match destination_liveness_failure_decision(Some(&binding), inbound_len) {
+                    DestinationLivenessFailureDecision::Fail { pool_slot } => {
+                        runtime.mark_tunnel_failed(pool_slot);
+                        Ok(())
+                    }
+                    DestinationLivenessFailureDecision::LastTunnelRefused => {
+                        Err(DestinationLivenessFailureOutcome::LastTunnelRefused)
+                    }
+                    DestinationLivenessFailureDecision::Unbound => {
+                        Err(DestinationLivenessFailureOutcome::Unbound)
+                    }
+                }
+            });
+        match outcome {
+            None => {
+                self.inner.destination_liveness.runtime_missing = self
+                    .inner
+                    .destination_liveness
+                    .runtime_missing
+                    .saturating_add(1);
+                tracing::debug!(
+                    transition = "destination_liveness_failure_not_applied",
+                    reason = "destination runtime missing",
+                    "the destination liveness failure was not applied"
+                );
+            }
+            Some(Ok(())) => {
+                self.inner.destination_liveness.failures_applied = self
+                    .inner
+                    .destination_liveness
+                    .failures_applied
+                    .saturating_add(1);
+                // The dead tunnel must stop receiving. The owner
+                // registration and the registry role are released
+                // exactly as the local activation-failure path
+                // releases them.
+                if let Some(local_receive) = local_receive {
+                    let _ = self
+                        .manager
+                        .unregister_inbound_tunnel_owner(local_receive.get());
+                }
+                let _ = self
+                    .inner
+                    .coordinator
+                    .registry_mut()
+                    .remove_slot(inbound_slot);
+                self.inner.destination_role_bindings.remove(&inbound_slot);
+                tracing::info!(
+                    transition = "destination_liveness_failure_applied",
+                    "the unhealthy destination inbound tunnel was failed and replaced"
+                );
+            }
+            Some(Err(DestinationLivenessFailureOutcome::LastTunnelRefused)) => {
+                self.inner.destination_liveness.last_tunnel_refusals = self
+                    .inner
+                    .destination_liveness
+                    .last_tunnel_refusals
+                    .saturating_add(1);
+                tracing::warn!(
+                    transition = "destination_liveness_last_tunnel_refused",
+                    "the destination holds one inbound tunnel; the failure was refused"
+                );
+            }
+            Some(Err(DestinationLivenessFailureOutcome::Unbound)) => {
+                self.inner.destination_liveness.binding_misses = self
+                    .inner
+                    .destination_liveness
+                    .binding_misses
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    /// Plan 512 — records one installed destination-role tunnel's
+    /// binding.
+    ///
+    /// The table is bounded. A binding beyond the ceiling is refused
+    /// and counted, never silently dropped.
+    fn record_destination_role_binding(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+        direction: BuildDirection,
+        role_slot: TunnelSlot,
+        pool_slot: TunnelSlot,
+        local_receive_tunnel: Option<TunnelId>,
+    ) {
+        if self.inner.destination_role_bindings.len() >= MAX_DESTINATION_ROLE_BINDINGS
+            && !self
+                .inner
+                .destination_role_bindings
+                .contains_key(&role_slot)
+        {
+            self.inner.destination_liveness.binding_refusals = self
+                .inner
+                .destination_liveness
+                .binding_refusals
+                .saturating_add(1);
+            tracing::warn!(
+                transition = "destination_role_binding_refused",
+                limit = MAX_DESTINATION_ROLE_BINDINGS,
+                "the destination-role binding table is full"
+            );
+            return;
+        }
+        self.inner.destination_role_bindings.insert(
+            role_slot,
+            DestinationRoleBinding {
+                destination_id,
+                pool_slot,
+                direction,
+                local_receive_tunnel,
+            },
+        );
+    }
+
+    /// Plan 504 — removes an unhealthy exploratory pair from the
+    /// coordinator and asks the coordinator to rebuild it through its
+    /// **existing** submit path.
+    ///
+    /// Only exploratory slots are removed: the pair came from
+    /// [`ExploratoryBuildCoordinator::exploratory_liveness_pairs`],
+    /// which never reports a destination-role slot.
+    async fn remove_liveness_pair(&mut self, outbound_slot: TunnelSlot, inbound_slot: TunnelSlot) {
+        // The peer's identity is captured before the removal, so the
+        // rebuild can be requested for the same peer.
+        let peer = self
+            .inner
+            .coordinator
+            .registry_outbound_first_hop(outbound_slot)
+            .map(|(hash, _)| hash);
+        self.inner
+            .coordinator
+            .remove_exploratory_pair(outbound_slot, inbound_slot);
+        let Some(peer_hash) = peer else {
+            return;
+        };
+        let Some(static_key) = self.peer_static_encryption_key(peer_hash).await else {
+            // Without the peer's public key the coordinator cannot
+            // rebuild the tunnel. The pair is still removed, so the
+            // router stops using a tunnel it judged dead.
+            tracing::debug!(
+                transition = "liveness_rebuild_not_requested",
+                reason = "peer router info unavailable",
+                "the unhealthy exploratory pair was removed without a rebuild"
+            );
+            return;
+        };
+        let delivery = self.inner.ssu2_handle.delivery().clone();
+        let bridge = i2pr_tunnel::bridge::ShortBuildI2npBridge::new();
+        let mut rng = match ChaCha8Rng::try_from_os_rng() {
+            Ok(rng) => rng,
+            Err(_) => return,
+        };
+        let local_router_hash = self.inner.local_router_hash;
+        let peer = crate::exploratory_build::ExploratoryRebuildPeer {
+            router_hash: peer_hash,
+            static_encryption_key: static_key,
+        };
+        // Both directions of the pair share one peer, so the same
+        // public peer material serves the replacement tunnels.
+        for direction in [BuildDirection::Outbound, BuildDirection::Inbound] {
+            if let Err(error) = self.inner.coordinator.rebuild_exploratory(
+                direction,
+                peer,
+                local_router_hash,
+                &delivery,
+                &bridge,
+                &mut rng,
+            ) {
+                tracing::debug!(
+                    transition = "liveness_rebuild_rejected",
+                    reason = %error,
+                    "the coordinator refused the exploratory rebuild request"
+                );
+            }
+        }
+    }
+
+    /// Plan 504 — resolves one peer's public static encryption key
+    /// from the authoritative RouterInfo store.
+    ///
+    /// The key is public peer material (it is published in the peer's
+    /// RouterInfo); the lookup never returns a secret.
+    async fn peer_static_encryption_key(
+        &self,
+        peer_hash: Hash,
+    ) -> Option<[u8; i2pr_tunnel::build_crypto::EPHEMERAL_KEY_LEN]> {
+        let store = self.inner.destination_tunnels.lock().await;
+        let key = i2pr_netdb::RouterHash::from_hash(peer_hash);
+        let record = store.store().get(&key)?;
+        let bytes = record
+            .router_info()
+            .router_identity()
+            .public_key()
+            .as_bytes();
+        let mut static_key = [0_u8; i2pr_tunnel::build_crypto::EPHEMERAL_KEY_LEN];
+        if bytes.len() != static_key.len() {
+            return None;
+        }
+        static_key.copy_from_slice(bytes);
+        Some(static_key)
+    }
+
+    /// Plan 504 — publishes the liveness counters through the
+    /// inspection seam so the running router's liveness posture is
+    /// observable.
+    ///
+    /// The composition root publishes the *same* cell into the
+    /// inspection seam, so the counters stay live without the product
+    /// owning the inspection handles.
+    fn publish_liveness_counters(&self) {
+        let counters = self.inner.liveness.counters();
+        if let Ok(mut cell) = self.inner.liveness_counters_cell.lock() {
+            *cell = counters;
+        }
+    }
+
+    /// Plan 504 — returns the live tunnel-liveness counter cell.
+    ///
+    /// The composition root publishes this cell into the inspection
+    /// seam so a reader observes the running router's liveness
+    /// posture.
+    pub fn liveness_counters_cell(&self) -> Arc<crate::i2pcontrol_inspection::LivenessCounterCell> {
+        Arc::clone(&self.inner.liveness_counters_cell)
+    }
+
+    /// Plan 505 — drives the exploratory build driver on the product tick.
+    ///
+    /// The driver names a peer through Plan 491's version-gated selection,
+    /// builds a one-hop exploratory tunnel toward it through the
+    /// **existing** exploratory build path, and records the outcome in the
+    /// peer-profile store. It is the population Plan 504's liveness
+    /// scheduler watches.
+    ///
+    /// No task, no timer, no listener and no socket is added: the driver is
+    /// a plain value the tick advances, beside Plan 504's liveness driver.
+    /// When the operator has not enabled the `[exploratory]` posture the
+    /// product owns no driver at all and this step is inert.
+    fn drive_exploratory_builds(&mut self, now_ms: u64) {
+        // The default posture owns no driver at all, so the tick's
+        // exploratory step costs nothing when the operator has not opted in.
+        let Some(driver) = self.inner.exploratory_driver.as_ref() else {
+            return;
+        };
+        if !driver.enabled() {
+            return;
+        }
+        let delivery = self.inner.ssu2_handle.delivery().clone();
+        let bridge = i2pr_tunnel::bridge::ShortBuildI2npBridge::new();
+        let mut rng = match ChaCha8Rng::try_from_os_rng() {
+            Ok(rng) => rng,
+            Err(_) => return,
+        };
+        let local_router_hash = self.inner.local_router_hash;
+        let Some(driver) = self.inner.exploratory_driver.as_mut() else {
+            return;
+        };
+        let action = driver.drive(
+            now_ms,
+            &mut self.inner.coordinator,
+            &delivery,
+            &bridge,
+            local_router_hash,
+            &mut rng,
+        );
+        if matches!(
+            action,
+            crate::exploratory_driver::ExploratoryDriverAction::SubmittedOutbound
+                | crate::exploratory_driver::ExploratoryDriverAction::SubmittedInbound
+        ) {
+            tracing::debug!(
+                transition = "exploratory_build_submitted",
+                "an exploratory tunnel build was submitted"
+            );
+        }
+        self.publish_exploratory_driver_counters();
+    }
+
+    /// Plan 513 — ingests the reply to an exploratory lookup.
+    ///
+    /// The reply's named peers are offered to the routing table as
+    /// **suggestions** and queued for resolution. A suggestion is never
+    /// evidence: the suggesting peer must itself be indexed with signed
+    /// evidence, or the table refuses the suggestion. A reply from a peer
+    /// the exploration never asked introduces nothing.
+    fn ingest_discovery_search_reply(&self, reply: &i2pr_proto::DatabaseSearchReplyMessage) {
+        let Some(spine) = self.inner.discovery.as_ref() else {
+            return;
+        };
+        if let Err(error) = spine.ingest_search_reply(reply) {
+            tracing::debug!(
+                transition = "netdb_discovery_search_reply_refused",
+                reason = %error,
+                "an exploratory reply was refused by the discovery spine"
+            );
+        }
+    }
+
+    /// Plan 513 — ingests the reply to a RouterInfo-kind lookup.
+    ///
+    /// The record is validated by the lookup engine and inserted into the
+    /// router's NetDB, so the named peer becomes a peer the router can
+    /// ask. A record that does not name the lookup's target changes
+    /// nothing, and the router's peer population is never widened by an
+    /// unrelated record.
+    fn ingest_discovery_routerinfo_store(
+        &self,
+        store_message: &i2pr_proto::DatabaseStoreMessage,
+        now_ms: u64,
+    ) {
+        let Some(spine) = self.inner.discovery.as_ref() else {
+            return;
+        };
+        let Some(bootstrap) = self.inner.bootstrap.as_ref() else {
+            return;
+        };
+        let Ok(mut bootstrap) = bootstrap.lock() else {
+            return;
+        };
+        if let Err(error) = spine.ingest_routerinfo_store(bootstrap.store_mut(), store_message) {
+            tracing::debug!(
+                transition = "netdb_discovery_routerinfo_refused",
+                reason = %error,
+                "a RouterInfo reply was refused by the discovery spine"
+            );
+            return;
+        }
+        let _ = now_ms;
+    }
+
+    /// Plan 513 — delivers the discovery request the NetDB participation
+    /// owner composed.
+    ///
+    /// The step is a plain value the tick advances, beside Plan 505's
+    /// exploratory driver. It owns no task, no timer, no listener and no
+    /// socket: it refreshes the inbound exploratory tunnel's reply path
+    /// and hands the composed request to the transport.
+    ///
+    /// The two deliveries are distinct and neither substitutes for the
+    /// other:
+    ///
+    /// - an **exploratory** request is delivered **directly** to the
+    ///   floodfill being asked;
+    /// - a **RouterInfo**-kind request rides the **outbound** exploratory
+    ///   tunnel, because Plan 102's closed amendment forbids substituting
+    ///   a direct peer link for the exploratory-tunnel path.
+    ///
+    /// A router that owns no discovery spine does nothing here.
+    fn drive_netdb_discovery(&mut self, now_ms: u64) {
+        let Some(spine) = self.inner.discovery.clone() else {
+            return;
+        };
+        // Advance the RouterInfo-kind validation clock: a record the
+        // router resolves is validated against it, and a stale clock would
+        // refuse every record.
+        spine.set_routerinfo_now_seconds((now_ms / 1000) as u32);
+        // Refresh the reply path: the answer to every request the spine
+        // composes travels the exploratory pool's oldest valid inbound
+        // tunnel. A router that holds none refuses every request, and the
+        // refusal is counted by the spine.
+        spine.set_reply_path(self.inner.coordinator.exploratory_reply_path(now_ms / 1000));
+        let Some(dispatch) = spine.take_dispatch() else {
+            return;
+        };
+        let crate::netdb_participation::DiscoveryDispatch::Send {
+            peer,
+            message,
+            delivery,
+            ..
+        } = dispatch
+        else {
+            // A request that still needs a reply path, or one that has
+            // already ended, is counted by the spine. There is nothing to
+            // deliver.
+            return;
+        };
+        let delivered = match delivery {
+            crate::netdb_participation::DiscoveryDelivery::Direct => {
+                self.deliver_discovery_direct(&spine, peer, &message, now_ms)
+            }
+            crate::netdb_participation::DiscoveryDelivery::OutboundExploratoryTunnel => {
+                self.deliver_discovery_via_outbound_tunnel(&spine, peer, &message, now_ms)
+            }
+        };
+        spine.record_delivery(delivered);
+    }
+
+    /// Plan 513 — delivers one discovery request **directly** to the named
+    /// peer.
+    ///
+    /// The direct path is the exploratory lookup's own path: the request is
+    /// addressed straight at the floodfill being asked. The reply travels the
+    /// inbound exploratory tunnel the spine holds, so the reply path is
+    /// already fixed in the composed request.
+    ///
+    /// The delivery is the router's own transport seam. A peer with no
+    /// established session reports `NoActiveSession` explicitly, and the
+    /// refusal is counted.
+    fn deliver_discovery_direct(
+        &self,
+        spine: &crate::netdb_participation::NetDbDiscoverySpine,
+        peer: i2pr_netdb::RouterHash,
+        message: &i2pr_proto::DatabaseLookupMessage,
+        now_ms: u64,
+    ) -> bool {
+        let bytes = match crate::outbound_lookup::encode_standard_envelope(
+            message,
+            DISCOVERY_MESSAGE_ID,
+            now_ms.saturating_add(DISCOVERY_MESSAGE_LIFETIME_MS),
+        ) {
+            Ok(bytes) => bytes,
+            Err(_) => return false,
+        };
+        let request = match crate::router_i2np::RouterDeliveryRequest::new(
+            i2pr_transport::PeerId::from_hash(*peer.as_hash()),
+            bytes,
+            self.inner.options.delivery_timeout,
+        ) {
+            Ok(request) => request,
+            Err(_) => return false,
+        };
+        let outcome = self
+            .inner
+            .ssu2_handle
+            .delivery()
+            .deliver(request, &self.token);
+        let delivered = matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted);
+        if !delivered {
+            tracing::debug!(
+                transition = "netdb_discovery_direct_delivery_refused",
+                delivery_outcome = ?outcome,
+                "a discovery request was refused by the transport"
+            );
+        }
+        let _ = spine;
+        delivered
+    }
+
+    /// Plan 513 — delivers one discovery request through the **outbound**
+    /// exploratory tunnel.
+    ///
+    /// This is the RouterInfo-kind lookup's only delivery path. Plan 102's
+    /// closed amendment forbids substituting a direct peer link for the
+    /// exploratory-tunnel path, so a router that holds no usable outbound
+    /// exploratory role refuses the request rather than sending it directly.
+    ///
+    /// The composition is the canonical one — the same cells the coordinator
+    /// composes — so there is one composition and not two.
+    fn deliver_discovery_via_outbound_tunnel(
+        &self,
+        spine: &crate::netdb_participation::NetDbDiscoverySpine,
+        peer: i2pr_netdb::RouterHash,
+        message: &i2pr_proto::DatabaseLookupMessage,
+        now_ms: u64,
+    ) -> bool {
+        let Some(role) = self.inner.coordinator.exploratory_outbound_role(now_ms) else {
+            // No usable outbound exploratory role: the request is refused,
+            // never downgraded to a direct send.
+            tracing::debug!(
+                transition = "netdb_discovery_outbound_role_unavailable",
+                "a discovery request was refused: no usable outbound exploratory role"
+            );
+            return false;
+        };
+        let Ok(deadline) = Deadline::new(self.inner.options.tunnel_deadline) else {
+            return false;
+        };
+        let Ok(mut rng) = ChaCha8Rng::try_from_os_rng() else {
+            return false;
+        };
+        let action = i2pr_netdb::LookupAction::SendDatabaselookup {
+            lookup_id: i2pr_netdb::LookupId::new(0, i2pr_netdb::LookupKind::RouterInfo, peer),
+            peer,
+            message: message.clone(),
+        };
+        let Ok((dispatch, _proof)) = crate::netdb_tunnels::compose_lookup_via_outbound_tunnel(
+            &action,
+            role,
+            DISCOVERY_MESSAGE_ID,
+            now_ms.saturating_add(DISCOVERY_MESSAGE_LIFETIME_MS),
+            deadline,
+            &mut rng,
+            now_ms,
+        ) else {
+            return false;
+        };
+        let delivery = self.inner.ssu2_handle.delivery().clone();
+        let mut delivered = true;
+        for cell_delivery in &dispatch.deliveries {
+            let request = match crate::router_i2np::RouterDeliveryRequest::new(
+                cell_delivery.target(),
+                cell_delivery.message_bytes().to_vec(),
+                self.inner.options.delivery_timeout,
+            ) {
+                Ok(request) => request,
+                Err(_) => {
+                    delivered = false;
+                    break;
+                }
+            };
+            let outcome = delivery.deliver(request, &self.token);
+            if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+                tracing::debug!(
+                    transition = "netdb_discovery_tunnel_delivery_refused",
+                    delivery_outcome = ?outcome,
+                    "a discovery request was refused by the transport"
+                );
+                delivered = false;
+                break;
+            }
+        }
+        let _ = spine;
+        delivered
+    }
+
+    /// Plan 505 — records one terminal build outcome with the exploratory
+    /// build driver.
+    ///
+    /// The driver owns the **exploratory** attempts; a destination-scoped
+    /// outcome, an outcome with no in-flight attempt, a wrong direction and a
+    /// mismatched attempt id are all counted as orphans and credited to
+    /// nothing. A **local** condition is counted and produces **no**
+    /// peer-profile write.
+    fn observe_exploratory_outcome(&mut self, outcome: &BuildCoordinatorOutcome) {
+        if let Some(driver) = self.inner.exploratory_driver.as_mut() {
+            driver.observe_outcome(outcome);
+        }
+    }
+
+    /// Plan 505 — refreshes the published exploratory-driver counters.
+    fn publish_exploratory_driver_counters(&self) {
+        let Some(driver) = self.inner.exploratory_driver.as_ref() else {
+            return;
+        };
+        let counters = driver.counters();
+        if let Ok(mut cell) = self.inner.exploratory_driver_counters_cell.lock() {
+            *cell = counters;
+        }
+    }
+
+    /// Plan 505 — returns the live exploratory-driver counter cell.
+    ///
+    /// The composition root publishes this cell into the inspection seam so
+    /// a reader observes the running router's exploratory-build posture.
+    pub fn exploratory_driver_counters_cell(
+        &self,
+    ) -> Arc<crate::i2pcontrol_inspection::ExploratoryDriverCounterCell> {
+        Arc::clone(&self.inner.exploratory_driver_counters_cell)
+    }
+
+    /// Plan 506 — runs one peer-knowledge reconcile when its cadence is due.
+    ///
+    /// The step is a plain value the tick advances, beside Plan 505's
+    /// exploratory driver. It owns no task, no timer, no listener and no
+    /// socket: the reconcile reads a bounded snapshot of the bootstrap's
+    /// validated RouterInfos, writes them through the canonical write APIs
+    /// into the two stores the router builds with, and counts every
+    /// outcome by reason.
+    ///
+    /// Plan 507: the same pass carries the NetDB retention prune, so the
+    /// prune and the reconcile can never drift apart in time and the router
+    /// needs no second cadence. The prune runs **before** the reconcile's
+    /// snapshot, so a record the prune removed is never copied forward, and
+    /// the prune makes room before the reconcile's writes.
+    ///
+    /// The reconcile never fails the tick. A capacity refusal, a conflict
+    /// and a stale replacement are counted, not fatal, and an unreadable
+    /// source is counted as a gap.
+    async fn reconcile_peer_knowledge(&mut self, now_ms: u64) {
+        let Some(reconcile) = self.inner.peer_reconcile.as_mut() else {
+            return;
+        };
+        let action = reconcile.run(now_ms).await;
+        if matches!(
+            action,
+            crate::peer_reconcile::PeerReconcileAction::Reconciled { .. }
+        ) {
+            tracing::debug!(
+                transition = "peer_knowledge_reconciled",
+                "the router's peer knowledge was reconciled into the build-with stores"
+            );
+        }
+        self.publish_peer_reconcile_counters();
+    }
+
+    /// Plan 506 — refreshes the published peer-reconcile counters.
+    fn publish_peer_reconcile_counters(&self) {
+        let Some(reconcile) = self.inner.peer_reconcile.as_ref() else {
+            return;
+        };
+        let counters = reconcile.counters();
+        if let Ok(mut cell) = self.inner.peer_reconcile_counters_cell.lock() {
+            *cell = counters;
+        }
+    }
+
+    /// Plan 524 — drives this router's relay-tag request on the product's
+    /// tick.
+    ///
+    /// The owner holds no task, no timer and no listener: the tick runs one
+    /// bounded window, reads the advertised introducer capability of the
+    /// peers this router holds a session with, and asks **at most one** of
+    /// them for a relay tag. A router whose operator has not enabled the
+    /// request does nothing here, and a router that is not firewalled asks
+    /// nobody — a reachable router needs no introducer.
+    ///
+    /// The request rides the session the router already holds: no new
+    /// connection is made, and the peer is never named unless this router
+    /// holds a session with it.
+    async fn drive_introducer_request(&mut self, now_ms: u64) {
+        let live: Vec<PeerId> = self
+            .inner
+            .ssu2_handle
+            .service()
+            .active_peer_hashes()
+            .into_iter()
+            .map(PeerId::from_hash)
+            .collect();
+        // Plan 528: the gate reads the router's single reachability
+        // tracker, and the `Firewalled` state is now **reachable**: the
+        // runtime's verdict path can put the router there, so this
+        // comparison can be true. The gate's refusal reasons are
+        // unchanged -- a router that is not firewalled still asks
+        // nobody, and every refusal is still counted under its own
+        // reason.
+        let firewalled = self.inner.ssu2_handle.service().snapshot().reachability
+            == i2pr_transport::ReachabilityState::Firewalled;
+        // The store is cloned out of the composition so the capability read
+        // never borrows the product while it waits for the lock.
+        let destinations = Arc::clone(&self.inner.destination_tunnels);
+        let Some(owner) = self.inner.introducer_request.as_mut() else {
+            return;
+        };
+        if !owner.enabled() {
+            return;
+        }
+        if !owner.due(now_ms) {
+            return;
+        }
+        let window =
+            owner.candidate_window(&live, crate::introducer_request::MAX_INTRODUCER_CANDIDATES);
+        let mut eligible: Vec<PeerId> = Vec::new();
+        for peer in window {
+            let capability = read_introducer_capability(&destinations, peer).await;
+            owner.note_capability(capability);
+            if capability.is_introducer() {
+                eligible.push(peer);
+                break;
+            }
+        }
+        let decision = owner.decide(&eligible, firewalled, now_ms);
+        let peer = match decision {
+            crate::introducer_request::IntroducerRequestDecision::Ask(peer) => peer,
+            crate::introducer_request::IntroducerRequestDecision::Refuse(reason) => {
+                tracing::debug!(
+                    transition = "introducer_request_refused",
+                    reason = ?reason,
+                    "the router asked nobody for a relay tag"
+                );
+                self.publish_introducer_request_counters();
+                return;
+            }
+        };
+        let outcome = self
+            .inner
+            .ssu2_handle
+            .service()
+            .queue_relay_tag_request(peer);
+        let Some(owner) = self.inner.introducer_request.as_mut() else {
+            return;
+        };
+        match outcome {
+            Ok(()) => {
+                owner.note_queued(peer);
+                tracing::debug!(
+                    transition = "introducer_request_queued",
+                    "the router asked a peer for a relay tag"
+                );
+            }
+            Err(error) => {
+                owner.note_transport_refusal(now_ms);
+                tracing::debug!(
+                    transition = "introducer_request_refused",
+                    reason = %error.reason(),
+                    "the transport refused a relay-tag request"
+                );
+            }
+        }
+        self.publish_introducer_request_counters();
+    }
+
+    /// Plan 524 — refreshes the published relay-tag request counters.
+    fn publish_introducer_request_counters(&self) {
+        let Some(owner) = self.inner.introducer_request.as_ref() else {
+            return;
+        };
+        if let Ok(mut cell) = self.inner.introducer_request_counters_cell.lock() {
+            *cell = owner.counters();
+        }
+    }
+
+    /// Plan 524 — returns the live relay-tag request counter cell.
+    pub fn introducer_request_counters_cell(
+        &self,
+    ) -> Arc<crate::i2pcontrol_inspection::IntroducerRequestCounterCell> {
+        Arc::clone(&self.inner.introducer_request_counters_cell)
+    }
+
+    /// Plan 506 — returns the live peer-reconcile counter cell.
+    ///
+    /// The composition root publishes this cell into the inspection seam so
+    /// a reader observes the running router's peer-knowledge posture.
+    pub fn peer_reconcile_counters_cell(
+        &self,
+    ) -> Arc<crate::i2pcontrol_inspection::PeerReconcileCounterCell> {
+        Arc::clone(&self.inner.peer_reconcile_counters_cell)
     }
 
     /// Deterministic pool-advance seam used by manual-clock tests and by the
@@ -2951,6 +4820,10 @@ impl ServiceProduct {
         self.retire_orphaned_sam_destinations();
         self.inner.coordinator.advance_time(now_ms);
         for outcome in self.inner.coordinator.expire_pending() {
+            // Plan 505 — the exploratory driver owns the exploratory
+            // attempts; a destination-scoped outcome is not its outcome and
+            // is counted as an orphan.
+            self.observe_exploratory_outcome(&outcome);
             self.record_destination_build_outcome(&outcome);
             if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } = outcome
             {
@@ -2961,12 +4834,53 @@ impl ServiceProduct {
                     });
             }
         }
+        // Plan 504 — the liveness scheduler is driven on the same tick
+        // that advances the coordinator's clock and expires its
+        // pending builds. No new task, no new timer.
+        self.drive_tunnel_liveness(now_ms).await;
+        // Plan 505 — the exploratory build driver is driven on the same
+        // tick, beside the liveness scheduler it feeds. The driver is the
+        // population the scheduler watches: without it the scheduler has no
+        // pair to observe. No new task, no new timer.
+        self.drive_exploratory_builds(now_ms);
+        // Plan 513 — the live NetDB discovery spine is driven on the same
+        // tick. It refreshes the inbound exploratory tunnel's reply path
+        // and delivers the request the NetDB participation owner composed.
+        // No new task, no new timer.
+        self.drive_netdb_discovery(now_ms);
+        // Plan 506 — the peer-knowledge reconcile is driven on the same
+        // tick, behind its own bounded cadence. It carries the bootstrap's
+        // validated RouterInfos into the two stores the router builds with,
+        // so the population the driver above selects from grows with the
+        // peers the router accepts on a live session. No new task, no new
+        // timer.
+        self.reconcile_peer_knowledge(now_ms).await;
+        // Plan 524 — the router's relay-tag request is driven on the same
+        // tick, beside the peer test it shares its cadence with. It asks
+        // one eligible peer for a relay tag, and only while this router is
+        // firewalled. No new task, no new timer, no new listener.
+        self.drive_introducer_request(now_ms).await;
         let destination_ids = self.inner.destination_ids.clone();
         for destination_id in destination_ids {
             let Some(snapshot) =
                 self.manager
                     .with_destination_runtime(destination_id, |destination| {
                         let inbound_registrations = destination.inbound_registrations();
+                        // Plan 478 — snapshot the pool-slot to local
+                        // endpoint receive id translation BEFORE
+                        // advance_time evicts: pool registrations key
+                        // on the creator tunnel id, while the
+                        // registry, the owner table, and the bridge
+                        // all key on the local endpoint id. Every
+                        // consumer below must use the local ids.
+                        let inbound_locals: Vec<(TunnelSlot, u32)> = inbound_registrations
+                            .iter()
+                            .filter_map(|registration| {
+                                destination
+                                    .inbound_local_receive(registration.slot())
+                                    .map(|local| (registration.slot(), local.get()))
+                            })
+                            .collect();
                         let outbound_registrations = destination.outbound_registrations();
                         let progress = destination.advance_time(now_seconds);
                         let lease_sources = destination.inbound_lease_sources(now_seconds);
@@ -2976,6 +4890,7 @@ impl ServiceProduct {
                             .map(|current| current.lease_set2().clone());
                         (
                             inbound_registrations,
+                            inbound_locals,
                             outbound_registrations,
                             progress,
                             lease_sources,
@@ -2991,42 +4906,101 @@ impl ServiceProduct {
                     .retain(|current| *current != destination_id);
                 self.inner.publication_pending.remove(&destination_id);
                 self.inner.publication_retry_after.remove(&destination_id);
+                self.inner.lease_refresh_failures.remove(&destination_id);
                 continue;
             };
             let (
                 inbound_registrations,
+                inbound_locals,
                 outbound_registrations,
                 progress,
                 sources,
                 minimum,
                 current_lease_set,
             ) = snapshot;
-            let progress = progress.map_err(|error| {
-                ServiceProductError::Provisioning(format!("group pool advance: {error}"))
-            })?;
+            let progress = match progress {
+                Ok(progress) => progress,
+                Err(error) => {
+                    // Plan 487 WP4 — a destination-scoped lease-set
+                    // failure must not tear down the router's SSU2
+                    // service. The live qualification showed the
+                    // opposite: one destination's lease refresh rejected
+                    // the rotation, the error propagated out of the
+                    // group advance, and the `ssu2-router` service was
+                    // failed mid-stream — a single destination's
+                    // lifecycle hiccup took the whole router's
+                    // transport down.
+                    //
+                    // The destination keeps its previous record, the
+                    // replenishment continues on the next tick, and the
+                    // failure is reported rather than swallowed.
+                    tracing::warn!(
+                        reason = %error,
+                        transition = "destination_group_pool_advancement_failed",
+                        "destination-group pool advancement failed for one destination"
+                    );
+                    self.inner
+                        .lease_refresh_failures
+                        .insert(destination_id, error.to_string());
+                    // The pool's tunnel building does not depend on the
+                    // lease set: keep replenishing so the destination's
+                    // tunnels are still replaced while its lease refresh
+                    // is failing. The publication of the refreshed lease
+                    // set follows the next successful refresh.
+                    if let Err(replenish_error) = self
+                        .replenish_group_destination(destination_id, now_seconds)
+                        .await
+                    {
+                        tracing::warn!(
+                            reason = %replenish_error,
+                            transition = "destination_group_replenishment_failed",
+                            "destination-group replenishment failed for one destination"
+                        );
+                    }
+                    continue;
+                }
+            };
+            // The refresh succeeded: the destination is no longer
+            // degraded.
+            self.inner.lease_refresh_failures.remove(&destination_id);
             let evicted_slots: std::collections::HashSet<_> =
                 progress.evicted_slots.iter().copied().collect();
             for slot in evicted_slots.iter().copied() {
-                if let Some(registration) = inbound_registrations
+                // Plan 478 — evict by the LOCAL endpoint id, never
+                // the pool registration (creator) id: the registry
+                // role, the owner entry, and the bridge projection
+                // all key on the local id. A slot with no local
+                // translation has no data-plane footprint to clean;
+                // the receipt stays honest (both false) instead of
+                // removing the wrong id.
+                let is_inbound = inbound_registrations
                     .iter()
-                    .find(|registration| registration.slot() == slot)
-                {
-                    let receive_id = registration.tunnel_id();
-                    let _ = self
-                        .inner
-                        .coordinator
-                        .registry_mut()
-                        .remove_inbound(receive_id);
-                    let removed_owner = self
-                        .manager
-                        .unregister_inbound_tunnel_owner(receive_id.get())
-                        .is_some();
-                    let removed_receive = self
-                        .manager
-                        .with_destination_bridge(destination_id, |bridge| {
-                            bridge.remove_router_inbound_receive(receive_id.get())
-                        })
-                        .unwrap_or(false);
+                    .any(|registration| registration.slot() == slot);
+                if is_inbound {
+                    let mut removed_owner = false;
+                    let mut removed_receive = false;
+                    if let Some(local_receive) = inbound_locals
+                        .iter()
+                        .find(|(registered_slot, _)| *registered_slot == slot)
+                        .map(|(_, local)| *local)
+                        && let Ok(local_tunnel) = TunnelId::new(local_receive)
+                    {
+                        let _ = self
+                            .inner
+                            .coordinator
+                            .registry_mut()
+                            .remove_inbound(local_tunnel);
+                        removed_owner = self
+                            .manager
+                            .unregister_inbound_tunnel_owner(local_receive)
+                            .is_some();
+                        removed_receive = self
+                            .manager
+                            .with_destination_bridge(destination_id, |bridge| {
+                                bridge.remove_router_inbound_receive(local_receive)
+                            })
+                            .unwrap_or(false);
+                    }
                     tracing::info!(
                         removed_owner,
                         removed_receive,
@@ -3049,11 +5023,24 @@ impl ServiceProduct {
                 // material after the group has entered Retiring.
                 continue;
             }
-            let inbound_receive_ids: Vec<u32> = inbound_registrations
-                .iter()
-                .filter(|registration| !evicted_slots.contains(&registration.slot()))
-                .map(|registration| registration.tunnel_id().get())
-                .collect();
+            // Plan 478 — the refresh list carries LOCAL endpoint
+            // receive ids, never pool registration (creator) ids:
+            // the bridge projection and the owner table both key on
+            // the local id, and feeding creator ids silently swapped
+            // both to the wrong namespace on the first poll after
+            // every install. A live registration without a local
+            // translation fails closed: the tick skips refresh and
+            // replenishment rather than amputating live owners with
+            // a partial list.
+            let Some(inbound_receive_ids) =
+                local_inbound_receive_ids(&inbound_registrations, &inbound_locals, &evicted_slots)
+            else {
+                tracing::error!(
+                    live_inbound_registrations = inbound_registrations.len(),
+                    "destination pool slots lack local endpoint mapping; skipping refresh"
+                );
+                continue;
+            };
             let current_bridge = self
                 .manager
                 .with_destination_bridge(destination_id, |bridge| {
@@ -3075,7 +5062,8 @@ impl ServiceProduct {
             let lease_changed = current_bridge.0 != current_lease_set;
             let owners_changed = current_bridge.1 != inbound_receive_ids;
             if !lease_changed && !owners_changed {
-                self.replenish_group_destination(destination_id).await?;
+                self.replenish_group_destination(destination_id, now_seconds)
+                    .await?;
                 continue;
             }
             if lease_changed && self.inner.server_destination_ids.contains(&destination_id) {
@@ -3112,21 +5100,41 @@ impl ServiceProduct {
                 .unwrap_or(now_seconds)
                 .saturating_mul(1000);
             self.manager
-                .with_destination_bridge(destination_id, |bridge| {
-                    bridge.refresh_router_pool_snapshot(
-                        lease_snapshot,
-                        inbound_receive_ids,
-                        inbound_expires_at_ms,
-                        now_ms,
-                    )
-                })
-                .ok_or_else(|| {
-                    ServiceProductError::Provisioning(
-                        "group bridge missing during refresh".to_owned(),
-                    )
-                })?
-                .map_err(ServiceProductError::Provisioning)?;
-            self.replenish_group_destination(destination_id).await?;
+                .refresh_service_router_pool_snapshot_with_owners(
+                    destination_id,
+                    lease_snapshot,
+                    &inbound_receive_ids,
+                    inbound_expires_at_ms,
+                    now_ms,
+                )
+                .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+            self.replenish_group_destination(destination_id, now_seconds)
+                .await?;
+        }
+        // Plan 487 WP4 — reap publications whose correlated
+        // `DeliveryStatus` never arrived. A publication the network
+        // did not confirm is a publication that must be retried, and
+        // the coordinator's bounded capacity must not leak.
+        {
+            let reaped = self
+                .inner
+                .destination_tunnels
+                .lock()
+                .await
+                .reap_unacknowledged_ls2_publications(now_ms);
+            if !reaped.is_empty() {
+                tracing::warn!(
+                    reaped_publications = reaped.len(),
+                    transition = "ls2_publication_unacknowledged",
+                    "LS2 publications reaped without a correlated DeliveryStatus (counts only)",
+                );
+                // The publication was never confirmed by the network:
+                // mark the destination for republication so the driver
+                // retries it on the ordinary bounded schedule.
+                for destination_id in reaped {
+                    self.inner.publication_pending.insert(destination_id);
+                }
+            }
         }
         let publication_ids: Vec<_> = self
             .inner
@@ -3148,6 +5156,7 @@ impl ServiceProduct {
                 &mut self.inner.ssu2_handle,
                 destination_id,
                 self.inner.options,
+                &self.token,
             )
             .await;
             match result {
@@ -3170,6 +5179,24 @@ impl ServiceProduct {
                                 ),
                                 Some(rejection),
                             )
+                        }
+                        // Plan 487 WP5: a staged failure released the
+                        // publication intent, so the coordinator has no
+                        // pending publication left; the class is
+                        // recorded as the failure stage.
+                        ServicePublicationError::Stage {
+                            class,
+                            product,
+                            pending,
+                        } => {
+                            self.inner.publication_coordinator_pending = pending;
+                            let error = product.unwrap_or_else(|| {
+                                ServiceProductError::Provisioning(format!(
+                                    "publication failed at {}",
+                                    class.label()
+                                ))
+                            });
+                            (error, None)
                         }
                     };
                     if let Some(rejection) = begin_rejection {
@@ -3201,7 +5228,65 @@ impl ServiceProduct {
                 }
             }
         }
+        // Fulfill peer lease fetches inline (advance runs via the
+        // daemon loop; poll_inbound is not on the live path).
+        self.fulfill_peer_lease_requests().await;
         Ok(())
+    }
+
+    /// Plan 478 §6 — drains peer LeaseSet2 fetch requests filed by
+    /// the delivery sweep and resolves each through the standard
+    /// bounded service remote resolution. Runs inline in the advance
+    /// tick (same bounds as configured remote targets); failures
+    /// record a static reason and rely on the filing cooldown for
+    /// retry pacing, never on hot loops.
+    async fn fulfill_peer_lease_requests(&mut self) {
+        // Atomically drain and refresh so the sweep never observes
+        // an empty table mid-lookup (it would terminate instead of
+        // requeueing). Success clears below; failure leaves the
+        // refreshed stamp for cooldown-paced retry.
+        let requests = self.manager.take_and_refresh_peer_lease_requests(
+            crate::service_tunnels::service_streaming_now_ms(),
+        );
+        for (sender, peer) in requests {
+            let Some(target) = crate::service_delivery::destination_hash_from_slice(&peer) else {
+                continue;
+            };
+            tracing::info!(
+                transition = "peer_lease_fulfilling",
+                "peer LeaseSet2 fetch starting bounded lookup",
+            );
+            match resolve_remote_destination_for_service(
+                &self.manager,
+                &mut self.inner.coordinator,
+                &self.inner.destination_tunnels,
+                &mut self.inner.ssu2_handle,
+                sender,
+                target,
+                self.inner.options,
+            )
+            .await
+            {
+                Ok(()) => {
+                    self.manager.clear_peer_lease_request(&peer);
+                    tracing::info!(
+                        transition = "peer_lease_fulfilled",
+                        "peer LeaseSet2 fetch resolved"
+                    );
+                }
+                Err(error) => {
+                    // Temporary Plan 478 attribution: full lookup
+                    // census (counts + target/gateway hashes already
+                    // emitted by the resolver itself). Remove once
+                    // the fetch failure is attributed.
+                    tracing::warn!(
+                        lookup_error = ?error,
+                        transition = "peer_lease_unresolved",
+                        "peer LeaseSet2 fetch failed; retry after filing cooldown"
+                    );
+                }
+            }
+        }
     }
 
     /// Fills current target deficits through the same bounded Plan 314
@@ -3210,6 +5295,7 @@ impl ServiceProduct {
     async fn replenish_group_destination(
         &mut self,
         destination_id: i2pr_client::DestinationId,
+        now_seconds: u64,
     ) -> Result<(), ServiceProductError> {
         let Some(local_router_hash) = self.inner.local_router_hash else {
             return Ok(());
@@ -3228,8 +5314,17 @@ impl ServiceProduct {
             .with_destination_runtime(destination_id, |destination| {
                 let config = destination.config();
                 (
-                    usize::from(config.inbound_target())
-                        .saturating_sub(destination.inbound_registrations().len())
+                    // Plan 487 WP4 — the inbound deficit counts the
+                    // tunnels whose advertised lease still outlives the
+                    // rotation horizon, not the raw registration count. A
+                    // tunnel inside the rotation window can no longer
+                    // carry the lease the destination advertises, so its
+                    // replacement must be built while that tunnel is
+                    // still alive; counting the registration instead
+                    // left the advertised lease to die before the
+                    // replacement existed.
+                    destination
+                        .inbound_replenishment_deficit(now_seconds)
                         .saturating_sub(self.inner.coordinator.pending_destination_direction_len(
                             destination_id,
                             BuildDirection::Inbound,
@@ -3261,7 +5356,21 @@ impl ServiceProduct {
         for direction in
             destination_replenishment_order(inbound_deficit, outbound_deficit, submit_limit)
         {
-            if submit_destination_replacement(
+            // Plan 487 WP4 — the replenishment decision and its outcome
+            // are visible receipts. The live qualification could not
+            // tell "no replacement was due" from "the replacement was
+            // due and could not be submitted" without them: the
+            // submission failure was counted and never logged.
+            let notice_due = self.destination_replenishment_notice_due(destination_id);
+            if notice_due && direction == BuildDirection::Inbound && inbound_deficit > 0 {
+                tracing::info!(
+                    inbound_deficit,
+                    outbound_deficit,
+                    transition = "destination_inbound_replenishment_due",
+                    "destination inbound replacement is due"
+                );
+            }
+            let submission = submit_destination_replacement(
                 &mut self.inner.coordinator,
                 &self.inner.destination_tunnels,
                 &self.inner.ssu2_handle,
@@ -3274,10 +5383,16 @@ impl ServiceProduct {
                 self.inner.options.ssu2_qualification_profile,
                 &self.token,
             )
-            .await
-            .is_err()
-            {
+            .await;
+            if let Err(error) = submission {
                 self.record_destination_submission_failure(destination_id, direction);
+                if notice_due {
+                    tracing::warn!(
+                        reason = %error,
+                        transition = "destination_build_submission_failed",
+                        "destination build submission failed"
+                    );
+                }
                 let _ = self
                     .manager
                     .with_destination_runtime(destination_id, |runtime| {
@@ -3288,6 +5403,29 @@ impl ServiceProduct {
             self.record_destination_build_submission(destination_id, direction);
         }
         Ok(())
+    }
+
+    /// Whether the destination's replenishment notice window has
+    /// elapsed. Plan 487 WP4 — at most one notice per destination per
+    /// [`REPLENISHMENT_NOTICE_INTERVAL_MS`], so a permanently failing
+    /// destination cannot flood the log.
+    fn destination_replenishment_notice_due(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+    ) -> bool {
+        let now_ms = wall_ms();
+        let progress = self
+            .inner
+            .destination_build_progress
+            .entry(destination_id)
+            .or_default();
+        let due = progress.last_replenishment_notice_ms == 0
+            || now_ms.saturating_sub(progress.last_replenishment_notice_ms)
+                >= REPLENISHMENT_NOTICE_INTERVAL_MS;
+        if due {
+            progress.last_replenishment_notice_ms = now_ms;
+        }
+        due
     }
 
     /// Consumes the product handle, cancels the child scope, and
@@ -3324,11 +5462,21 @@ impl ServiceProduct {
         message: Option<&I2npMessage>,
     ) {
         if self.inner.retirement.is_none() {
-            let routed = self
-                .inner
-                .coordinator
-                .route_inbound_i2np_classified(inbound, outcome);
+            // Plan 504 — the live inbound route goes through the
+            // liveness seam. The outcome was decoded exactly once by
+            // the caller, so the classified variant correlates that
+            // same outcome with the pending liveness tests instead of
+            // running a second decoder.
+            let routed = crate::tunnel_liveness::route_inbound_with_liveness_classified(
+                &mut self.inner.coordinator,
+                &mut self.inner.liveness,
+                inbound,
+                outcome,
+            );
             for outcome in routed.coordinator {
+                // Plan 505 — the exploratory driver records one
+                // peer-level observation for the terminal outcome it owns.
+                self.observe_exploratory_outcome(&outcome);
                 self.record_destination_build_outcome(&outcome);
                 if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } =
                     &outcome
@@ -3384,6 +5532,17 @@ impl ServiceProduct {
                     }
                 };
                 self.record_destination_registration(destination_id, direction);
+                // Plan 512 — the liveness scheduler tracks the
+                // coordinator's destination-role slot, while a failure
+                // has to be applied to the destination runtime's pool
+                // slot. The binding keeps the two together.
+                self.record_destination_role_binding(
+                    destination_id,
+                    direction,
+                    binding.role_slot,
+                    binding.pool_slot,
+                    binding.local_receive_tunnel,
+                );
                 match direction {
                     BuildDirection::Outbound => {
                         if let Some(role) = self
@@ -3407,6 +5566,10 @@ impl ServiceProduct {
                                     .with_destination_runtime(destination_id, |runtime| {
                                         runtime.mark_tunnel_failed(binding.pool_slot)
                                     });
+                                // Plan 512 — the binding must not outlive the tunnel it names.
+                                self.inner
+                                    .destination_role_bindings
+                                    .remove(&binding.role_slot);
                             }
                         } else {
                             let _ = self
@@ -3414,6 +5577,10 @@ impl ServiceProduct {
                                 .with_destination_runtime(destination_id, |runtime| {
                                     runtime.mark_tunnel_failed(binding.pool_slot)
                                 });
+                            // Plan 512 — the binding must not outlive the tunnel it names.
+                            self.inner
+                                .destination_role_bindings
+                                .remove(&binding.role_slot);
                         }
                     }
                     BuildDirection::Inbound => {
@@ -3474,6 +5641,10 @@ impl ServiceProduct {
                                     .with_destination_runtime(destination_id, |runtime| {
                                         runtime.mark_tunnel_failed(binding.pool_slot)
                                     });
+                                // Plan 512 — the binding must not outlive the tunnel it names.
+                                self.inner
+                                    .destination_role_bindings
+                                    .remove(&binding.role_slot);
                             } else {
                                 self.record_destination_post_activation(
                                     destination_id,
@@ -3490,6 +5661,10 @@ impl ServiceProduct {
                                 .with_destination_runtime(destination_id, |runtime| {
                                     runtime.mark_tunnel_failed(binding.pool_slot)
                                 });
+                            // Plan 512 — the binding must not outlive the tunnel it names.
+                            self.inner
+                                .destination_role_bindings
+                                .remove(&binding.role_slot);
                         }
                     }
                 }
@@ -3506,6 +5681,10 @@ impl ServiceProduct {
                     .inbound_traffic
                     .tunnel_data_received
                     .saturating_add(1);
+                // Plan 478 §6 — mirror into the manager so SAM (which
+                // holds only the manager) can report below-bridge
+                // arrival on CONNECT timeout.
+                self.manager.note_inbound_tunnel_data_received();
                 cell.clone()
             }
             I2npBody::Garlic(_) => {
@@ -3547,6 +5726,7 @@ impl ServiceProduct {
                     .inbound_traffic
                     .tunnel_data_cells_accepted
                     .saturating_add(1);
+                self.manager.note_inbound_tunnel_data_cell_accepted();
             }
             InboundDispatchOutcome::DatabaseStoreComplete { bytes }
             | InboundDispatchOutcome::DatabaseSearchReplyComplete { bytes }
@@ -3582,6 +5762,7 @@ impl ServiceProduct {
             .inbound_traffic
             .direct_garlic_received
             .saturating_add(1);
+        self.manager.note_inbound_direct_garlic_received();
         use i2pr_proto::I2npHeader;
         let standard_bytes: Vec<u8> = match message.header() {
             I2npHeader::Standard { .. } => raw_bytes.to_vec(),
@@ -3635,6 +5816,16 @@ impl ServiceProduct {
             if !report.garlic_authenticated {
                 continue;
             }
+            self.inner.inbound_traffic.service_synack_observed = self
+                .inner
+                .inbound_traffic
+                .service_synack_observed
+                .saturating_add(report.synack_observed as u64);
+            self.inner.inbound_traffic.service_synack_accepted = self
+                .inner
+                .inbound_traffic
+                .service_synack_accepted
+                .saturating_add(report.synack_accepted as u64);
             if report.streaming_packets_accepted > 0
                 && let Some(capability) = self.manager.router_delivery()
             {
@@ -3675,17 +5866,31 @@ impl ServiceProduct {
         let now_secs = wall_secs() as u32;
         let now_ms = wall_ms();
         match envelope.body() {
-            I2npBody::DatabaseStore(_) => {
+            I2npBody::DatabaseStore(store_message) => {
                 // Plan 201 §G — the coordinator's typed seam is
                 // the single sanctioned producer of lookup state.
                 // The production composition drives it; the driver
                 // never sees the seam.
                 let mut coord_guard = self.inner.destination_tunnels.lock().await;
                 coord_guard.advance_time(now_secs as u64 * 1000);
+                drop(coord_guard);
+                // Plan 513 — the reply to a RouterInfo-kind lookup. The
+                // record is validated by the lookup engine and inserted
+                // into the router's NetDB, so the named peer becomes a
+                // peer the router can ask. A record that does not name
+                // the lookup's target changes nothing.
+                self.ingest_discovery_routerinfo_store(store_message, now_ms);
             }
-            I2npBody::DatabaseSearchReply(_) => {
+            I2npBody::DatabaseSearchReply(reply) => {
                 let mut coord_guard = self.inner.destination_tunnels.lock().await;
                 coord_guard.advance_time(now_secs as u64 * 1000);
+                drop(coord_guard);
+                // Plan 513 — the reply to an exploratory lookup. Its named
+                // peers are offered to the routing table as
+                // **suggestions**: a suggestion is never evidence, and the
+                // suggesting peer must itself be indexed with signed
+                // evidence before the table accepts it.
+                self.ingest_discovery_search_reply(reply);
             }
             I2npBody::Garlic(_) => {
                 // Plan 210 §F + Plan 212 §14 — resolve the owning
@@ -3700,7 +5905,72 @@ impl ServiceProduct {
                         .inbound_traffic
                         .service_owner_misses
                         .saturating_add(1);
+                    // Plan 478 miss taxonomy, decided from already-held
+                    // registries (never a new lookup or network read):
+                    // retired service memory, then a live
+                    // destination-role binding without an owner
+                    // (divergence alarm), then the exploratory pool,
+                    // then never-known addressing. The exploratory
+                    // arm tests the pool, never the shared
+                    // data-plane registry: every dispatch-accepted
+                    // cell is registry-known by construction, so a
+                    // registry test would mask the divergence arm.
+                    // Counts only; the class always sums into the
+                    // aggregate.
+                    let class = {
+                        let tunnel = TunnelId::new(receive_tunnel_id).ok();
+                        let destination_role_bound = tunnel.is_some_and(|tunnel| {
+                            self.inner
+                                .coordinator
+                                .registry_inbound_slot(tunnel)
+                                .is_some_and(is_destination_role_slot)
+                        });
+                        let exploratory_pool_known = tunnel.is_some_and(|tunnel| {
+                            self.inner
+                                .coordinator
+                                .exploratory_pool_holds_inbound(tunnel)
+                        });
+                        let retired_service = self.manager.is_retired_receive_id(receive_tunnel_id);
+                        InboundOwnerMissClass::classify(
+                            destination_role_bound,
+                            exploratory_pool_known,
+                            retired_service,
+                        )
+                    };
+                    match class {
+                        InboundOwnerMissClass::ServiceUnowned => {
+                            self.inner
+                                .inbound_traffic
+                                .service_owner_miss_service_unowned = self
+                                .inner
+                                .inbound_traffic
+                                .service_owner_miss_service_unowned
+                                .saturating_add(1);
+                        }
+                        InboundOwnerMissClass::ExploratoryKnown => {
+                            self.inner.inbound_traffic.service_owner_miss_exploratory = self
+                                .inner
+                                .inbound_traffic
+                                .service_owner_miss_exploratory
+                                .saturating_add(1);
+                        }
+                        InboundOwnerMissClass::RetiredService => {
+                            self.inner.inbound_traffic.service_owner_miss_retired = self
+                                .inner
+                                .inbound_traffic
+                                .service_owner_miss_retired
+                                .saturating_add(1);
+                        }
+                        InboundOwnerMissClass::Unknown => {
+                            self.inner.inbound_traffic.service_owner_miss_unknown = self
+                                .inner
+                                .inbound_traffic
+                                .service_owner_miss_unknown
+                                .saturating_add(1);
+                        }
+                    }
                     self.manager.note_inbound_orphan_receive();
+                    self.manager.note_inbound_garlic_owner_miss_class(class);
                     return;
                 };
                 self.inner.inbound_traffic.service_owner_matches = self
@@ -3708,6 +5978,7 @@ impl ServiceProduct {
                     .inbound_traffic
                     .service_owner_matches
                     .saturating_add(1);
+                self.manager.note_inbound_garlic_owner_match();
                 let destination_id = runtime.destination_id;
                 // Plan 213: server profiles feed the receiver mirror
                 // (the polled server loop accepts there); clients feed
@@ -3908,6 +6179,16 @@ impl ServiceProduct {
                     .inbound_traffic
                     .service_streaming_rejected
                     .saturating_add(report.streaming_rejected as u64);
+                self.inner.inbound_traffic.service_synack_observed = self
+                    .inner
+                    .inbound_traffic
+                    .service_synack_observed
+                    .saturating_add(report.synack_observed as u64);
+                self.inner.inbound_traffic.service_synack_accepted = self
+                    .inner
+                    .inbound_traffic
+                    .service_synack_accepted
+                    .saturating_add(report.synack_accepted as u64);
                 // Plan 212 §14 step 8 — advance the typed
                 // `remote_inbound_dispatched` counter ONLY after
                 // >=1 Streaming payload was accepted through the
@@ -3924,10 +6205,68 @@ impl ServiceProduct {
                     capability.note_inbound_dispatched().await;
                 }
             }
-            I2npBody::DeliveryStatus(_) => {
-                // Plan 188 §6.3 — DeliveryStatus cells are silently
-                // consumed by the local M2 data plane; the inbound
-                // dispatch is a no-op for this body kind.
+            I2npBody::DeliveryStatus(status) => {
+                // Plan 504 — a liveness probe's answer arrives on the
+                // exploratory inbound tunnel the probe named, so the
+                // *tunneled* delivery-status path is where the live
+                // correlation happens. The answer is attributed by the
+                // identifier the probe carried, so only that probe
+                // refreshes the pair; an answer that matches no
+                // pending probe is not evidence and refreshes nothing.
+                //
+                // The liveness identifier space is disjoint from the
+                // publication reply-token space, so the two
+                // correlations below cannot claim the same answer.
+                let liveness_test = self
+                    .inner
+                    .liveness
+                    .record_authenticated_response(status.message_id);
+                if liveness_test.is_some() {
+                    tracing::debug!(
+                        transition = "liveness_response_correlated",
+                        "a tunnel liveness probe was answered on the exploratory inbound tunnel (counts only)",
+                    );
+                }
+                // Plan 487 WP4 — a `DeliveryStatus` that carries a
+                // publication's reply token is the network's
+                // acknowledgement that the record was stored. It
+                // arrives on the inbound tunnel the publication named
+                // as its reply route, so the acknowledgement is
+                // attributed to that tunnel.
+                //
+                // A `DeliveryStatus` with no matching publication is
+                // not an error: the local M2 data plane consumes other
+                // status cells (Plan 188 §6.3), and a publication that
+                // was already reaped must not be resurrected.
+                let token = status.message_id;
+                if token == 0 {
+                    return;
+                }
+                let correlated = self
+                    .inner
+                    .destination_tunnels
+                    .lock()
+                    .await
+                    .correlate_ls2_publication_status(token, receive_tunnel_id);
+                match correlated {
+                    Ok(acknowledgement) => {
+                        tracing::info!(
+                            publication_reply_token = acknowledgement.reply_token,
+                            inbound_tunnel_id = acknowledgement.inbound_tunnel_id,
+                            published_seconds = acknowledgement.published_seconds,
+                            elapsed_ms = acknowledgement
+                                .acknowledged_at_ms
+                                .saturating_sub(acknowledgement.published_at_ms),
+                            transition = "ls2_publication_acknowledged",
+                            "LS2 publication acknowledged by a correlated DeliveryStatus on an inbound tunnel (counts only)",
+                        );
+                    }
+                    Err(_) => {
+                        // No matching publication: the status belongs to
+                        // another protocol path. Nothing is counted and
+                        // no state changes.
+                    }
+                }
             }
             _ => {}
         }
@@ -3943,14 +6282,14 @@ pub enum InboundPollOutcome {
     Shutdown,
 }
 
-fn wall_ms() -> u64 {
+pub(crate) fn wall_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(1_700_000_000_000)
 }
 
-fn wall_secs() -> u64 {
+pub(crate) fn wall_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|v| v.as_secs())
@@ -4152,18 +6491,85 @@ async fn resolve_remote_destination_for_service_inner(
             bridge.router_inbound_receive_ids()
         })
         .unwrap_or_default();
+    // Temporary Plan 478 attribution: distinguish a missing sender
+    // bridge from a bridge with an empty projection. Counts only.
+    let sender_bridge_present = manager
+        .with_destination_bridge(service_destination, |_| ())
+        .is_some();
+    let sender_is_sam = manager
+        .router_network_sam_runtime(service_destination)
+        .is_some();
     let local_receive_for_lookup = receive_ids.first().copied().ok_or_else(|| {
+        tracing::warn!(
+            sender_bridge_present,
+            sender_is_sam,
+            bridge_receive_count = receive_ids.len(),
+            transition = "peer_lease_no_receive_ids",
+            "peer lease fetch has no sender receive ids",
+        );
         ServiceProductError::Provisioning("service has no inbound receive ids".to_owned())
     })?;
-    let local_receive = TunnelId::new(local_receive_for_lookup)
-        .map_err(|_| ServiceProductError::Provisioning("invalid receive tunnel id".to_owned()))?;
-    let reply_path = reply_path_for_inbound_route(coordinator.registry(), local_receive)
-        .map_err(|_| ServiceProductError::LookupTimeout)?;
-    let (lookup_id, action) = {
+    // Prefer a receive id with a live registry gateway route.
+    // The bridge projection and the coordinator registry can name
+    // disjoint id sets across replacement, so probe the bridge ids
+    // first (the sender's own tunnels) and fall back to any
+    // registry-routed receive id: the lookup reply correlates by
+    // lookup id, not by tunnel, so any live inbound tunnel of ours
+    // carries it. Fail closed only when nothing has a route. Counts
+    // only; no tunnel ids logged.
+    let mut live_candidates = 0usize;
+    let mut routed_path = None;
+    // Temporary Plan 478 attribution: registry population vs
+    // bridge projection. Counts only.
+    let registry_receive_ids = coordinator.registry().inbound_receive_ids();
+    let registry_receive_count = registry_receive_ids.len();
+    let mut candidates: Vec<u32> =
+        Vec::with_capacity(receive_ids.len() + registry_receive_ids.len());
+    for id in receive_ids.iter().copied() {
+        if !candidates.contains(&id) {
+            candidates.push(id);
+        }
+    }
+    for id in registry_receive_ids.iter().map(|id| id.get()) {
+        if !candidates.contains(&id) {
+            candidates.push(id);
+        }
+    }
+    for candidate in candidates {
+        let Ok(tunnel_id) = TunnelId::new(candidate) else {
+            continue;
+        };
+        live_candidates += 1;
+        match reply_path_for_inbound_route(coordinator.registry(), tunnel_id) {
+            Ok(path) => {
+                routed_path = Some(path);
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+    let reply_path = routed_path.ok_or_else(|| {
+        tracing::warn!(
+            bridge_receive_count = receive_ids.len(),
+            live_candidates,
+            registry_receive_count,
+            transition = "peer_lease_no_registry_route",
+            "peer lease fetch has no registry-routed receive id",
+        );
+        ServiceProductError::Provisioning("service has no registry-routed receive id".to_owned())
+    })?;
+    let (lookup_id, mut action) = {
         let mut coord_guard = destination_tunnels.lock().await;
         coord_guard
             .begin_lease_lookup(destination_hash, &routing_key, reply_path)
-            .map_err(|_| ServiceProductError::LookupTimeout)?
+            .map_err(|_| {
+                tracing::warn!(
+                    lookup_stage = "begin",
+                    transition = "peer_lease_lookup_stage",
+                    "peer LeaseSet2 fetch failed before send",
+                );
+                ServiceProductError::LookupTimeout
+            })?
     };
     // Compose the lookup through the service's real router-backed
     // outbound role (borrow by reference; no removal, no
@@ -4182,6 +6588,14 @@ async fn resolve_remote_destination_for_service_inner(
     // At most MAX_LOOKUP_ATTEMPTS transmissions per service, each
     // with a bounded pump window; pump accounting is cumulative
     // across attempts for the timeout attribution below.
+    //
+    // Retries rotate floodfill candidates instead of re-asking the
+    // silent one: the state machine skips already-queried peers for
+    // the same active lookup, so attempt N>1 names the next
+    // eligible floodfill (observed in-lane: the nearest candidate
+    // stayed silent while a farther one held the record). Candidate
+    // exhaustion terminates honestly through the shared unresolved
+    // attribution below. Counts only; no peer identities logged.
     const MAX_LOOKUP_ATTEMPTS: u64 = 3;
     const LOOKUP_ATTEMPT_WINDOW: Duration = Duration::from_secs(25);
     const LOOKUP_SETTLE_DELAY: Duration = Duration::from_secs(5);
@@ -4208,8 +6622,33 @@ async fn resolve_remote_destination_for_service_inner(
     // observed type number.
     let mut direct_types: Vec<(u8, u64)> = Vec::new();
     let mut tunnel_rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(7));
+    let mut lookup_rotations: u64 = 0;
     while !resolved && attempts < MAX_LOOKUP_ATTEMPTS {
         attempts += 1;
+        if attempts > 1 {
+            // Rotate to the next unqueried floodfill for the same
+            // active lookup. Exhaustion (or a failed advance) ends
+            // the retry loop through the shared unresolved
+            // attribution below; it is not a send-stage failure.
+            let advanced = {
+                let mut coord_guard = destination_tunnels.lock().await;
+                coord_guard.advance_lease_lookup_after_timeout(lookup_id, &routing_key)
+            };
+            match advanced {
+                Ok(next_action) => {
+                    action = next_action;
+                    lookup_rotations = lookup_rotations.saturating_add(1);
+                    tracing::warn!(
+                        lookup_stage = "rotate",
+                        lookup_rotations,
+                        attempts,
+                        transition = "peer_lease_lookup_stage",
+                        "peer LeaseSet2 fetch rotates to the next floodfill candidate",
+                    );
+                }
+                Err(_) => break,
+            }
+        }
         {
             let coord_guard = destination_tunnels.lock().await;
             let delivery = ssu2_handle.delivery().clone();
@@ -4217,8 +6656,14 @@ async fn resolve_remote_destination_for_service_inner(
             // the router-backed outbound role by reference; the
             // coordinator composes the DatabaseLookup cells; the
             // delivery service carries them to the first hop.
-            let deadline = Deadline::new(options.tunnel_deadline)
-                .map_err(|_| ServiceProductError::LookupTimeout)?;
+            let deadline = Deadline::new(options.tunnel_deadline).map_err(|_| {
+                tracing::warn!(
+                    lookup_stage = "deadline",
+                    transition = "peer_lease_lookup_stage",
+                    "peer LeaseSet2 fetch failed before send",
+                );
+                ServiceProductError::LookupTimeout
+            })?;
             let dispatch = manager
                 .with_destination_bridge(service_destination, |bridge| {
                     if !bridge.has_router_network_state(wall_ms()) {
@@ -4239,16 +6684,63 @@ async fn resolve_remote_destination_for_service_inner(
                     Some(dispatch)
                 })
                 .flatten()
-                .ok_or(ServiceProductError::LookupTimeout)?;
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        lookup_stage = "compose",
+                        transition = "peer_lease_lookup_stage",
+                        "peer LeaseSet2 fetch failed before send",
+                    );
+                    ServiceProductError::LookupTimeout
+                })?;
+            // The lookup rides the service outbound role, whose
+            // first hop may have no live session (role replacement
+            // or churn since the last build). Ensure it with the
+            // same bounded outbound first-hop authority builds use;
+            // a send without a session fails closed as
+            // NoActiveSession.
+            if let Some(first_hop) = dispatch.deliveries.first().map(|cell| cell.target().hash())
+                && let Err(_) = ensure_selected_peer_session(
+                    destination_tunnels,
+                    ssu2_handle,
+                    DestinationDialAuthority {
+                        router_hash: first_hop,
+                        purpose: DestinationDialPurpose::OutboundTunnelFirstHop,
+                    },
+                    options.dial_timeout,
+                    options.ssu2_qualification_profile,
+                    &CancellationToken::new(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    lookup_stage = "ensure",
+                    transition = "peer_lease_lookup_stage",
+                    "peer LeaseSet2 fetch failed before send",
+                );
+                return Err(ServiceProductError::LookupTimeout);
+            }
             for cell_delivery in &dispatch.deliveries {
                 let request = crate::router_i2np::RouterDeliveryRequest::new(
                     cell_delivery.target(),
                     cell_delivery.message_bytes().to_vec(),
                     options.delivery_timeout,
                 )
-                .map_err(|_| ServiceProductError::LookupTimeout)?;
+                .map_err(|_| {
+                    tracing::warn!(
+                        lookup_stage = "request",
+                        transition = "peer_lease_lookup_stage",
+                        "peer LeaseSet2 fetch failed before send",
+                    );
+                    ServiceProductError::LookupTimeout
+                })?;
                 let outcome = delivery.deliver(request, &CancellationToken::new());
                 if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+                    tracing::warn!(
+                        lookup_stage = "deliver",
+                        delivery_outcome = ?outcome,
+                        transition = "peer_lease_lookup_stage",
+                        "peer LeaseSet2 fetch failed before send",
+                    );
                     return Err(ServiceProductError::LookupTimeout);
                 }
             }
@@ -4408,6 +6900,18 @@ async fn resolve_remote_destination_for_service_inner(
         let coord_guard = destination_tunnels.lock().await;
         coord_guard.lease_store().get(&destination_hash).cloned()
     };
+    // Temporary Plan 478 attribution: the lookup loop reported
+    // success yet the exact-key read missed. Distinguish an empty
+    // store from a key mismatch by count only. Remove once
+    // attributed.
+    if cached.is_none() {
+        let coord_guard = destination_tunnels.lock().await;
+        tracing::warn!(
+            store_len = coord_guard.lease_store().len(),
+            transition = "peer_lease_cache_miss_after_resolve",
+            "peer LeaseSet2 resolved but exact-key read missed",
+        );
+    }
     let cached = cached.ok_or(ServiceProductError::LookupTimeout)?;
     let validated = cached.clone();
     let now_ms = wall_ms();
@@ -4445,6 +6949,36 @@ async fn resolve_remote_destination_for_service_inner(
 /// Tunnel ids allocate disjointly per service via
 /// [`Plan212TunnelIdAllocator`]. A failed provisioning pass fails
 /// atomically (caller tears down staged listeners).
+/// Plan 478 — translates live pool registrations to the local
+/// endpoint receive ids the data-plane registry, the owner table,
+/// and the bridge projection key on, excluding evicted slots.
+/// Pool registrations key on the creator tunnel id (a distinct
+/// allocator draw); feeding those ids to owner/bridge state
+/// silently swapped both namespaces on the first poll after every
+/// install and deafened all tunneled service inbound.
+///
+/// Returns `None` when any live registration lacks a local
+/// translation: callers must skip refresh rather than amputate
+/// live owners with a partial list. Pure; unit-tested.
+fn local_inbound_receive_ids(
+    registrations: &[i2pr_tunnel::TunnelRegistration],
+    locals: &[(TunnelSlot, u32)],
+    evicted: &std::collections::HashSet<TunnelSlot>,
+) -> Option<Vec<u32>> {
+    let mut ids = Vec::with_capacity(registrations.len());
+    for registration in registrations
+        .iter()
+        .filter(|registration| !evicted.contains(&registration.slot()))
+    {
+        let local = locals
+            .iter()
+            .find(|(slot, _)| *slot == registration.slot())
+            .map(|(_, local)| *local)?;
+        ids.push(local);
+    }
+    Some(ids)
+}
+
 fn register_destination_material(
     manager: &crate::service_tunnels::ServiceTunnelManager,
     coordinator: &mut ExploratoryBuildCoordinator,
@@ -4574,27 +7108,62 @@ async fn submit_destination_replacement(
     qualification_profile: crate::config::Ssu2QualificationProfile,
     cancellation: &CancellationToken,
 ) -> Result<(), ServiceProductError> {
-    let (candidates, _) = {
+    let (candidates, projection_summary) = {
         let guard = destination_tunnels.lock().await;
         guard.destination_peer_candidates()
     };
-    let selected = select_destination_path_os(&candidates)?;
+    let selected = select_projected_destination_path_os(&candidates, &projection_summary)?;
+    record_hop_selection(destination_tunnels, &selected).await;
+    let outbound_slot = coordinator
+        .usable_outbound_role_slots()
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            ServiceProductError::Provisioning(
+                "Destination replacement has no usable outbound tunnel route".to_owned(),
+            )
+        })?;
+    let outbound_first_hop = coordinator
+        .registry_outbound_first_hop(outbound_slot)
+        .map(|(router_hash, _)| router_hash)
+        .ok_or_else(|| {
+            ServiceProductError::Provisioning(
+                "Destination replacement outbound route has no first hop".to_owned(),
+            )
+        })?;
+    let dial_authority = destination_build_dial_authority(
+        direction,
+        selected[0].router_hash(),
+        Some(outbound_first_hop),
+    )
+    .ok_or_else(|| {
+        ServiceProductError::Provisioning(
+            "Destination build has no authorized outbound first-hop route".to_owned(),
+        )
+    })?;
     ensure_selected_peer_session(
         destination_tunnels,
         ssu2_handle,
-        selected[0].router_hash(),
+        dial_authority,
         dial_timeout,
         qualification_profile,
         cancellation,
     )
     .await?;
-    let ids = allocator.allocate_set(10);
+    let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+        ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
+    })?;
+    let reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
+    let ids = allocator.allocate_set(10, &reserved_tunnel_ids)?;
     if ids.contains(&0) {
         return Err(ServiceProductError::Provisioning(format!(
             "{spec_id}: allocator emitted zero tunnel id"
         )));
     }
-    let message_base = (ids[0] ^ 0x51A7_0000) & !0x03;
+    let mut excluded_message_ids = coordinator.reserved_message_ids();
+    let message_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+    excluded_message_ids.push(message_id);
+    let outer_message_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
     let (roles, receives, nexts, creator, message_id, outbound_reply_router, originator_hash) =
         match direction {
             BuildDirection::Outbound => (
@@ -4606,7 +7175,7 @@ async fn submit_destination_replacement(
                 [ids[1], ids[2], ids[3]],
                 [ids[2], ids[3], ids[4]],
                 ids[0],
-                message_base | 0x01,
+                message_id,
                 Some(local_router_hash),
                 None,
             ),
@@ -4619,7 +7188,7 @@ async fn submit_destination_replacement(
                 [ids[6], ids[7], ids[8]],
                 [ids[7], ids[8], ids[9]],
                 ids[5],
-                message_base | 0x02,
+                message_id,
                 None,
                 Some(local_router_hash),
             ),
@@ -4637,20 +7206,18 @@ async fn submit_destination_replacement(
         outbound_reply_router,
         originator_hash,
     };
-    let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
-        ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
-    })?;
     let now_ms = wall_ms();
     coordinator.advance_time(now_ms);
     match coordinator
-        .submit_destination(
+        .submit_destination_via_outbound_tunnel(
             request,
             &ssu2_handle.delivery().clone(),
             &ShortBuildI2npBridge::new(),
             BridgeHeader::ShortTransport {
-                message_id,
+                message_id: outer_message_id,
                 expiration_seconds: wall_secs().saturating_add(60) as u32,
             },
+            outbound_slot,
             &mut rng,
         )
         .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?
@@ -4664,18 +7231,374 @@ async fn submit_destination_replacement(
     }
 }
 
-/// Ensures the normal SSU2 owner has an authenticated direct session to a
-/// selected first hop. Endpoint and key material are read from the same
-/// validated RouterInfo that produced the candidate; only loopback targets
-/// can pass the current controlled-profile dial constructor.
+/// Selects the only direct-dial target allowed by a Destination build
+/// operation. Inbound gateway identity is an encrypted target behind the
+/// outbound tunnel; it never grants direct-dial authority.
+///
+/// Creator RouterInfo publication is the narrow NetDb-precondition
+/// exception: short-build endpoints reply directly to the creator
+/// (Plan 114 direct-to-creator reply routing), so the creator record
+/// must be resolvable mesh-wide before any build is submitted. The
+/// authority names an explicit floodfill hash and never derives from
+/// a gateway or path role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DestinationDialPurpose {
+    RouterBootstrapFirstHop,
+    OutboundTunnelFirstHop,
+    CreatorRouterInfoPublication,
+    ServiceLeaseSetPublication,
+    /// Plan 522: the outbound peer-session pool's own dial.
+    ///
+    /// The purpose records why the dial happened, exactly as the
+    /// other purposes do. The pool's dial is never a first hop of
+    /// a tunnel and never a publication: it establishes a session
+    /// the router wants to **hold**, so that a later need finds it.
+    PeerPoolMaintenance,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DestinationDialAuthority {
+    router_hash: Hash,
+    purpose: DestinationDialPurpose,
+}
+
+fn destination_build_dial_authority(
+    direction: BuildDirection,
+    selected_first_hop: Hash,
+    outbound_first_hop: Option<Hash>,
+) -> Option<DestinationDialAuthority> {
+    match direction {
+        BuildDirection::Outbound => Some(match outbound_first_hop {
+            Some(router_hash) => DestinationDialAuthority {
+                router_hash,
+                purpose: DestinationDialPurpose::OutboundTunnelFirstHop,
+            },
+            None => DestinationDialAuthority {
+                router_hash: selected_first_hop,
+                purpose: DestinationDialPurpose::RouterBootstrapFirstHop,
+            },
+        }),
+        BuildDirection::Inbound => Some(DestinationDialAuthority {
+            router_hash: outbound_first_hop?,
+            purpose: DestinationDialPurpose::OutboundTunnelFirstHop,
+        }),
+    }
+}
+
+/// Names an explicit floodfill for direct service-LeaseSet
+/// publication. Same explicit-selection rule as the creator-RI
+/// purpose: never derived from a gateway or path role.
+fn service_lease_set_publication_authority(floodfill: Hash) -> DestinationDialAuthority {
+    DestinationDialAuthority {
+        router_hash: floodfill,
+        purpose: DestinationDialPurpose::ServiceLeaseSetPublication,
+    }
+}
+
+#[cfg(test)]
+mod plan482_destination_dial_authority_tests {
+    use super::{
+        DestinationDialAuthority, DestinationDialPurpose, destination_build_dial_authority,
+        dial_destination_peer, service_lease_set_publication_authority,
+    };
+    use crate::exploratory_build::BuildDirection;
+    use i2pr_proto::Hash;
+    use i2pr_runtime::CancellationToken;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    fn hash(byte: u8) -> Hash {
+        Hash::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn inbound_gateway_never_authorizes_destination_direct_dial() {
+        let gateway = hash(0x47);
+        let outbound_first_hop = hash(0x21);
+
+        let authority = destination_build_dial_authority(
+            BuildDirection::Inbound,
+            gateway,
+            Some(outbound_first_hop),
+        )
+        .expect("inbound route must authorize its existing outbound first hop");
+
+        assert_eq!(authority.router_hash, outbound_first_hop);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::OutboundTunnelFirstHop
+        );
+        assert_ne!(authority.router_hash, gateway);
+    }
+
+    #[test]
+    fn inbound_route_miss_fails_closed_and_bootstrap_remains_explicit() {
+        let gateway = hash(0x47);
+        assert!(destination_build_dial_authority(BuildDirection::Inbound, gateway, None).is_none());
+
+        let bootstrap = destination_build_dial_authority(BuildDirection::Outbound, gateway, None)
+            .expect("outbound bootstrap retains direct first-hop authority");
+        assert_eq!(bootstrap.router_hash, gateway);
+        assert_eq!(
+            bootstrap.purpose,
+            DestinationDialPurpose::RouterBootstrapFirstHop
+        );
+    }
+
+    #[test]
+    fn peer_overlap_is_attributed_only_to_the_independent_outbound_route() {
+        let overlapping_peer = hash(0x61);
+        let authority = destination_build_dial_authority(
+            BuildDirection::Inbound,
+            overlapping_peer,
+            Some(overlapping_peer),
+        )
+        .expect("outbound route authorizes its first hop");
+
+        assert_eq!(authority.router_hash, overlapping_peer);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::OutboundTunnelFirstHop
+        );
+    }
+
+    #[test]
+    fn replacement_builds_use_the_existing_outbound_route_first_hop() {
+        let replacement_target = hash(0x38);
+        let outbound_first_hop = hash(0x21);
+        let authority = destination_build_dial_authority(
+            BuildDirection::Outbound,
+            replacement_target,
+            Some(outbound_first_hop),
+        )
+        .expect("existing route authorizes only its own first hop");
+
+        assert_eq!(authority.router_hash, outbound_first_hop);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::OutboundTunnelFirstHop
+        );
+        assert_ne!(authority.router_hash, replacement_target);
+    }
+
+    #[test]
+    fn creator_publication_names_an_explicit_floodfill_purpose() {
+        let floodfill = hash(0xF0);
+        let authority = DestinationDialAuthority {
+            router_hash: floodfill,
+            purpose: DestinationDialPurpose::CreatorRouterInfoPublication,
+        };
+        assert_eq!(authority.router_hash, floodfill);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::CreatorRouterInfoPublication
+        );
+        // The build-route authority can never mint this purpose: it
+        // derives only from explicit floodfill selection, never from a
+        // gateway or path role.
+        for direction in [BuildDirection::Outbound, BuildDirection::Inbound] {
+            let route_authority =
+                destination_build_dial_authority(direction, hash(0x47), Some(floodfill));
+            if let Some(route_authority) = route_authority {
+                assert_ne!(
+                    route_authority.purpose,
+                    DestinationDialPurpose::CreatorRouterInfoPublication
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn leaseset_publication_names_an_explicit_floodfill_purpose() {
+        let floodfill = hash(0xF1);
+        let authority = service_lease_set_publication_authority(floodfill);
+        assert_eq!(authority.router_hash, floodfill);
+        assert_eq!(
+            authority.purpose,
+            DestinationDialPurpose::ServiceLeaseSetPublication
+        );
+        assert_ne!(
+            authority.purpose,
+            DestinationDialPurpose::CreatorRouterInfoPublication
+        );
+        // The build-route authority can never mint either
+        // publication purpose.
+        for direction in [BuildDirection::Outbound, BuildDirection::Inbound] {
+            let route_authority =
+                destination_build_dial_authority(direction, hash(0x47), Some(floodfill));
+            if let Some(route_authority) = route_authority {
+                assert_ne!(
+                    route_authority.purpose,
+                    DestinationDialPurpose::ServiceLeaseSetPublication
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dial_boundary_records_the_actual_authorized_route_cause() {
+        let gateway = hash(0x47);
+        let outbound_first_hop = hash(0x21);
+        let authority = destination_build_dial_authority(
+            BuildDirection::Inbound,
+            gateway,
+            Some(outbound_first_hop),
+        )
+        .expect("inbound build uses the existing outbound route");
+        let target = i2pr_runtime::Ssu2DialTarget::new(
+            i2pr_transport::PeerId::from_hash(outbound_first_hop),
+            outbound_first_hop,
+            "127.0.0.1:19002".parse().expect("loopback target"),
+            i2pr_runtime::Ssu2PublicKey::new([0x31; 32]).expect("static key"),
+            i2pr_runtime::IntroKey::new([0x42; 32]),
+        )
+        .expect("authorized first-hop target");
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&observed);
+
+        dial_destination_peer(
+            authority,
+            target,
+            Duration::from_secs(1),
+            &CancellationToken::new(),
+            move |cause, target, _, _| async move {
+                recorded.lock().expect("dial-cause fixture").push((
+                    cause.router_hash,
+                    cause.purpose,
+                    target.expected_router_hash(),
+                ));
+                Ok::<(), ()>(())
+            },
+        )
+        .await
+        .expect("authorized dial dispatch");
+
+        assert_eq!(
+            *observed.lock().expect("dial-cause fixture"),
+            vec![(
+                outbound_first_hop,
+                DestinationDialPurpose::OutboundTunnelFirstHop,
+                outbound_first_hop,
+            )]
+        );
+        assert_ne!(gateway, outbound_first_hop);
+    }
+
+    #[tokio::test]
+    async fn dial_boundary_rejects_a_target_outside_its_route_authority() {
+        let gateway = hash(0x47);
+        let authorized = hash(0x21);
+        let wrong_target = hash(0x38);
+        let authority =
+            destination_build_dial_authority(BuildDirection::Inbound, gateway, Some(authorized))
+                .expect("inbound route authority");
+        let target = i2pr_runtime::Ssu2DialTarget::new(
+            i2pr_transport::PeerId::from_hash(wrong_target),
+            wrong_target,
+            "127.0.0.1:19003".parse().expect("loopback target"),
+            i2pr_runtime::Ssu2PublicKey::new([0x51; 32]).expect("static key"),
+            i2pr_runtime::IntroKey::new([0x62; 32]),
+        )
+        .expect("valid peer target outside this route");
+        let dial_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called = Arc::clone(&dial_called);
+
+        let result = dial_destination_peer(
+            authority,
+            target,
+            Duration::from_secs(1),
+            &CancellationToken::new(),
+            move |_, _, _, _| async move {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok::<(), ()>(())
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!dial_called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod session_terminal_reselection_tests {
+    use super::reselect_inbound_with_session_predicate;
+    use crate::destination_peers::test_candidate;
+
+    fn diverse_four() -> Vec<crate::destination_peers::DestinationPeerCandidate> {
+        vec![
+            test_candidate(6_001, "family-a", "10.1.1.1", 1001),
+            test_candidate(6_002, "family-b", "10.2.1.1", 1002),
+            test_candidate(6_003, "family-c", "10.3.1.1", 1003),
+            test_candidate(6_004, "family-d", "10.4.1.1", 1004),
+        ]
+    }
+
+    #[test]
+    fn session_terminal_selection_preserves_qualified_shape() {
+        let candidates = diverse_four();
+        let reselected = reselect_inbound_with_session_predicate(&candidates, |_| true)
+            .expect("reselection with live sessions");
+        assert_eq!(reselected.path.len(), 3);
+        assert!(reselected.session_backed);
+        assert_eq!(reselected.selections, 1);
+    }
+
+    #[test]
+    fn sessionless_terminal_fails_open_to_qualified_shape() {
+        let candidates = diverse_four();
+        let reselected = reselect_inbound_with_session_predicate(&candidates, |_| false)
+            .expect("fail-open reselection without sessions");
+        assert_eq!(reselected.path.len(), 3);
+        assert!(!reselected.session_backed);
+        assert_eq!(reselected.selections, 9);
+    }
+
+    #[test]
+    fn empty_candidates_fail_closed() {
+        let result = reselect_inbound_with_session_predicate(&[], |_| true);
+        assert!(result.is_err());
+    }
+}
+
+/// Records one build-hop selection against the bounded per-peer
+/// participation ledger.
+///
+/// Plan 492: the per-peer participation cap is measured against this
+/// ledger, so a selection that is never recorded would leave the cap
+/// advisory. The coordinator lock is taken and released around the update
+/// only; no lock is held across the caller's `.await`.
+async fn record_hop_selection(
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    selected: &[crate::destination_peers::DestinationPeerCandidate],
+) {
+    if selected.is_empty() {
+        return;
+    }
+    let hashes: Vec<i2pr_proto::Hash> = selected
+        .iter()
+        .map(crate::destination_peers::DestinationPeerCandidate::router_hash)
+        .collect();
+    let mut guard = destination_tunnels.lock().await;
+    guard.record_hop_selection(&hashes);
+}
+
+/// Ensures the normal SSU2 owner has an authenticated direct session to the
+/// first hop authorized by the current build route. Endpoint and key material
+/// come from that peer's validated RouterInfo; only loopback targets can pass
+/// the current controlled-profile dial constructor.
 async fn ensure_selected_peer_session(
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
     ssu2_handle: &Ssu2DaemonHandle,
-    router_hash: Hash,
+    authority: DestinationDialAuthority,
     dial_timeout: Duration,
     qualification_profile: crate::config::Ssu2QualificationProfile,
     cancellation: &CancellationToken,
 ) -> Result<(), ServiceProductError> {
+    let DestinationDialAuthority {
+        router_hash,
+        purpose,
+    } = authority;
     let peer_id = i2pr_transport::PeerId::from_hash(router_hash);
     if !ssu2_handle.service().session_peer_links(peer_id).is_empty() {
         return Ok(());
@@ -4692,15 +7615,62 @@ async fn ensure_selected_peer_session(
             "selected first hop is absent from the validated RouterInfo store".to_owned(),
         )
     })?;
+    // Plan 519: the dial seam is reached through the narrow publication
+    // capability, so the router's own publication and the service product
+    // share one dial path.
+    let publication_handle = ssu2_handle.publication_handle();
+    ensure_peer_session_for_record(
+        &record,
+        &publication_handle,
+        router_hash,
+        purpose,
+        dial_timeout,
+        qualification_profile,
+        cancellation,
+    )
+    .await
+}
+
+/// Plan 515: dials a named peer through **its own** validated SSU2
+/// address, so a publication can reach a peer the router has never
+/// dialled.
+///
+/// The peer is named explicitly by the caller. It is never derived from a
+/// gateway, a path role, or a tunnel identifier, and the purpose records
+/// why the dial happened.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ensure_peer_session_for_record(
+    record: &ValidatedRouterInfo,
+    ssu2_handle: &crate::router_i2np::Ssu2PublicationHandle,
+    router_hash: Hash,
+    purpose: DestinationDialPurpose,
+    dial_timeout: Duration,
+    qualification_profile: crate::config::Ssu2QualificationProfile,
+    cancellation: &CancellationToken,
+) -> Result<(), ServiceProductError> {
     let target_material = record
         .router_info()
         .addresses()
         .iter()
         .filter(|address| address.transport_style() == "SSU2")
         .find_map(|address| {
-            let parsed = i2pr_runtime::Ssu2RouterAddress::parse(address).ok()?;
-            let endpoint = parsed.endpoint()?;
-            let intro = parsed.intro_key()?;
+            // Diagnostic: each step is named, so a refused dial can never look
+            // like a dial that was never attempted.
+            let parsed = match i2pr_runtime::Ssu2RouterAddress::parse(address) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    tracing::warn!(reason = %error, "ssu2 dial target: SSU2 address refused");
+                    return None;
+                }
+            };
+            let Some(endpoint) = parsed.endpoint() else {
+                tracing::warn!("ssu2 dial target: SSU2 address carries no endpoint");
+                return None;
+            };
+            let Some(intro) = parsed.intro_key() else {
+                tracing::warn!("ssu2 dial target: SSU2 address carries no intro key");
+                return None;
+            };
             Some((endpoint, parsed.static_public_key(), intro))
         })
         .ok_or_else(|| {
@@ -4721,15 +7691,56 @@ async fn ensure_selected_peer_session(
         intro_key,
         qualification_profile,
     )?;
-    ssu2_handle
-        .dial(target, dial_timeout, cancellation)
+    dial_destination_peer(
+        DestinationDialAuthority {
+            router_hash,
+            purpose,
+        },
+        target,
+        dial_timeout,
+        cancellation,
+        |_, target, timeout, cancellation| async move {
+            ssu2_handle
+                .dial(target, timeout, &cancellation)
+                .await
+                .map(|_| ())
+        },
+    )
+    .await
+}
+
+async fn dial_destination_peer<F, Fut, E>(
+    authority: DestinationDialAuthority,
+    target: i2pr_runtime::Ssu2DialTarget,
+    timeout: Duration,
+    cancellation: &CancellationToken,
+    dial: F,
+) -> Result<(), ServiceProductError>
+where
+    F: FnOnce(
+        DestinationDialAuthority,
+        i2pr_runtime::Ssu2DialTarget,
+        Duration,
+        CancellationToken,
+    ) -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+{
+    if target.expected_router_hash() != authority.router_hash {
+        return Err(ServiceProductError::Provisioning(
+            "authorized Destination dial target does not match its route".to_owned(),
+        ));
+    }
+    tracing::debug!(
+        dial_purpose = ?authority.purpose,
+        "Destination authorized a direct outbound first-hop session"
+    );
+    dial(authority, target, timeout, cancellation.clone())
         .await
         .map_err(|_| {
             ServiceProductError::Provisioning(
                 "selected first-hop SSU2 session could not be established".to_owned(),
             )
-        })?;
-    Ok(())
+        })
 }
 
 fn selected_peer_material(
@@ -4768,9 +7779,513 @@ fn selected_peer_material(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn await_destination_build_install(
+    manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
+    coordinator: &mut ExploratoryBuildCoordinator,
+    liveness: &mut crate::tunnel_liveness::TunnelLivenessScheduler,
+    ssu2_handle: &mut Ssu2DaemonHandle,
+    attempt_id: i2pr_tunnel::short::BuildAttemptId,
+    destination_id: i2pr_client::DestinationId,
+    direction: BuildDirection,
+    options: ServiceProductOptions,
+    cancellation: &CancellationToken,
+    startup_inbound: &mut VecDeque<Ssu2InboundI2np>,
+    startup_inbound_bytes: &mut usize,
+) -> Result<ActivatedDestinationBinding, ServiceProductError> {
+    let deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
+    while tokio::time::Instant::now() < deadline {
+        coordinator.advance_time(wall_ms());
+        let Some(inbound) = wait_for_startup_inbound(
+            options.poll_interval,
+            cancellation,
+            ssu2_handle.next_inbound(),
+        )
+        .await?
+        else {
+            continue;
+        };
+        // Plan 504 — the live inbound route goes through the
+        // liveness seam, so an inbound `DeliveryStatus` echo is
+        // correlated with the pending liveness test that caused it.
+        let routed = crate::tunnel_liveness::route_inbound_with_liveness(
+            coordinator,
+            liveness,
+            &inbound,
+            wall_ms(),
+        );
+        queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound)?;
+        let Ok(routed) = routed else {
+            continue;
+        };
+        if routed.coordinator.iter().any(|outcome| {
+            matches!(
+                outcome,
+                BuildCoordinatorOutcome::InvalidReply {
+                    attempt_id: returned,
+                    direction: returned_direction,
+                    ..
+                } if *returned == attempt_id && *returned_direction == direction
+            )
+        }) {
+            return Err(match direction {
+                BuildDirection::Inbound => ServiceProductError::InboundBuildInvalidReply,
+                BuildDirection::Outbound => ServiceProductError::OutboundBuildInvalidReply,
+            });
+        }
+        for outcome in routed.coordinator {
+            match outcome {
+                BuildCoordinatorOutcome::DestinationBuildFailed {
+                    destination_id: failed_destination,
+                    direction: failed_direction,
+                } if failed_destination == destination_id && failed_direction == direction => {
+                    return Err(match direction {
+                        BuildDirection::Inbound => ServiceProductError::InboundBuildRejected,
+                        BuildDirection::Outbound => ServiceProductError::OutboundBuildRejected,
+                    });
+                }
+                BuildCoordinatorOutcome::DestinationEstablished {
+                    attempt_id: returned_attempt,
+                    destination_id: returned_destination,
+                    direction: returned_direction,
+                    ..
+                } if returned_attempt == attempt_id
+                    && returned_destination == destination_id
+                    && returned_direction == direction =>
+                {
+                    return register_destination_material(
+                        manager,
+                        coordinator,
+                        destination_id,
+                        attempt_id,
+                        direction,
+                        wall_secs(),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    let emission = coordinator
+        .emission_disposition(attempt_id)
+        .unwrap_or(BuildEmissionDisposition::NotEmitted);
+    let counters = coordinator.counters();
+    tracing::info!(
+        direction = ?direction,
+        originator_write_disposition = ?emission,
+        inbound_gateway_messages = counters.inbound_gateway_messages,
+        inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
+        inbound_gateway_route_match = counters.inbound_gateway_route_match,
+        inbound_orphans = counters.inbound_orphans,
+        invalid_replies = counters.invalid_replies,
+        pending_builds = counters.pending,
+        transition = "build_wait_expired",
+        "destination build source-owned delivery result"
+    );
+    Err(match direction {
+        BuildDirection::Inbound => ServiceProductError::InboundBuildMissing,
+        BuildDirection::Outbound => ServiceProductError::OutboundBuildMissing,
+    })
+}
+
+/// Reselects an inbound three-hop path whose terminal already has a live
+/// SSU2 session, so the stock terminal can forward the ShortTunnelBuild to
+/// us without a fresh RouterInfo lookup. No new direct dial is issued here;
+/// this only reuses sessions established for the outbound route (dialed
+/// first hop, reverse session from the outbound reply). Bounded retries with
+/// fail-open to the last selection preserves existing behavior when no
+/// session terminal is found.
+fn reselect_inbound_with_session_terminal(
+    candidates: &[crate::destination_peers::DestinationPeerCandidate],
+    ssu2_handle: &Ssu2DaemonHandle,
+) -> Result<TerminalReselection, ServiceProductError> {
+    reselect_inbound_with_session_predicate(candidates, |hash| {
+        let peer_id = i2pr_transport::PeerId::from_hash(hash);
+        !ssu2_handle.service().session_peer_links(peer_id).is_empty()
+    })
+}
+
+/// Outcome of session-preferring inbound terminal reselection. Carries
+/// only counts, never peer identities.
+struct TerminalReselection {
+    path: Vec<crate::destination_peers::DestinationPeerCandidate>,
+    session_backed: bool,
+    selections: u8,
+}
+
+/// Pure terminal-preference core: bounded retries, fail-open to the last
+/// selection. Testable without a live runtime handle.
+fn reselect_inbound_with_session_predicate(
+    candidates: &[crate::destination_peers::DestinationPeerCandidate],
+    has_session: impl Fn(i2pr_proto::Hash) -> bool,
+) -> Result<TerminalReselection, ServiceProductError> {
+    let mut selected = crate::destination_peers::select_destination_path_os(candidates)?;
+    let mut selections = 1u8;
+    for _ in 0..8 {
+        let terminal = selected.last().ok_or_else(|| {
+            ServiceProductError::Provisioning(
+                "qualified selector returned an empty inbound path".to_owned(),
+            )
+        })?;
+        if has_session(terminal.router_hash()) {
+            return Ok(TerminalReselection {
+                path: selected,
+                session_backed: true,
+                selections,
+            });
+        }
+        selected = crate::destination_peers::select_destination_path_os(candidates)?;
+        selections = selections.saturating_add(1);
+    }
+    Ok(TerminalReselection {
+        path: selected,
+        session_backed: false,
+        selections,
+    })
+}
+
+/// Decides whether a failed outbound bootstrap build may be retried once
+/// on a fresh path. Only an emitted-but-unanswered attempt qualifies: the
+/// local writer proved the bytes left the socket, so a different random
+/// three-hop route may reach a peer that already resolves our RouterInfo.
+/// Explicit stock rejection, invalid replies, local delivery rejection,
+/// unobserved writes, and cancellation never retry.
+fn should_retry_bootstrap_build(
+    error: &ServiceProductError,
+    disposition: BuildEmissionDisposition,
+    cancellation: &CancellationToken,
+) -> bool {
+    if cancellation.is_cancelled() {
+        return false;
+    }
+    if !matches!(error, ServiceProductError::OutboundBuildMissing) {
+        return false;
+    }
+    matches!(
+        disposition,
+        BuildEmissionDisposition::AllOriginatorDeliveriesEmitted
+            | BuildEmissionDisposition::PartialEmission
+    )
+}
+
+#[cfg(test)]
+mod bootstrap_retry_tests {
+    use super::{BuildEmissionDisposition, ServiceProductError, should_retry_bootstrap_build};
+    use i2pr_core::CancellationReason;
+    use i2pr_runtime::CancellationToken;
+
+    fn missing() -> ServiceProductError {
+        ServiceProductError::OutboundBuildMissing
+    }
+
+    #[test]
+    fn emitted_timeout_retries_when_live() {
+        let live = CancellationToken::default();
+        assert!(should_retry_bootstrap_build(
+            &missing(),
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted,
+            &live,
+        ));
+        assert!(should_retry_bootstrap_build(
+            &missing(),
+            BuildEmissionDisposition::PartialEmission,
+            &live,
+        ));
+    }
+
+    #[test]
+    fn unobserved_or_pending_writes_never_retry() {
+        let live = CancellationToken::default();
+        for disposition in [
+            BuildEmissionDisposition::Pending,
+            BuildEmissionDisposition::NotEmitted,
+            BuildEmissionDisposition::UnobservedTransport,
+        ] {
+            assert!(
+                !should_retry_bootstrap_build(&missing(), disposition, &live),
+                "disposition {disposition:?} must not retry"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_rejection_or_cancel_never_retries() {
+        let live = CancellationToken::default();
+        let emitted = BuildEmissionDisposition::AllOriginatorDeliveriesEmitted;
+        for error in [
+            ServiceProductError::OutboundBuildRejected,
+            ServiceProductError::OutboundBuildInvalidReply,
+            ServiceProductError::OutboundBuildDeliveryRejected,
+            ServiceProductError::InboundBuildMissing,
+            ServiceProductError::Provisioning(
+                "Destination-group provisioning cancelled".to_owned(),
+            ),
+        ] {
+            assert!(
+                !should_retry_bootstrap_build(&error, emitted, &live),
+                "error {error} must not retry"
+            );
+        }
+        let cancelled = CancellationToken::default();
+        cancelled.cancel(CancellationReason::TestHarnessTeardown);
+        assert!(!should_retry_bootstrap_build(
+            &missing(),
+            emitted,
+            &cancelled
+        ));
+    }
+}
+
+/// Decides whether a timed-out tunneled inbound build may be retried
+/// once on a fresh path. Only an emitted-but-unanswered attempt
+/// qualifies: the cells left the socket, so a different random
+/// three-hop route may complete. Explicit stock rejection and invalid
+/// replies return before this predicate is consulted, so only the
+/// wait-timeout path reaches it. Unobserved writes and cancellation
+/// never retry.
+fn should_retry_inbound_build(
+    disposition: BuildEmissionDisposition,
+    cancellation: &CancellationToken,
+) -> bool {
+    if cancellation.is_cancelled() {
+        return false;
+    }
+    matches!(
+        disposition,
+        BuildEmissionDisposition::AllOriginatorDeliveriesEmitted
+            | BuildEmissionDisposition::PartialEmission
+    )
+}
+
+#[cfg(test)]
+mod inbound_retry_tests {
+    use super::{BuildEmissionDisposition, should_retry_inbound_build};
+    use i2pr_core::CancellationReason;
+    use i2pr_runtime::CancellationToken;
+
+    #[test]
+    fn emitted_timeout_retries_when_live() {
+        let live = CancellationToken::default();
+        assert!(should_retry_inbound_build(
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted,
+            &live,
+        ));
+        assert!(should_retry_inbound_build(
+            BuildEmissionDisposition::PartialEmission,
+            &live,
+        ));
+    }
+
+    #[test]
+    fn unobserved_writes_or_cancel_never_retry() {
+        let live = CancellationToken::default();
+        for disposition in [
+            BuildEmissionDisposition::Pending,
+            BuildEmissionDisposition::NotEmitted,
+            BuildEmissionDisposition::UnobservedTransport,
+        ] {
+            assert!(
+                !should_retry_inbound_build(disposition, &live),
+                "disposition {disposition:?} must not retry"
+            );
+        }
+        let cancelled = CancellationToken::default();
+        cancelled.cancel(CancellationReason::TestHarnessTeardown);
+        assert!(!should_retry_inbound_build(
+            BuildEmissionDisposition::AllOriginatorDeliveriesEmitted,
+            &cancelled,
+        ));
+    }
+}
+
+/// How many nearest floodfills receive a destination's LeaseSet2.
+///
+/// A stock peer resolves a LeaseSet2 by asking the floodfills it
+/// selects for the routing key, and it fails the lookup outright when
+/// none of the floodfills it asked holds the record. One copy is
+/// therefore not enough for the destination to be resolvable: the
+/// store has to reach the floodfills a peer will actually ask.
+const LS2_PUBLICATION_FLOODFILLS: usize = 3;
+
+/// The bounded floodfill fan-out for a LeaseSet2 publication.
+///
+/// The candidates arrive ordered by routing-key distance, so the
+/// fan-out keeps the nearest ones. The bound is a hard ceiling: the
+/// publication never grows an unbounded recipient list.
+fn bounded_publication_floodfills(
+    candidates: Vec<i2pr_netdb::RouterHash>,
+) -> Vec<i2pr_netdb::RouterHash> {
+    candidates
+        .into_iter()
+        .take(LS2_PUBLICATION_FLOODFILLS)
+        .collect()
+}
+
+/// Composes the fire-and-forget `DatabaseStore` carrying our creator
+/// RouterInfo. Pure constructor for deterministic coverage; the bytes
+/// are the same public record future handshakes emit, never key
+/// material.
+/// Publishes our creator RouterInfo to the nearest known floodfills
+/// before any build is submitted. Short-build endpoints reply
+/// directly to the creator (Plan 114 direct-to-creator reply
+/// routing), so the creator record must be resolvable mesh-wide;
+/// handshake gossip alone reaches only dialed peers and loses the
+/// race against the first build.
+///
+/// Best-effort precondition: every failure (missing record, no
+/// floodfill, dial/store rejection, cancellation) is logged with
+/// counts only and provisioning continues. Floodfill dials use the
+/// narrow publication purpose, never a gateway-derived authority.
+#[allow(clippy::too_many_arguments)]
+async fn publish_creator_router_info(
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    ssu2_handle: &Ssu2DaemonHandle,
+    local_hash: Hash,
+    dial_timeout: Duration,
+    qualification_profile: crate::config::Ssu2QualificationProfile,
+    cancellation: &CancellationToken,
+) {
+    let Some(router_info) = ssu2_handle.service().installed_local_router_info() else {
+        tracing::debug!(
+            transition = "creator_ri_publication_skipped",
+            "creator RouterInfo unavailable for floodfill publication",
+        );
+        return;
+    };
+    let our_router_hash = i2pr_netdb::router_hash_from_proto_hash(local_hash);
+    // Plan 503: the creator RouterInfo publication is a `DatabaseStore`, so
+    // the API-version DSM floor applies to it exactly as it applies to a
+    // LeaseSet2 publication. A floodfill that publishes no version, an
+    // uncomparable version, or a version below the floor is never a target;
+    // every refusal is counted by reason and leaves a receipt.
+    //
+    // Plan 515: the selection, the store and the delivery are now the
+    // **shared** publication path, so the one-shot publication and the
+    // router-level refresh cannot disagree about the rule, the envelope
+    // or the counting.
+    // Plan 516: the store message is composed by the correlator, with the
+    // minted reply token on the wire, so the one-shot publication and the
+    // router-level refresh share one builder and one set of rules.
+    let mut coordinator =
+        i2pr_netdb::PublicationCoordinator::new(i2pr_netdb::LookupPolicy::default());
+    let (floodfills, records, attempts) = {
+        let guard = destination_tunnels.lock().await;
+        let selection = guard.version_gated_publication_floodfills(&our_router_hash);
+        let floodfills = selection
+            .targets()
+            .iter()
+            .copied()
+            .take(crate::router_info_publication::PUBLICATION_FLOODFILLS)
+            .collect::<Vec<_>>();
+        let records = floodfills
+            .iter()
+            .filter_map(|hash| {
+                guard
+                    .store()
+                    .get(hash)
+                    .cloned()
+                    .map(|record| (*hash, record))
+            })
+            .collect::<Vec<_>>();
+        let plan = crate::router_info_publication::RouterInfoPublicationPlan::publish(
+            floodfills.clone(),
+            router_info.clone(),
+        );
+        // The attempts are begun under the store's lock and sent outside
+        // it: a publication that dials a peer can take seconds, and the
+        // store must not be held for that long.
+        let attempts = crate::router_info_publication::begin_attempts(
+            &mut coordinator,
+            our_router_hash,
+            &plan,
+            guard.store(),
+        );
+        (floodfills, records, attempts)
+    };
+    if floodfills.is_empty() {
+        tracing::debug!(
+            transition = "creator_ri_publication_skipped",
+            "no eligible floodfill for creator RouterInfo publication",
+        );
+        return;
+    }
+
+    let mut rng = match ChaCha8Rng::try_from_os_rng() {
+        Ok(rng) => rng,
+        Err(_) => {
+            tracing::debug!(
+                transition = "creator_ri_publication_skipped",
+                "operating-system randomness unavailable for publication",
+            );
+            return;
+        }
+    };
+    // Plan 519: the shared publication path takes the narrow publication
+    // capability, so the one-shot publication and the router's own
+    // publication use the same delivery seam.
+    let publication_handle = ssu2_handle.publication_handle();
+    let outcome = crate::router_info_publication::publish_router_info(
+        &mut coordinator,
+        &attempts,
+        &records,
+        &publication_handle,
+        dial_timeout,
+        qualification_profile,
+        &mut rng,
+        cancellation,
+    )
+    .await;
+    let stores_accepted = match outcome {
+        crate::router_info_publication::RouterInfoPublicationOutcome::Published {
+            accepted,
+            ..
+        } => accepted,
+        _ => 0,
+    };
+    tracing::info!(
+        floodfills_targeted = floodfills.len(),
+        stores_accepted,
+        transition = "creator_ri_publication",
+        "creator RouterInfo floodfill publication",
+    );
+}
+
+#[cfg(test)]
+mod ls2_publication_fanout_tests {
+    use super::{LS2_PUBLICATION_FLOODFILLS, bounded_publication_floodfills};
+
+    fn candidate(seed: u8) -> i2pr_netdb::RouterHash {
+        i2pr_netdb::RouterHash::from_bytes([seed; 32])
+    }
+
+    #[test]
+    fn the_fan_out_keeps_the_nearest_candidates_in_order() {
+        let candidates = vec![candidate(1), candidate(2), candidate(3)];
+        let selected = bounded_publication_floodfills(candidates);
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0], candidate(1));
+        assert_eq!(selected[1], candidate(2));
+        assert_eq!(selected[2], candidate(3));
+    }
+
+    #[test]
+    fn the_fan_out_never_exceeds_its_bound() {
+        let candidates: Vec<i2pr_netdb::RouterHash> = (0u8..12).map(candidate).collect();
+        let selected = bounded_publication_floodfills(candidates);
+        assert_eq!(selected.len(), LS2_PUBLICATION_FLOODFILLS);
+        assert_eq!(selected[0], candidate(0));
+    }
+
+    #[test]
+    fn an_empty_candidate_list_stays_empty() {
+        assert!(bounded_publication_floodfills(Vec::new()).is_empty());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn provision_all_service_router_material(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     coordinator: &mut ExploratoryBuildCoordinator,
+    liveness: &mut crate::tunnel_liveness::TunnelLivenessScheduler,
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
     ssu2_handle: &mut Ssu2DaemonHandle,
     peer: &RouterBootstrapMaterial,
@@ -4785,21 +8300,36 @@ async fn provision_all_service_router_material(
     use i2pr_client::{
         DestinationRouting, DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager,
     };
+    // Creator-RI resolvability precedes every build: endpoints reply
+    // directly to the creator, and handshake gossip alone loses that
+    // race. Best-effort publication; provisioning continues regardless.
+    publish_creator_router_info(
+        destination_tunnels,
+        ssu2_handle,
+        peer.local_hash,
+        options.dial_timeout,
+        options.ssu2_qualification_profile,
+        cancellation,
+    )
+    .await;
     // Collect per-service target hashes first so HTTP and IRC
     // resolve independently; a missing/invalid target fails that
     // service only when the profile requires remote lookup
     // (client profiles). Server profiles skip lookup but still
     // require real outbound/inbound + LS2 + owner registration.
     let mut provisioned_destinations = std::collections::HashSet::new();
+    let mut allocated_startup_tunnel_ids = Vec::new();
+    let mut allocated_startup_message_ids = Vec::new();
     for runtime in runtimes {
         let spec_id = runtime.spec_id.clone();
         if !provisioned_destinations.insert(runtime.destination_id) {
             continue;
         }
+        coordinator.advance_time(wall_ms());
         // Project from the authoritative validated RouterInfo store and
         // select independently randomized, exact-three paths. A sparse or
         // metadata-incomplete store fails closed before any build submission.
-        let (candidates, _projection_summary) = {
+        let (candidates, projection_summary) = {
             let guard = destination_tunnels.lock().await;
             guard.destination_peer_candidates()
         };
@@ -4813,25 +8343,44 @@ async fn provision_all_service_router_material(
             .ok_or_else(|| {
                 ServiceProductError::Provisioning(format!("{spec_id}: group runtime missing"))
             })?;
+        if inbound_target > 0
+            && outbound_target == 0
+            && coordinator.usable_outbound_role_slots().is_empty()
+        {
+            return Err(ServiceProductError::Provisioning(format!(
+                "{spec_id}: inbound construction requires an established outbound route"
+            )));
+        }
         let mut outbound_roles = Vec::with_capacity(usize::from(outbound_target));
         let mut inbound_receive_ids = Vec::with_capacity(usize::from(inbound_target));
         let mut pending_outbound = Vec::with_capacity(usize::from(outbound_target));
+        let mut bootstrap_outbound_role_slot =
+            coordinator.usable_outbound_role_slots().into_iter().next();
         for build_index in 0..inbound_target.max(outbound_target) {
             let need_inbound = build_index < inbound_target;
             let outbound_candidates = if build_index < outbound_target {
-                Some(select_destination_path_os(&candidates)?)
+                let selected =
+                    select_projected_destination_path_os(&candidates, &projection_summary)?;
+                record_hop_selection(destination_tunnels, &selected).await;
+                Some(selected)
             } else {
                 None
             };
-            let inbound_candidates = if build_index < inbound_target {
-                Some(select_destination_path_os(&candidates)?)
+            let mut inbound_candidates = if build_index < inbound_target {
+                let selected =
+                    select_projected_destination_path_os(&candidates, &projection_summary)?;
+                record_hop_selection(destination_tunnels, &selected).await;
+                Some(selected)
             } else {
                 None
             };
 
             // Ten disjoint IDs cover each local creator, three remote receives,
             // the outbound terminal return tunnel, and the local inbound endpoint.
-            let ids = allocator.allocate_set(10);
+            let mut reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
+            reserved_tunnel_ids.extend(allocated_startup_tunnel_ids.iter().copied());
+            let ids = allocator.allocate_set(10, &reserved_tunnel_ids)?;
+            allocated_startup_tunnel_ids.extend(ids.iter().copied());
             let (ob_creator, ib_creator) = (ids[0], ids[5]);
             // Skip zero (allocator never emits it) and skip ids still
             // present in the registry (bounded retry).
@@ -4842,7 +8391,7 @@ async fn provision_all_service_router_material(
                     )));
                 }
             }
-            let inbound_bridge = ShortBuildI2npBridge::new();
+            let mut inbound_bridge = ShortBuildI2npBridge::new();
             let outbound_bridge = ShortBuildI2npBridge::new();
             let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
                 ServiceProductError::Provisioning(
@@ -4850,11 +8399,23 @@ async fn provision_all_service_router_material(
                 )
             })?;
             let delivery = ssu2_handle.delivery().clone();
-            // Plan 213 — mask the low two bits before OR-ing the
-            // direction bit so outbound (`| 0x01`) and inbound
-            // (`| 0x02`) message ids stay distinct for every service
-            // (later allocator ids already carry low bits).
-            let message_base: u32 = (ob_creator ^ 0x51A7_0000) & !0x03;
+            // Keep both terminal reply IDs distinct from currently pending
+            // attempts, then keep each outer I2NP header ID independent.
+            let mut excluded_message_ids = coordinator.reserved_message_ids();
+            excluded_message_ids.extend(allocated_startup_message_ids.iter().copied());
+            let outbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            excluded_message_ids.push(outbound_reply_id);
+            let mut inbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            excluded_message_ids.push(inbound_reply_id);
+            let outbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            excluded_message_ids.push(outbound_outer_id);
+            let mut inbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+            allocated_startup_message_ids.extend([
+                outbound_reply_id,
+                inbound_reply_id,
+                outbound_outer_id,
+                inbound_outer_id,
+            ]);
             let outbound_peers = outbound_candidates
                 .map(|selected| {
                     selected_peer_material(
@@ -4870,48 +8431,37 @@ async fn provision_all_service_router_material(
                     )
                 })
                 .transpose()?;
-            let inbound_peers = inbound_candidates
-                .map(|selected| {
-                    selected_peer_material(
-                        selected,
-                        [
-                            HopRole::InboundGateway,
-                            HopRole::Participant,
-                            HopRole::Participant,
-                        ],
-                        [ids[6], ids[7], ids[8]],
-                        [ids[7], ids[8], ids[9]],
-                        &spec_id,
-                    )
-                })
-                .transpose()?;
+            // Inbound peer material is built after the outbound bootstrap
+            // installs, so a session-filtered reselection below can prefer a
+            // terminal that already has a live session (no new dial).
             if let Some(peers) = outbound_peers.as_ref() {
+                let active_outbound_first_hop = bootstrap_outbound_role_slot
+                    .and_then(|slot| coordinator.registry_outbound_first_hop(slot))
+                    .map(|(router_hash, _)| router_hash);
+                let authority = destination_build_dial_authority(
+                    BuildDirection::Outbound,
+                    peers[0].router_hash,
+                    active_outbound_first_hop,
+                )
+                .ok_or_else(|| {
+                    ServiceProductError::Provisioning(
+                        "outbound Destination build has no authorized first hop".to_owned(),
+                    )
+                })?;
                 ensure_selected_peer_session(
                     destination_tunnels,
                     ssu2_handle,
-                    peers[0].router_hash,
+                    authority,
                     options.dial_timeout,
                     options.ssu2_qualification_profile,
                     cancellation,
                 )
                 .await?;
             }
-            if let Some(peers) = inbound_peers.as_ref() {
-                ensure_selected_peer_session(
-                    destination_tunnels,
-                    ssu2_handle,
-                    peers[0].router_hash,
-                    options.dial_timeout,
-                    options.ssu2_qualification_profile,
-                    cancellation,
-                )
-                .await?;
-            }
-            let inbound_gateway_hash = inbound_peers.as_ref().map(|peers| peers[0].router_hash);
             let outbound_creator = TunnelId::new(ob_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad outbound creator id"))
             })?;
-            let inbound_creator = TunnelId::new(ib_creator).map_err(|_| {
+            let mut inbound_creator = TunnelId::new(ib_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad inbound creator id"))
             })?;
             let outbound_reply_peer = outbound_peers
@@ -4923,7 +8473,7 @@ async fn provision_all_service_router_material(
                 direction: BuildDirection::Outbound,
                 peers,
                 creator_tunnel_id: outbound_creator,
-                message_id: message_base | 0x01,
+                message_id: outbound_reply_id,
                 outbound_reply_router: Some(peer.local_hash),
                 originator_hash: None,
             });
@@ -4931,166 +8481,471 @@ async fn provision_all_service_router_material(
                 pending_outbound.push((
                     outbound,
                     outbound_bridge,
-                    message_base | 0x01,
+                    outbound_outer_id,
                     outbound_reply_peer,
                 ));
             }
-            let inbound_reply_peer = inbound_peers
-                .as_ref()
-                .and_then(|peers| peers.last())
-                .map(|peer| i2pr_transport::PeerId::from_hash(peer.router_hash));
-            let inbound = inbound_peers.map(|peers| DestinationBuildRequest {
-                destination_id: runtime.destination_id,
-                direction: BuildDirection::Inbound,
-                peers,
-                creator_tunnel_id: inbound_creator,
-                message_id: message_base | 0x02,
-                outbound_reply_router: None,
-                originator_hash: Some(peer.local_hash),
-            });
-            let inbound_attempt_id = if let Some(inbound) = inbound {
-                let submission = coordinator
-                    .submit_destination(
-                        inbound,
-                        &delivery,
-                        &inbound_bridge,
-                        BridgeHeader::ShortTransport {
-                            message_id: message_base | 0x02,
-                            expiration_seconds: wall_secs().saturating_add(60) as u32,
-                        },
-                        &mut rng,
+            if build_index == 0
+                && bootstrap_outbound_role_slot.is_none()
+                && let Some((mut outbound, mut bridge, mut outer_id, _expected_peer)) =
+                    pending_outbound.pop()
+            {
+                // At most one accounted retry: an emitted-but-unanswered
+                // bootstrap is cancelled (freeing its pending slot while its
+                // identifiers stay replay-retained) and resubmitted on a
+                // freshly selected path with fresh tunnel/message
+                // identifiers. Explicit rejection, invalid replies, local
+                // delivery failure, and cancellation never loop.
+                let mut attempts = 0u8;
+                let (binding, bootstrap_attempt_id) = loop {
+                    attempts = attempts.saturating_add(1);
+                    let mut bootstrap_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+                        ServiceProductError::Provisioning(
+                            "operating-system randomness unavailable".to_owned(),
+                        )
+                    })?;
+                    let attempt_id = match coordinator
+                        .submit_destination(
+                            outbound,
+                            &delivery,
+                            &bridge,
+                            BridgeHeader::ShortTransport {
+                                message_id: outer_id,
+                                expiration_seconds: wall_secs().saturating_add(60) as u32,
+                            },
+                            &mut bootstrap_rng,
+                        )
+                        .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?
+                    {
+                        SubmitResult::Submitted { attempt_id, .. } => attempt_id,
+                        SubmitResult::Rejected { .. } => {
+                            return Err(ServiceProductError::OutboundBuildDeliveryRejected);
+                        }
+                    };
+                    match await_destination_build_install(
+                        manager,
+                        coordinator,
+                        liveness,
+                        ssu2_handle,
+                        attempt_id,
+                        runtime.destination_id,
+                        BuildDirection::Outbound,
+                        options,
+                        cancellation,
+                        startup_inbound,
+                        startup_inbound_bytes,
                     )
-                    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-                match submission {
-                    SubmitResult::Submitted { attempt_id, .. } => Some(attempt_id),
-                    SubmitResult::Rejected { .. } => {
-                        return Err(ServiceProductError::InboundBuildDeliveryRejected);
+                    .await
+                    {
+                        Ok(binding) => break (binding, attempt_id),
+                        Err(error) => {
+                            let disposition = coordinator
+                                .emission_disposition(attempt_id)
+                                .unwrap_or(BuildEmissionDisposition::NotEmitted);
+                            if attempts >= 2
+                                || !should_retry_bootstrap_build(&error, disposition, cancellation)
+                            {
+                                return Err(error);
+                            }
+                            coordinator.cancel(attempt_id);
+                            tracing::info!(
+                                build_attempt_id = attempt_id.get(),
+                                originator_write_disposition = ?disposition,
+                                retry_attempt = attempts + 1,
+                                transition = "bootstrap_retry",
+                                "destination outbound bootstrap attempt unanswered after emission",
+                            );
+                            // Fresh random path for the single retry: new
+                            // peers, new dial authority/session, new tunnel
+                            // and message identifiers. The cancelled
+                            // attempt's identifiers stay replay-retained in
+                            // the coordinator, so the exclusion sets below
+                            // cannot collide with them.
+                            let retry_selected = select_destination_path_os(&candidates)?;
+                            let mut reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
+                            reserved_tunnel_ids
+                                .extend(allocated_startup_tunnel_ids.iter().copied());
+                            let retry_ids = allocator.allocate_set(5, &reserved_tunnel_ids)?;
+                            allocated_startup_tunnel_ids.extend(retry_ids.iter().copied());
+                            let retry_peers = selected_peer_material(
+                                retry_selected,
+                                [
+                                    HopRole::Participant,
+                                    HopRole::Participant,
+                                    HopRole::OutboundEndpoint,
+                                ],
+                                [retry_ids[1], retry_ids[2], retry_ids[3]],
+                                [retry_ids[2], retry_ids[3], retry_ids[4]],
+                                &spec_id,
+                            )?;
+                            let retry_creator = TunnelId::new(retry_ids[0]).map_err(|_| {
+                                ServiceProductError::Provisioning(format!(
+                                    "{spec_id}: bad retry outbound creator id"
+                                ))
+                            })?;
+                            let authority = destination_build_dial_authority(
+                                BuildDirection::Outbound,
+                                retry_peers[0].router_hash,
+                                None,
+                            )
+                            .ok_or_else(|| {
+                                ServiceProductError::Provisioning(
+                                    "retry outbound Destination build has no authorized first hop"
+                                        .to_owned(),
+                                )
+                            })?;
+                            ensure_selected_peer_session(
+                                destination_tunnels,
+                                ssu2_handle,
+                                authority,
+                                options.dial_timeout,
+                                options.ssu2_qualification_profile,
+                                cancellation,
+                            )
+                            .await?;
+                            let mut retry_rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+                                ServiceProductError::Provisioning(
+                                    "operating-system randomness unavailable".to_owned(),
+                                )
+                            })?;
+                            let retry_reply_id =
+                                fresh_message_id(&mut retry_rng, &excluded_message_ids)?;
+                            excluded_message_ids.push(retry_reply_id);
+                            let retry_outer_id =
+                                fresh_message_id(&mut retry_rng, &excluded_message_ids)?;
+                            excluded_message_ids.push(retry_outer_id);
+                            allocated_startup_message_ids.extend([retry_reply_id, retry_outer_id]);
+                            outbound = DestinationBuildRequest {
+                                destination_id: runtime.destination_id,
+                                direction: BuildDirection::Outbound,
+                                peers: retry_peers,
+                                creator_tunnel_id: retry_creator,
+                                message_id: retry_reply_id,
+                                outbound_reply_router: Some(peer.local_hash),
+                                originator_hash: None,
+                            };
+                            bridge = ShortBuildI2npBridge::new();
+                            outer_id = retry_outer_id;
+                        }
                     }
-                }
-            } else {
-                None
-            };
-            // Wait for both installs.
+                };
+                // Plan 478: the bootstrap install commits the first
+                // outbound role like every other path. The commit was
+                // previously silent here, so a bootstrap-only run read
+                // as match-without-install in the lane receipts
+                // (run 0h6f38y_). Same line shape as the service
+                // install sites; no parser change needed.
+                tracing::info!(
+                    build_attempt_id = bootstrap_attempt_id.get(),
+                    direction = ?BuildDirection::Outbound,
+                    transition = "install_committed",
+                    "destination build attempt"
+                );
+                bootstrap_outbound_role_slot = Some(binding.role_slot);
+            }
+            // Prefer an inbound terminal that already has a live session
+            // (outbound first hop or reverse endpoint session) so the stock
+            // forward to us does not depend on a fresh floodfill lookup.
+            // No new dial here; Plan 482 authority still routes dials only
+            // through the outbound first hop below. Reselection runs on
+            // every attempt, so the single retry below also prefers a
+            // currently live terminal.
+            //
+            // At most one accounted retry mirrors the outbound bootstrap:
+            // an emitted-but-unanswered tunneled build is cancelled and
+            // resubmitted through the same outbound role with fresh
+            // peers/identifiers. Explicit rejection, invalid replies,
+            // local delivery failure, and cancellation never loop.
+            let mut inbound_receive_layout = [ids[6], ids[7], ids[8]];
+            let mut inbound_next_layout = [ids[7], ids[8], ids[9]];
+            let mut inbound_gateway_hash = None;
+            let mut last_inbound_attempt = None;
             let mut installed_inbound = false;
             let mut local_receive_tunnel = None;
-            let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
-            while need_inbound
-                && !installed_inbound
-                && tokio::time::Instant::now() < install_deadline
-            {
-                let Some(inbound_msg) = wait_for_startup_inbound(
-                    options.poll_interval,
-                    cancellation,
-                    ssu2_handle.next_inbound(),
-                )
-                .await?
-                else {
-                    continue;
-                };
-                let routed = coordinator.route_inbound_i2np(&inbound_msg, wall_ms());
-                queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound_msg)?;
-                let Ok(routed) = routed else {
-                    continue;
-                };
-                let matching_build_reply = matches!(
-                    &routed.dispatcher,
-                    RouterI2npOutcome::TunnelBuildReserved {
-                        kind: RouterI2npKind::ShortTunnelBuild,
-                        message_id,
-                        peer,
-                        ..
-                    } if *message_id == (message_base | 0x02)
-                        && Some(*peer) == inbound_reply_peer
-                );
-                if matching_build_reply
-                    && routed.coordinator.iter().any(|outcome| {
-                        matches!(
-                            outcome,
-                            BuildCoordinatorOutcome::InvalidReply {
-                                attempt_id,
-                                direction: BuildDirection::Inbound,
-                                ..
-                            } if Some(*attempt_id) == inbound_attempt_id
+            let mut inbound_attempts = 0u8;
+            while need_inbound && !installed_inbound && inbound_attempts < 2 {
+                inbound_attempts = inbound_attempts.saturating_add(1);
+                if inbound_attempts > 1 {
+                    let mut reserved_tunnel_ids = coordinator.reserved_tunnel_ids();
+                    reserved_tunnel_ids.extend(allocated_startup_tunnel_ids.iter().copied());
+                    let retry_ids = allocator.allocate_set(5, &reserved_tunnel_ids)?;
+                    allocated_startup_tunnel_ids.extend(retry_ids.iter().copied());
+                    inbound_creator = TunnelId::new(retry_ids[0]).map_err(|_| {
+                        ServiceProductError::Provisioning(format!(
+                            "{spec_id}: bad retry inbound creator id"
+                        ))
+                    })?;
+                    inbound_receive_layout = [retry_ids[1], retry_ids[2], retry_ids[3]];
+                    inbound_next_layout = [retry_ids[2], retry_ids[3], retry_ids[4]];
+                    inbound_reply_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+                    excluded_message_ids.push(inbound_reply_id);
+                    allocated_startup_message_ids.push(inbound_reply_id);
+                    inbound_outer_id = fresh_message_id(&mut rng, &excluded_message_ids)?;
+                    excluded_message_ids.push(inbound_outer_id);
+                    allocated_startup_message_ids.push(inbound_outer_id);
+                    inbound_bridge = ShortBuildI2npBridge::new();
+                }
+                if bootstrap_outbound_role_slot.is_some()
+                    && inbound_candidates.is_some()
+                    && let Ok(reselected) =
+                        reselect_inbound_with_session_terminal(&candidates, ssu2_handle)
+                {
+                    tracing::info!(
+                        session_backed = reselected.session_backed,
+                        reselections = reselected.selections,
+                        transition = "inbound_terminal_reselected",
+                        "destination inbound terminal reselection",
+                    );
+                    inbound_candidates = Some(reselected.path);
+                }
+                let inbound_peers = inbound_candidates
+                    .clone()
+                    .map(|selected| {
+                        selected_peer_material(
+                            selected,
+                            [
+                                HopRole::InboundGateway,
+                                HopRole::Participant,
+                                HopRole::Participant,
+                            ],
+                            inbound_receive_layout,
+                            inbound_next_layout,
+                            &spec_id,
                         )
                     })
+                    .transpose()?;
+                inbound_gateway_hash = inbound_peers.as_ref().map(|peers| peers[0].router_hash);
+                let inbound_reply_peer = inbound_peers
+                    .as_ref()
+                    .and_then(|peers| peers.last())
+                    .map(|peer| i2pr_transport::PeerId::from_hash(peer.router_hash));
+                let inbound = inbound_peers.map(|peers| DestinationBuildRequest {
+                    destination_id: runtime.destination_id,
+                    direction: BuildDirection::Inbound,
+                    peers,
+                    creator_tunnel_id: inbound_creator,
+                    message_id: inbound_reply_id,
+                    outbound_reply_router: None,
+                    originator_hash: Some(peer.local_hash),
+                });
+                let inbound_attempt_id = if let Some(inbound) = inbound {
+                    let outbound_slot = bootstrap_outbound_role_slot.ok_or_else(|| {
+                        ServiceProductError::Provisioning(
+                            "inbound Destination build has no usable outbound tunnel route"
+                                .to_owned(),
+                        )
+                    })?;
+                    let outbound_first_hop = coordinator
+                        .registry_outbound_first_hop(outbound_slot)
+                        .map(|(router_hash, _)| router_hash)
+                        .ok_or_else(|| {
+                            ServiceProductError::Provisioning(
+                                "inbound Destination route has no first hop".to_owned(),
+                            )
+                        })?;
+                    let authority = destination_build_dial_authority(
+                        BuildDirection::Inbound,
+                        inbound_gateway_hash.ok_or_else(|| {
+                            ServiceProductError::Provisioning(
+                                "inbound Destination build has no selected gateway".to_owned(),
+                            )
+                        })?,
+                        Some(outbound_first_hop),
+                    )
+                    .ok_or_else(|| {
+                        ServiceProductError::Provisioning(
+                            "inbound Destination build has no authorized outbound first hop"
+                                .to_owned(),
+                        )
+                    })?;
+                    ensure_selected_peer_session(
+                        destination_tunnels,
+                        ssu2_handle,
+                        authority,
+                        options.dial_timeout,
+                        options.ssu2_qualification_profile,
+                        cancellation,
+                    )
+                    .await?;
+                    let bridge_header = BridgeHeader::ShortTransport {
+                        message_id: inbound_outer_id,
+                        expiration_seconds: wall_secs().saturating_add(60) as u32,
+                    };
+                    let submission = coordinator
+                        .submit_destination_via_outbound_tunnel(
+                            inbound,
+                            &delivery,
+                            &inbound_bridge,
+                            bridge_header,
+                            outbound_slot,
+                            &mut rng,
+                        )
+                        .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+                    match submission {
+                        SubmitResult::Submitted { attempt_id, .. } => {
+                            last_inbound_attempt = Some(attempt_id);
+                            Some(attempt_id)
+                        }
+                        SubmitResult::Rejected { .. } => {
+                            return Err(ServiceProductError::InboundBuildDeliveryRejected);
+                        }
+                    }
+                } else {
+                    None
+                };
+                // Wait for both installs.
+                let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
+                while need_inbound
+                    && !installed_inbound
+                    && tokio::time::Instant::now() < install_deadline
                 {
-                    return Err(ServiceProductError::InboundBuildInvalidReply);
-                }
-                for outcome in routed.coordinator {
-                    if matches!(
-                        &outcome,
-                        BuildCoordinatorOutcome::DestinationBuildFailed {
-                            destination_id,
-                            direction: BuildDirection::Inbound,
-                        } if *destination_id == runtime.destination_id
-                    ) {
-                        return Err(ServiceProductError::InboundBuildRejected);
-                    }
-                    if let BuildCoordinatorOutcome::DestinationEstablished {
-                        attempt_id,
-                        destination_id,
-                        direction,
-                        ..
-                    } = outcome
+                    coordinator.advance_time(wall_ms());
+                    let Some(inbound_msg) = wait_for_startup_inbound(
+                        options.poll_interval,
+                        cancellation,
+                        ssu2_handle.next_inbound(),
+                    )
+                    .await?
+                    else {
+                        continue;
+                    };
+                    // Plan 504 — the live inbound route goes through
+                    // the liveness seam.
+                    let routed = crate::tunnel_liveness::route_inbound_with_liveness(
+                        coordinator,
+                        liveness,
+                        &inbound_msg,
+                        wall_ms(),
+                    );
+                    queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound_msg)?;
+                    let Ok(routed) = routed else {
+                        continue;
+                    };
+                    let matching_build_reply = matches!(
+                        &routed.dispatcher,
+                        RouterI2npOutcome::TunnelBuildReserved {
+                            kind: RouterI2npKind::ShortTunnelBuild,
+                            message_id,
+                            peer,
+                            ..
+                        } if *message_id == inbound_reply_id
+                            && Some(*peer) == inbound_reply_peer
+                    );
+                    if matching_build_reply
+                        && routed.coordinator.iter().any(|outcome| {
+                            matches!(
+                                outcome,
+                                BuildCoordinatorOutcome::InvalidReply {
+                                    attempt_id,
+                                    direction: BuildDirection::Inbound,
+                                    ..
+                                } if Some(*attempt_id) == inbound_attempt_id
+                            )
+                        })
                     {
-                        if destination_id != runtime.destination_id {
-                            return Err(ServiceProductError::Provisioning(
-                                "established Destination material named a different group"
-                                    .to_owned(),
-                            ));
+                        return Err(ServiceProductError::InboundBuildInvalidReply);
+                    }
+                    for outcome in routed.coordinator {
+                        if matches!(
+                            &outcome,
+                            BuildCoordinatorOutcome::DestinationBuildFailed {
+                                destination_id,
+                                direction: BuildDirection::Inbound,
+                            } if *destination_id == runtime.destination_id
+                        ) {
+                            return Err(ServiceProductError::InboundBuildRejected);
                         }
-                        if direction != BuildDirection::Inbound {
-                            return Err(ServiceProductError::Provisioning(
-                                "inbound startup received a non-inbound build result".to_owned(),
-                            ));
-                        }
-                        let binding = register_destination_material(
-                            manager,
-                            coordinator,
-                            destination_id,
+                        if let BuildCoordinatorOutcome::DestinationEstablished {
                             attempt_id,
+                            destination_id,
                             direction,
-                            wall_secs(),
-                        )?;
-                        tracing::info!(
-                            build_attempt_id = attempt_id.get(),
-                            direction = ?direction,
-                            transition = "install_committed",
-                            "destination build attempt"
-                        );
-                        local_receive_tunnel = binding.local_receive_tunnel;
-                        installed_inbound = true;
+                            ..
+                        } = outcome
+                        {
+                            if destination_id != runtime.destination_id {
+                                return Err(ServiceProductError::Provisioning(
+                                    "established Destination material named a different group"
+                                        .to_owned(),
+                                ));
+                            }
+                            if direction != BuildDirection::Inbound {
+                                return Err(ServiceProductError::Provisioning(
+                                    "inbound startup received a non-inbound build result"
+                                        .to_owned(),
+                                ));
+                            }
+                            let binding = register_destination_material(
+                                manager,
+                                coordinator,
+                                destination_id,
+                                attempt_id,
+                                direction,
+                                wall_secs(),
+                            )?;
+                            tracing::info!(
+                                build_attempt_id = attempt_id.get(),
+                                direction = ?direction,
+                                transition = "install_committed",
+                                "destination build attempt"
+                            );
+                            local_receive_tunnel = binding.local_receive_tunnel;
+                            installed_inbound = true;
+                        }
                     }
                 }
-            }
-            if need_inbound && !installed_inbound {
-                let counters = coordinator.counters();
-                let attempt_observation = inbound_attempt_id
-                    .and_then(|attempt_id| coordinator.inbound_build_observation(attempt_id))
-                    .unwrap_or_default();
-                tracing::warn!(
-                    build_attempt_id = inbound_attempt_id.map_or(0, |id| id.get()),
-                    inbound_routed = counters.inbound_routed,
-                    inbound_orphans = counters.inbound_orphans,
-                    inbound_orphans_peer_match = counters.inbound_orphans_peer_match,
-                    inbound_orphans_message_match = counters.inbound_orphans_message_match,
-                    inbound_orphans_peer_id_plus_one = counters.inbound_orphans_peer_id_plus_one,
-                    inbound_orphans_peer_id_minus_one = counters.inbound_orphans_peer_id_minus_one,
-                    inbound_orphans_peer_id_other = counters.inbound_orphans_peer_id_other,
-                    inbound_gateway_messages = counters.inbound_gateway_messages,
-                    inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
-                    inbound_gateway_route_match = counters.inbound_gateway_route_match,
-                    authenticated_candidates = attempt_observation.authenticated_candidates,
-                    candidate_peer_matches = attempt_observation.peer_matches,
-                    candidate_message_id_matches = attempt_observation.message_id_matches,
-                    candidate_peer_match_id_plus_one = attempt_observation.peer_match_id_plus_one,
-                    candidate_peer_match_id_minus_one = attempt_observation.peer_match_id_minus_one,
-                    candidate_peer_match_id_other = attempt_observation.peer_match_id_other,
-                    pending_builds = counters.pending,
-                    transition = "inbound_build_wait_expired",
-                    "destination inbound build attempt"
-                );
-                return Err(ServiceProductError::InboundBuildMissing);
+                if !installed_inbound {
+                    coordinator.advance_time(wall_ms());
+                    let counters = coordinator.counters();
+                    let attempt_observation = last_inbound_attempt
+                        .and_then(|attempt_id| coordinator.inbound_build_observation(attempt_id))
+                        .unwrap_or_default();
+                    tracing::warn!(
+                        build_attempt_id = last_inbound_attempt.map_or(0, |id| id.get()),
+                        direction = ?BuildDirection::Inbound,
+                        originator_write_disposition = ?last_inbound_attempt
+                            .and_then(|attempt_id| coordinator.emission_disposition(attempt_id))
+                            .unwrap_or(BuildEmissionDisposition::NotEmitted),
+                        inbound_routed = counters.inbound_routed,
+                        inbound_orphans = counters.inbound_orphans,
+                        inbound_orphans_peer_match = counters.inbound_orphans_peer_match,
+                        inbound_orphans_message_match = counters.inbound_orphans_message_match,
+                        inbound_orphans_peer_id_plus_one = counters.inbound_orphans_peer_id_plus_one,
+                        inbound_orphans_peer_id_minus_one = counters.inbound_orphans_peer_id_minus_one,
+                        inbound_orphans_peer_id_other = counters.inbound_orphans_peer_id_other,
+                        inbound_orphans_retired_id_match =
+                            counters.inbound_orphans_retired_id_match,
+                        inbound_gateway_messages = counters.inbound_gateway_messages,
+                        inbound_gateway_peer_match = counters.inbound_gateway_peer_match,
+                        inbound_gateway_route_match = counters.inbound_gateway_route_match,
+                        authenticated_candidates = attempt_observation.authenticated_candidates,
+                        candidate_peer_matches = attempt_observation.peer_matches,
+                        candidate_message_id_matches = attempt_observation.message_id_matches,
+                        candidate_peer_match_id_plus_one = attempt_observation.peer_match_id_plus_one,
+                        candidate_peer_match_id_minus_one = attempt_observation.peer_match_id_minus_one,
+                        candidate_peer_match_id_other = attempt_observation.peer_match_id_other,
+                        pending_builds = counters.pending,
+                        transition = "inbound_build_wait_expired",
+                        "destination inbound build attempt"
+                    );
+                    let disposition = last_inbound_attempt
+                        .and_then(|attempt_id| coordinator.emission_disposition(attempt_id))
+                        .unwrap_or(BuildEmissionDisposition::NotEmitted);
+                    if inbound_attempts < 2 && should_retry_inbound_build(disposition, cancellation)
+                    {
+                        if let Some(previous) = last_inbound_attempt {
+                            coordinator.cancel(previous);
+                        }
+                        tracing::info!(
+                            build_attempt_id = last_inbound_attempt.map_or(0, |id| id.get()),
+                            originator_write_disposition = ?disposition,
+                            retry_attempt = inbound_attempts + 1,
+                            transition = "inbound_retry",
+                            "destination inbound build attempt unanswered after emission",
+                        );
+                        continue;
+                    }
+                    return Err(ServiceProductError::InboundBuildMissing);
+                }
             }
             // The local endpoint receive id is distinct from the pool's
             // creator id. Use the id retained from EstablishedTunnel rather
@@ -5137,24 +8992,35 @@ async fn provision_all_service_router_material(
                 "startup cancelled before outbound pool start".to_owned(),
             ));
         }
-        for (outbound, bridge, message_id, outbound_reply_peer) in pending_outbound {
+        for (outbound, bridge, outer_message_id, outbound_reply_peer) in pending_outbound {
             let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
                 ServiceProductError::Provisioning(
                     "operating-system randomness unavailable".to_owned(),
                 )
             })?;
-            let submission = coordinator
-                .submit_destination(
+            let bridge_header = BridgeHeader::ShortTransport {
+                message_id: outer_message_id,
+                expiration_seconds: wall_secs().saturating_add(60) as u32,
+            };
+            let submission = if let Some(outbound_slot) = bootstrap_outbound_role_slot {
+                coordinator.submit_destination_via_outbound_tunnel(
                     outbound,
                     &delivery,
                     &bridge,
-                    BridgeHeader::ShortTransport {
-                        message_id,
-                        expiration_seconds: wall_secs().saturating_add(60) as u32,
-                    },
+                    bridge_header,
+                    outbound_slot,
                     &mut rng,
                 )
-                .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+            } else {
+                coordinator.submit_destination(
+                    outbound,
+                    &delivery,
+                    &bridge,
+                    bridge_header,
+                    &mut rng,
+                )
+            }
+            .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
             let outbound_attempt_id = match submission {
                 SubmitResult::Submitted { attempt_id, .. } => attempt_id,
                 SubmitResult::Rejected { .. } => {
@@ -5173,7 +9039,14 @@ async fn provision_all_service_router_material(
                 else {
                     continue;
                 };
-                let routed = coordinator.route_inbound_i2np(&inbound_msg, wall_ms());
+                // Plan 504 — the live inbound route goes through the
+                // liveness seam.
+                let routed = crate::tunnel_liveness::route_inbound_with_liveness(
+                    coordinator,
+                    liveness,
+                    &inbound_msg,
+                    wall_ms(),
+                );
                 queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound_msg)?;
                 let Ok(routed) = routed else {
                     continue;
@@ -5349,6 +9222,7 @@ async fn provision_all_service_router_material(
                 ssu2_handle,
                 runtime.destination_id,
                 options,
+                cancellation,
             )
             .await
             .map_err(|error| {
@@ -5836,22 +9710,37 @@ const ELS2_PUBLICATION_WINDOW_SECONDS: u32 = 600;
 /// The rng seed mixes the destination hash so two services publishing in
 /// the same second do not reuse an ElGamal nonce stream; it is a
 /// publication nonce seed, not key material.
+///
+/// Plan 487 WP4 — the store carries the publication's **reply token**
+/// and the reply route (inbound tunnel id plus that tunnel's gateway).
+/// The floodfill answers a store with a nonzero reply token by sending a
+/// `DeliveryStatus` whose message id is the token, addressed to the
+/// supplied gateway and tunnel — so the acknowledgement returns through
+/// one of **our own inbound tunnels**. That is what makes the
+/// acknowledgement a proof that the network stored the record, rather
+/// than a proof that a socket accepted bytes.
 fn service_publication_store(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     service_destination: i2pr_client::DestinationId,
     lease_set2: i2pr_proto::LeaseSet2,
     now_seconds: u64,
+    reply_token: u32,
+    reply_route: Option<(u32, i2pr_proto::Hash)>,
 ) -> Result<i2pr_proto::DatabaseStoreMessage, ServiceProductError> {
     let destination_hash =
         lease_set2.header().destination().hash().map_err(|_| {
             ServiceProductError::Provisioning("LS2 destination hash failed".to_owned())
         })?;
+    let (reply_tunnel_id, reply_gateway) = match reply_route {
+        Some((tunnel_id, gateway)) => (Some(tunnel_id), Some(gateway)),
+        None => (None, None),
+    };
     let Some(material) = manager.els2_material_for_destination(service_destination) else {
         return Ok(i2pr_proto::DatabaseStoreMessage {
             key: destination_hash,
-            reply_token: 0,
-            reply_tunnel_id: None,
-            reply_gateway: None,
+            reply_token,
+            reply_tunnel_id,
+            reply_gateway,
             data: i2pr_proto::DatabaseStoreData::LeaseSet2(Box::new(lease_set2)),
         });
     };
@@ -5861,83 +9750,325 @@ fn service_publication_store(
     let mut rng = ChaCha8Rng::seed_from_u64(
         now_seconds.wrapping_add(u64::from(destination_hash.as_bytes()[0] as u32)),
     );
-    let (_key, message) = material
+    let (_key, mut message) = material
         .build_database_store(&lease_set2, now_seconds_u32, expires_seconds, &mut rng)
         .map_err(|error| {
             ServiceProductError::Provisioning(format!("type-5 record construction failed: {error}"))
         })?;
+    // The encrypted record carries the same reply route: the token and
+    // the inbound tunnel are properties of the publication, not of the
+    // record's encoding.
+    message.reply_token = reply_token;
+    message.reply_tunnel_id = reply_tunnel_id;
+    message.reply_gateway = reply_gateway;
     Ok(message)
 }
 
 /// Plan 212 §13 — server-side local LS2 publication through the
 /// existing publication state machine.
 ///
-/// For each server Destination: use the real signed LS2 from
-/// provisioning, invoke the existing
-/// `DestinationTunnelCoordinator` publication state machine,
-/// compose the DatabaseStore through the service's real outbound
-/// tunnel, require ACK/publication success semantics, retain/retry
-/// only through existing bounded coordinator policy. No second
-/// publication implementation exists in service tunnels.
-/// Client-only Destinations never call this path merely to receive
-/// replies (their real LS2 rides in Streaming establishment).
+/// Sends one short-framed DatabaseStore directly to the selected
+/// floodfill over the shared delivery service, ensuring the session
+/// first with bounded dial authority. Mirrors the proven creator-RI
+/// direct path; the store envelope, lifetime policy, and redacted
+/// receipt shape match it exactly.
+async fn direct_ls2_store_to_floodfill(
+    ssu2_handle: &Ssu2DaemonHandle,
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    store_message: &i2pr_proto::DatabaseStoreMessage,
+    floodfill: i2pr_netdb::RouterHash,
+    options: &ServiceProductOptions,
+    cancellation: &CancellationToken,
+    message_id: u32,
+) -> Result<(), ServicePublicationError> {
+    let floodfill_hash = Hash::from_bytes(*floodfill.as_bytes());
+    let wire = crate::outbound_lookup::encode_store_envelope_short(
+        store_message,
+        message_id,
+        // Same 60-second lifetime policy as the creator-RI direct
+        // path, in the seconds the short envelope carries.
+        wall_secs().saturating_add(60) as u32,
+    )
+    .map_err(|_| {
+        ServicePublicationError::from(ServiceProductError::Provisioning(
+            "publication store envelope".to_owned(),
+        ))
+    })?;
+    let wire_len = wire.len();
+    ensure_selected_peer_session(
+        destination_tunnels,
+        ssu2_handle,
+        service_lease_set_publication_authority(floodfill_hash),
+        options.dial_timeout,
+        options.ssu2_qualification_profile,
+        cancellation,
+    )
+    .await
+    .map_err(|error| {
+        ServicePublicationError::from(ServiceProductError::Provisioning(format!(
+            "publication session unavailable: {error}"
+        )))
+    })?;
+    let request = crate::router_i2np::RouterDeliveryRequest::new(
+        i2pr_transport::PeerId::from_hash(floodfill_hash),
+        wire,
+        options.delivery_timeout,
+    )
+    .map_err(|_| {
+        ServicePublicationError::from(ServiceProductError::Provisioning(
+            "publication delivery".to_owned(),
+        ))
+    })?;
+    let outcome = ssu2_handle.delivery().deliver(request, cancellation);
+    if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+        tracing::warn!(
+            delivery_outcome = ?outcome,
+            "LS2 direct publication delivery rejected"
+        );
+        return Err(
+            ServiceProductError::Provisioning("publication transport rejected".to_owned()).into(),
+        );
+    }
+    tracing::info!(
+        publication_wire_len = wire_len,
+        transition = "ls2_direct_publication_sent",
+        "LS2 direct publication store emitted",
+    );
+    Ok(())
+}
+
+/// For each server Destination: publish the real signed LS2 to a
+/// floodfill. The coordinator publication entry guards capacity
+/// and record validity; the wire goes direct short-framed (see
+/// `direct_ls2_store_to_floodfill`) rather than through tunnel
+/// composition. Client-only Destinations never call this path
+/// merely to receive replies (their real LS2 rides in Streaming
+/// establishment).
 ///
-/// Plan 213 §C — the recorded intent alone never stores bytes at
-/// the floodfill, so the dispatch below composes the publication
-/// cells through the service's real router-backed outbound role
-/// (mirroring `resolve_remote_destination_for_service`) and hands
-/// every cell to the shared router delivery service. Transport
-/// admission (`Accepted`) is the bounded success signal, matching
-/// the proven destination external lane.
+/// Plan 213 §C recorded tunnel-composed publication; the
+/// controlled lane uses the direct short path instead because the
+/// tunneled cells die silently past the first hop on the pinned
+/// reference while direct short stores land and store
+/// (creator-RI precedent). There is no anonymity claim in scope;
+/// restoring tunnel-composed publication needs its own plan once
+/// the tunnel death is attributed.
 async fn publish_service_ls2_for_service(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
     ssu2_handle: &mut Ssu2DaemonHandle,
     service_destination: i2pr_client::DestinationId,
     options: ServiceProductOptions,
+    cancellation: &CancellationToken,
 ) -> Result<(), ServicePublicationError> {
-    // Fetch the real signed LS2 from the router-backed state
-    // through the dedicated bridge accessor that clones the public
-    // LS2 only (never secret material, never diagnostics).
-    let lease_set2 = manager
-        .with_destination_bridge(service_destination, |bridge| {
-            bridge.router_ls2_for_publication()
-        })
-        .flatten();
-    let Some(lease_set2) = lease_set2 else {
-        return Err(ServiceProductError::RouterState(
-            "router-backed LS2 missing for publication".to_owned(),
-        )
-        .into());
+    // Plan 487 WP5 (Plan 393): the publication intent is reserved
+    // **before** the record is composed. The compose and
+    // request-construction failure classes therefore have an intent to
+    // release, and every failure path releases exactly one
+    // coordinator slot. Each class has its own release site and its
+    // own error classification below.
+    let request_id = {
+        let mut coord_guard = destination_tunnels.lock().await;
+        coord_guard.reserve_ls2_publication().map_err(|error| {
+            let rejection = match error {
+                crate::destination_tunnels::DestinationTunnelError::TooManyPublications => {
+                    PublicationBeginRejection::Capacity
+                }
+                _ => PublicationBeginRejection::Other,
+            };
+            ServicePublicationError::Begin {
+                rejection,
+                pending: coord_guard.publications_len(),
+            }
+        })?
     };
-    // Plan 337: the store key is the record's **own** storage key — the
-    // day's blinded key for an encrypted service, the destination hash
-    // otherwise — and the floodfill below is selected for whichever it is.
-    let store_message =
-        service_publication_store(manager, service_destination, lease_set2, wall_secs())?;
-    let deadline = Deadline::new(options.tunnel_deadline)
-        .map_err(|_| ServiceProductError::Provisioning("publication deadline".to_owned()))?;
+
+    // ---- Failure class 1: compose ---------------------------------
+    // The signed store record could not be obtained or composed. The
+    // reserved intent is released here.
+    //
+    // Plan 487 WP4 — the publication's metadata (reply route,
+    // `published` second, oldest lease expiry, reply token) is
+    // derived here and carried into the delivery phase, so the
+    // acknowledgement can be correlated back to exactly this
+    // publication.
+    let (store_message, reply_token, published_seconds, oldest_lease_expiry_ms) = {
+        // Fetch the real signed LS2 from the router-backed state
+        // through the dedicated bridge accessor that clones the public
+        // LS2 only (never secret material, never diagnostics).
+        let lease_set2 = manager
+            .with_destination_bridge(service_destination, |bridge| {
+                bridge.router_ls2_for_publication()
+            })
+            .flatten();
+        let Some(lease_set2) = lease_set2 else {
+            let pending = destination_tunnels.lock().await.publications_len();
+            let _ = destination_tunnels
+                .lock()
+                .await
+                .cancel_ls2_publication(request_id);
+            return Err(ServicePublicationError::Stage {
+                class: PublicationFailureClass::Compose,
+                product: Some(ServiceProductError::RouterState(
+                    "router-backed LS2 missing for publication".to_owned(),
+                )),
+                pending,
+            });
+        };
+        // Plan 487 WP4 — the reply route is one of **our own** inbound
+        // tunnels, taken from the record we are about to publish. The
+        // floodfill answers the store with a `DeliveryStatus` addressed
+        // to that tunnel, so the acknowledgement returns through our
+        // inbound path and proves the network stored the record.
+        let reply_route = lease_set2
+            .leases()
+            .first()
+            .map(|lease| (lease.tunnel_id(), lease.tunnel_gateway()));
+        let published_seconds = lease_set2.published_seconds();
+        let oldest_lease_expiry_ms = lease_set2
+            .leases()
+            .iter()
+            .map(|lease| u64::from(lease.end_date().as_seconds()).saturating_mul(1000))
+            .min()
+            .unwrap_or(0);
+        // Plan 487 WP4 — the publication bounds are checked **before**
+        // the record is composed, so a rate-limited or non-monotonic
+        // publication never reaches the wire.
+        {
+            let mut coord_guard = destination_tunnels.lock().await;
+            if let Err(error) = coord_guard.admit_ls2_publication(
+                service_destination,
+                published_seconds,
+                oldest_lease_expiry_ms,
+                wall_ms(),
+            ) {
+                drop(coord_guard);
+                let pending = destination_tunnels.lock().await.publications_len();
+                let _ = destination_tunnels
+                    .lock()
+                    .await
+                    .cancel_ls2_publication(request_id);
+                return Err(ServicePublicationError::Stage {
+                    class: PublicationFailureClass::Compose,
+                    product: Some(ServiceProductError::Provisioning(format!(
+                        "publication not admitted: {error}"
+                    ))),
+                    pending,
+                });
+            }
+        }
+        // Plan 487 WP4 — the publication's message id doubles as the
+        // store's reply token, so the floodfill's `DeliveryStatus`
+        // correlates back to exactly this publication.
+        //
+        // A nonzero reply token **requires** a reply route: the store
+        // encoder rejects a token without a tunnel id and gateway, and
+        // the reference only answers a store that names where the
+        // status goes. A record with no usable lease has no inbound
+        // tunnel to answer on, so it is published without a token.
+        let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+            ServiceProductError::Provisioning(
+                "operating-system randomness unavailable for publication".to_owned(),
+            )
+        })?;
+        let reply_token = if reply_route.is_some() {
+            fresh_message_id(&mut rng, &[]).map_err(|error| {
+                ServiceProductError::Provisioning(format!("publication message id: {error}"))
+            })?
+        } else {
+            0
+        };
+        if reply_token == u32::MAX {
+            let pending = destination_tunnels.lock().await.publications_len();
+            let _ = destination_tunnels
+                .lock()
+                .await
+                .cancel_ls2_publication(request_id);
+            return Err(ServicePublicationError::Stage {
+                class: PublicationFailureClass::Compose,
+                product: Some(ServiceProductError::Provisioning(
+                    "publication reply token is not usable".to_owned(),
+                )),
+                pending,
+            });
+        }
+        // Plan 337: the store key is the record's **own** storage key — the
+        // day's blinded key for an encrypted service, the destination hash
+        // otherwise — and the floodfill below is selected for whichever it is.
+        match service_publication_store(
+            manager,
+            service_destination,
+            lease_set2,
+            wall_secs(),
+            reply_token,
+            reply_route,
+        ) {
+            Ok(message) => (
+                message,
+                reply_token,
+                published_seconds,
+                oldest_lease_expiry_ms,
+            ),
+            Err(error) => {
+                let pending = destination_tunnels.lock().await.publications_len();
+                let _ = destination_tunnels
+                    .lock()
+                    .await
+                    .cancel_ls2_publication(request_id);
+                return Err(ServicePublicationError::Stage {
+                    class: PublicationFailureClass::Compose,
+                    product: Some(error),
+                    pending,
+                });
+            }
+        }
+    };
+
+    // ---- Failure class 2: request construction --------------------
     // The publication state machine requires a floodfill peer. The
-    // controlled lane provisions the reference as floodfill; pick
-    // the first floodfill candidate for the record's routing key from
-    // the authoritative store. When no floodfill is known, fail
-    // closed (no direct transport, no synthetic publication).
-    let floodfill = {
+    // controlled lane provisions the reference as floodfill; pick the
+    // floodfill candidates for the record's routing key from the
+    // authoritative store. When no floodfill is known, fail closed (no
+    // direct transport, no synthetic publication). The reserved intent
+    // is released here.
+    //
+    // The store goes to the **nearest** candidates, not to one of them.
+    // A stock peer resolves a LeaseSet2 by asking the floodfills it
+    // selects for the routing key, and it fails the lookup outright
+    // when none of the floodfills it asked holds the record. Publishing
+    // to a single floodfill therefore leaves the destination
+    // unresolvable for every peer that asks a different one — the
+    // creator-RouterInfo publication already uses the same multi-
+    // floodfill shape for the same reason.
+    let floodfills = {
         let coord_guard = destination_tunnels.lock().await;
         let target = DestinationHash::from_hash(store_message.key);
         let routing_key = i2pr_netdb::router_hash_from_destination(target);
-        coord_guard
-            .candidate_hashes(&target, &routing_key)
-            .first()
-            .copied()
-            .ok_or_else(|| {
-                ServiceProductError::Provisioning("no floodfill for publication".to_owned())
-            })?
+        // Plan 503: the DSM floor applies to the LeaseSet2 publication's
+        // targets. A floodfill that publishes no version, an uncomparable
+        // version, or a version below the floor is never a target; every
+        // refusal is counted by reason and leaves a receipt.
+        let selection = coord_guard.version_gated_candidate_hashes(&target, &routing_key);
+        bounded_publication_floodfills(selection.targets().to_vec())
     };
-    let request_id = {
+    let floodfill = match floodfills.first().copied() {
+        Some(floodfill) => floodfill,
+        None => {
+            let pending = destination_tunnels.lock().await.publications_len();
+            let _ = destination_tunnels
+                .lock()
+                .await
+                .cancel_ls2_publication(request_id);
+            return Err(ServicePublicationError::Stage {
+                class: PublicationFailureClass::RequestConstruction,
+                product: None,
+                pending,
+            });
+        }
+    };
+    {
         let mut coord_guard = destination_tunnels.lock().await;
-        coord_guard
-            .begin_ls2_publication(store_message, floodfill)
+        let attached = coord_guard
+            .attach_ls2_publication(request_id, store_message.clone(), floodfill)
             .map_err(|error| {
                 let rejection = match error {
                     crate::destination_tunnels::DestinationTunnelError::TooManyPublications => {
@@ -5955,82 +10086,139 @@ async fn publish_service_ls2_for_service(
                     rejection,
                     pending: coord_guard.publications_len(),
                 }
-            })?
-    };
-    // Compose the DatabaseStore through the service's real
-    // router-backed outbound tunnel (borrow stays inside the bridge
-    // closure, mirroring `resolve_remote_destination_for_service`).
-    // The dispatch is handed to the shared router delivery service;
-    // no second publication implementation exists.
-    let floodfill_hash = Hash::from_bytes(*floodfill.as_bytes());
-    let mut publication_rng = ChaCha8Rng::seed_from_u64(
-        wall_secs()
-            .wrapping_add(u64::from(request_id as u32))
-            .wrapping_add(0x2130),
-    );
-    let dispatch = {
-        let mut coord_guard = destination_tunnels.lock().await;
-        manager
-            .with_destination_bridge(service_destination, |bridge| {
-                if !bridge.has_router_network_state(wall_ms()) {
-                    return None;
-                }
-                let role = bridge.router_outbound_role_ref(wall_ms())?;
-                let (dispatch, _proof) = coord_guard
-                    .compose_ls2_publication_via_tunnel(
-                        request_id,
-                        floodfill_hash,
-                        role.role(),
-                        0x51A7_9301,
-                        wall_ms().saturating_add(60_000),
-                        deadline,
-                        &mut publication_rng,
-                        wall_ms(),
-                    )
-                    .ok()?;
-                Some(dispatch)
-            })
-            .flatten()
-    };
-    let Some(dispatch) = dispatch else {
-        let _ = destination_tunnels
-            .lock()
-            .await
-            .cancel_ls2_publication(request_id);
-        return Err(
-            ServiceProductError::Provisioning("publication compose failed".to_owned()).into(),
-        );
-    };
-    let delivery = ssu2_handle.delivery().clone();
-    for cell_delivery in &dispatch.deliveries {
-        let request = match crate::router_i2np::RouterDeliveryRequest::new(
-            cell_delivery.target(),
-            cell_delivery.message_bytes().to_vec(),
-            options.delivery_timeout,
-        ) {
-            Ok(request) => request,
-            Err(_) => {
-                let _ = destination_tunnels
-                    .lock()
-                    .await
-                    .cancel_ls2_publication(request_id);
-                return Err(
-                    ServiceProductError::Provisioning("publication delivery".to_owned()).into(),
-                );
-            }
-        };
-        let outcome = delivery.deliver(request, &CancellationToken::new());
-        if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+            });
+        if let Err(error) = attached {
+            // The request-construction class: the reserved intent is
+            // released here, so a rejected record attachment never
+            // leaks coordinator capacity.
+            drop(coord_guard);
             let _ = destination_tunnels
                 .lock()
                 .await
                 .cancel_ls2_publication(request_id);
-            return Err(ServiceProductError::Provisioning(
-                "publication transport rejected".to_owned(),
-            )
-            .into());
+            return Err(error);
         }
     }
+    // Controlled direct short store delivery to the selected
+    // floodfill. The tunneled composition path is retained for
+    // future re-hardening, but its cells die silently past the
+    // first hop on the pinned reference (no tunnel effect, no
+    // warning, unattributed after exact-ID tracing), while direct
+    // short stores land and store (creator-RI precedent). There is
+    // no anonymity claim in scope, so direct linkage is accepted
+    // for the controlled lane; unlinkability hardening needs its
+    // own plan once the tunnel death is attributed.
+    //
+    // The coordinator publication entry above guards capacity and
+    // record validity; the wire below bypasses tunnel composition.
+    //
+    // The same store — same record — is sent to every selected
+    // floodfill, so whichever one a peer asks holds the record. The
+    // **nearest** candidate is required; the rest are best-effort,
+    // because one delivered copy is enough for the record to exist in
+    // the network.
+    //
+    // Only the primary copy carries the reply token and the reply
+    // route. A floodfill answers a store that carries a nonzero token
+    // with a `DeliveryStatus`, so a token on every copy would make one
+    // publication produce one acknowledgement per recipient, and the
+    // surplus statuses would arrive as unmatched inbound messages.
+    let mut direct_result: Result<(), ServicePublicationError> = Ok(());
+    let mut stores_accepted = 0usize;
+    for (index, candidate) in floodfills.iter().copied().enumerate() {
+        let mut record = store_message.clone();
+        let mut message_id = reply_token;
+        if index > 0 {
+            record.reply_token = 0;
+            record.reply_tunnel_id = None;
+            record.reply_gateway = None;
+            message_id = 0;
+        }
+        let outcome = direct_ls2_store_to_floodfill(
+            ssu2_handle,
+            destination_tunnels,
+            &record,
+            candidate,
+            &options,
+            cancellation,
+            message_id,
+        )
+        .await;
+        match outcome {
+            Ok(()) => stores_accepted = stores_accepted.saturating_add(1),
+            Err(error) => {
+                if index == 0 {
+                    direct_result = Err(error);
+                } else {
+                    tracing::warn!(
+                        transition = "ls2_publication_extra_floodfill_rejected",
+                        "LS2 publication store rejected by an additional floodfill",
+                    );
+                }
+            }
+        }
+    }
+    if direct_result.is_ok() && stores_accepted == 0 {
+        direct_result = Err(ServiceProductError::Provisioning(
+            "publication transport rejected".to_owned(),
+        )
+        .into());
+    }
+    tracing::info!(
+        floodfills_targeted = floodfills.len(),
+        stores_accepted,
+        transition = "ls2_publication_floodfills",
+        "LS2 publication floodfill fan-out (counts only)",
+    );
+
+    // ---- Failure class 3: delivery --------------------------------
+    // The composed publication could not be delivered. The intent is
+    // released here; the delivery outcome is classified so the two
+    // release reasons stay distinguishable.
+    if let Err(error) = direct_result {
+        let pending = destination_tunnels.lock().await.publications_len();
+        let _ = destination_tunnels
+            .lock()
+            .await
+            .cancel_ls2_publication(request_id);
+        // The delivery failure keeps its own product classification.
+        // No error contents cross: the redaction taxonomy owns the
+        // reason.
+        let product = match error {
+            ServicePublicationError::Product(inner) => Some(inner),
+            _ => Some(ServiceProductError::Provisioning(
+                "publication delivery failed".to_owned(),
+            )),
+        };
+        return Err(ServicePublicationError::Stage {
+            class: PublicationFailureClass::Delivery,
+            product,
+            pending,
+        });
+    }
+    // Plan 487 WP4 — the store reached the wire. The coordinator entry
+    // is **kept**: it now carries the reply token, and the floodfill's
+    // `DeliveryStatus` correlates back to it. The entry is released
+    // when the acknowledgement arrives, or reaped by the bounded
+    // reaper when no acknowledgement arrives within the deadline.
+    {
+        let mut coord_guard = destination_tunnels.lock().await;
+        let _ = coord_guard.note_ls2_publication_sent(
+            request_id,
+            service_destination,
+            reply_token,
+            published_seconds,
+            oldest_lease_expiry_ms,
+            wall_ms(),
+        );
+    }
+    tracing::info!(
+        publication_reply_token = reply_token,
+        published_seconds = published_seconds,
+        oldest_lease_expiry_ms = oldest_lease_expiry_ms,
+        transition = "ls2_publication_awaiting_acknowledgement",
+        "LS2 publication emitted; awaiting the correlated DeliveryStatus",
+    );
     Ok(())
 }
 
@@ -6276,9 +10464,20 @@ mod plan337_publication {
             i2pr_client::DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0xA1; 32])),
             inner,
             u64::from(NOW),
+            0x0bad_f00d,
+            Some((0x0BAD, i2pr_proto::Hash::from_bytes([0x0B; 32]))),
         )
         .expect("ordinary store builds");
         assert_eq!(store.key, destination_hash);
+        // Plan 487 WP4 — the store carries the reply token and the
+        // inbound reply route, so the floodfill's `DeliveryStatus`
+        // returns through one of our own inbound tunnels.
+        assert_eq!(store.reply_token, 0x0bad_f00d);
+        assert_eq!(store.reply_tunnel_id, Some(0x0BAD));
+        assert_eq!(
+            store.reply_gateway,
+            Some(i2pr_proto::Hash::from_bytes([0x0B; 32]))
+        );
         assert!(matches!(
             store.data,
             i2pr_proto::DatabaseStoreData::LeaseSet2(_)

@@ -164,6 +164,9 @@ python3 scripts/check-router-readiness-contract.py --self-test
 python3 scripts/check-core-router-recovery-contract.py
 python3 scripts/check-core-router-recovery-contract.py --self-test
 python3 scripts/plan449-ssu2-preflight.py --self-test
+python3 scripts/plan495-peer-eligibility.py --self-test
+python3 scripts/check-plan476-gate-binding.py
+python3 scripts/check-plan476-gate-binding.py --self-test
 python3 scripts/check-managed-app-package-boundary.py
 python3 scripts/check-managed-app-package-boundary.py --self-test
 python3 scripts/check-managed-app-policy-boundary.py
@@ -306,11 +309,6 @@ script.
   `.github/workflows/ci.yml` did not parse as YAML at `2416c30`, because the
   merge `0d50319` de-indented one step line — so the whole file was rejected and
   the `quality`, `msrv`, and `dependency-policy` jobs never ran.
-- **Open: the transport crates already import `std::net` address values via
-  grouped `use`** (`i2pr-transport-ntcp2/src/address.rs` and four ssu2 files),
-  and the transport scan is deliberately excluded from the Plan 362 normaliser
-  for that reason. A transport-scoped plan should settle the socket-keyed rule
-  there the way Plan 366 did for the console.
 
 Separately, a product-path defect found 2026-10-05 was **closed by Plan 360**
 (see `plans/closure/workspace-foundation/360-status.md`): `i2pr run` used to

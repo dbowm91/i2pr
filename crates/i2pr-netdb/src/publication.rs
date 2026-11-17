@@ -17,11 +17,46 @@ use crate::lookup_policy::{
 };
 use crate::router_info::RouterHash;
 use crate::store::RouterInfoStore;
+use crate::version::VersionRefusalCounts;
 
 /// Maximum number of concurrent publication attempts the coordinator
 /// will track. The bound is intentionally small to keep runtime
 /// ownership tight.
 pub const MAX_PUBLICATION_ATTEMPTS: usize = 32;
+
+/// The eligible DSM publication targets and the counted API-version refusals.
+///
+/// Plan 491. The targets are the floodfills that satisfy the DSM
+/// minimum-version floor; the refusals count the floodfills that did not,
+/// by reason. No peer hash, address, key, or payload is retained here beyond
+/// the target set the coordinator must already hold.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FloodfillTargetSelection {
+    targets: Vec<RouterHash>,
+    refusals: VersionRefusalCounts,
+}
+
+impl FloodfillTargetSelection {
+    /// The eligible publication targets, in nearest order.
+    pub fn targets(&self) -> &[RouterHash] {
+        &self.targets
+    }
+
+    /// The counted API-version refusals.
+    pub const fn refusals(&self) -> &VersionRefusalCounts {
+        &self.refusals
+    }
+
+    /// Whether no eligible target remains.
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    /// The number of eligible targets.
+    pub fn len(&self) -> usize {
+        self.targets.len()
+    }
+}
 
 /// Diagnostic failures for the publication coordinator.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -117,10 +152,41 @@ pub struct PublicationSnapshot {
     pub cancelled: usize,
 }
 
+/// The record a publication publishes: the local RouterHash and the
+/// encoded RouterInfo bytes, taken from **one** record.
+///
+/// Plan 516: the store message's key, its reply gateway and its payload
+/// must all describe the same record. Registering the record explicitly,
+/// rather than re-encoding a snapshot at attempt time, is what makes that
+/// provable rather than incidental.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicationLocalRecord {
+    hash: RouterHash,
+    encoded: Vec<u8>,
+}
+
+impl PublicationLocalRecord {
+    /// Builds a record from the local RouterHash and the encoded bytes.
+    pub fn new(hash: RouterHash, encoded: Vec<u8>) -> Self {
+        Self { hash, encoded }
+    }
+
+    /// The local RouterHash the record is published under.
+    pub const fn hash(&self) -> RouterHash {
+        self.hash
+    }
+
+    /// The encoded RouterInfo bytes.
+    pub fn encoded(&self) -> &[u8] {
+        &self.encoded
+    }
+}
+
 /// Plan 105 §10 publication coordinator.
+#[derive(Clone, Debug)]
 pub struct PublicationCoordinator {
     policy: LookupPolicy,
-    local_snapshot: Option<LocalRouterInfo>,
+    local_record: Option<PublicationLocalRecord>,
     attempts: BTreeMap<u64, PublicationAttempt>,
     tokens_by_value: BTreeMap<u32, u64>,
     next_request_id: u64,
@@ -132,7 +198,7 @@ impl PublicationCoordinator {
     pub fn new(policy: LookupPolicy) -> Self {
         Self {
             policy,
-            local_snapshot: None,
+            local_record: None,
             attempts: BTreeMap::new(),
             tokens_by_value: BTreeMap::new(),
             next_request_id: 1,
@@ -144,26 +210,71 @@ impl PublicationCoordinator {
     /// coordinator will publish. The coordinator never re-signs the
     /// record; retried publication attempts reuse the supplied
     /// bytes.
+    ///
+    /// Plan 516: the snapshot becomes the coordinator's **record**, so the
+    /// key, the reply gateway and the payload are one record by
+    /// construction. A record that cannot be encoded leaves the
+    /// coordinator without one, and every attempt is refused — the
+    /// coordinator never publishes a partial record.
     pub fn register_local(&mut self, local: LocalRouterInfo) {
-        self.local_snapshot = Some(local);
+        let hash = local.router_hash();
+        self.local_record = local
+            .encoded(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .ok()
+            .map(|encoded| PublicationLocalRecord::new(hash, encoded));
+    }
+
+    /// Registers the record a publication publishes.
+    ///
+    /// Plan 516: the router registers the record it **installed** — the
+    /// bytes it hands to its peers' handshakes, which are the bytes that
+    /// name the router's address — rather than a re-encoded copy of a
+    /// different record. The key, the reply gateway and the payload then
+    /// all come from this one record.
+    pub fn register_record(&mut self, record: PublicationLocalRecord) {
+        self.local_record = Some(record);
     }
 
     /// Returns the closest eligible floodfill set for the local
     /// RouterHash. The selector uses the policy's
     /// `max_candidates_considered` ceiling.
+    ///
+    /// Plan 491: the returned set contains only floodfills that satisfy the
+    /// DSM minimum-version floor. A floodfill that publishes no comparable
+    /// API version, or one below the floor, is never a publication target.
     pub fn nearest_floodfills(&self, store: &RouterInfoStore) -> Vec<RouterHash> {
-        let Some(local) = self.local_snapshot.as_ref() else {
-            return Vec::new();
+        self.nearest_eligible_floodfills(store).targets
+    }
+
+    /// Returns the eligible floodfill publication targets together with the
+    /// counted API-version refusals.
+    ///
+    /// The specification's API-version table attaches "minimum floodfill
+    /// peers will send DSM to" to the level this router declares. A floodfill
+    /// that publishes an unknown, uncomparable, or below-floor API version is
+    /// refused, counted by reason, and excluded from the target set. The
+    /// refusal is never a silent skip.
+    ///
+    /// Plan 503: the selection is the shared
+    /// [`crate::lookup_policy::select_version_gated_floodfills`], so this
+    /// enforcement point and the live publication paths share one
+    /// implementation. The routing key is the local RouterHash and the local
+    /// RouterHash is excluded, exactly as the hand-rolled selection did.
+    pub fn nearest_eligible_floodfills(&self, store: &RouterInfoStore) -> FloodfillTargetSelection {
+        let Some(local) = self.local_record.as_ref() else {
+            return FloodfillTargetSelection::default();
         };
-        let local_key = local.router_hash();
-        let selection = crate::lookup_policy::select_floodfill_candidates(
+        let local_key = local.hash();
+        let selection = crate::lookup_policy::select_version_gated_floodfills(
             store,
-            &local_key,
             &local_key,
             &[local_key],
             &self.policy,
         );
-        selection.hashes()
+        FloodfillTargetSelection {
+            targets: selection.targets().to_vec(),
+            refusals: *selection.refusals(),
+        }
     }
 
     /// Builds the `DatabaseStore` I2NP body for one publication
@@ -177,7 +288,7 @@ impl PublicationCoordinator {
         store: &RouterInfoStore,
     ) -> Result<PublicationAttemptRecord, PublicationError> {
         let local = self
-            .local_snapshot
+            .local_record
             .as_ref()
             .ok_or(PublicationError::NoLocalSnapshot)?;
         if self.attempts.len() >= MAX_PUBLICATION_ATTEMPTS {
@@ -196,27 +307,28 @@ impl PublicationCoordinator {
             .next_reply_token
             .checked_add(1)
             .expect("reply token overflow");
-        let encoded = local
-            .encoded(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
-            .map_err(|_| PublicationError::NoLocalSnapshot)?;
+        let encoded = local.encoded().to_vec();
         if encoded.len() > i2pr_proto::MAX_I2NP_PAYLOAD_SIZE - 64 {
             return Err(PublicationError::NoLocalSnapshot);
         }
-        // Publication uses reply_token=0 because the local router
-        // does not request a DeliveryStatus acknowledgement for the
-        // initial store-and-forget publish. The correlation token is
-        // reserved for the optional verification path; when a
-        // nonzero token is set, both reply_tunnel_id and
-        // reply_gateway must be present.
+        // Plan 516: the correlation token reaches the wire, so the peer can
+        // answer with the DeliveryStatus that carries it. The reply form
+        // is the reference's **direct** reply: a zero reply tunnel id
+        // means "send the DeliveryStatus straight back to me"
+        // (`libi2pd/I2NPProtocol.cpp:285`), and the gateway is the local
+        // hash (`:287-289`). The token is the correlator's own, minted
+        // above, so the wire token and the correlation key are the same
+        // value by construction.
         let gzip_payload = gzip_encode(&encoded).map_err(|_| PublicationError::NoLocalSnapshot)?;
         if gzip_payload.len() > i2pr_proto::MAX_I2NP_PAYLOAD_SIZE - 64 {
             return Err(PublicationError::NoLocalSnapshot);
         }
+        let local_hash = Hash::from_bytes(*local.hash().as_bytes());
         let store_message = DatabaseStoreMessage {
-            key: Hash::from_bytes(*local.router_hash().as_bytes()),
-            reply_token: 0,
-            reply_tunnel_id: None,
-            reply_gateway: None,
+            key: local_hash,
+            reply_token,
+            reply_tunnel_id: Some(0),
+            reply_gateway: Some(local_hash),
             data: DatabaseStoreData::RouterInfoCompressed(
                 DeferredPayload::new(gzip_payload, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
                     .map_err(|_| PublicationError::NoLocalSnapshot)?,
@@ -375,7 +487,7 @@ impl PublicationCoordinator {
     /// `DatabaseLookup` over an exploratory reply path before the
     /// publication can be considered complete.
     pub fn needs_verification_lookup(&self) -> bool {
-        self.local_snapshot.is_some()
+        self.local_record.is_some()
     }
 
     /// Returns the bounded default policy used by callers that do not
@@ -642,6 +754,75 @@ mod tests {
         assert!(!hashes.contains(&router_hash(plain.identity()).unwrap()));
     }
 
+    /// Plan 491: a floodfill below the DSM floor, or one that publishes no
+    /// comparable version, is never a publication target — and every refusal
+    /// is counted by reason.
+    #[test]
+    fn a_floodfill_below_the_dsm_floor_is_refused_and_counted() {
+        let signer = bundle(0x780);
+        let eligible = bundle(0x781);
+        let below_floor = bundle(0x782);
+        let unknown_version = bundle(0x783);
+        let uncomparable = bundle(0x784);
+        let mut store = RouterInfoStore::default();
+        store.insert(floodfill_helper(&eligible));
+        store.insert(floodfill_helper_with_version(&below_floor, "0.9.61"));
+        store.insert(floodfill_helper_without_version(&unknown_version));
+        store.insert(floodfill_helper_with_version(&uncomparable, "0.9.62."));
+        let local = local_router_info(&signer);
+        let mut coordinator = PublicationCoordinator::new(PublicationCoordinator::default_policy());
+        coordinator.register_local(local);
+        let selection = coordinator.nearest_eligible_floodfills(&store);
+        assert_eq!(
+            selection.targets(),
+            &[router_hash(eligible.identity()).unwrap()]
+        );
+        assert_eq!(selection.refusals().below_floor, 1);
+        assert_eq!(selection.refusals().unknown_version, 1);
+        assert_eq!(selection.refusals().uncomparable_version, 1);
+        assert_eq!(selection.refusals().total(), 3);
+    }
+
+    /// Plan 503: the coordinator's publication selection and the shared
+    /// version-gated selection are one implementation, so they produce the
+    /// same targets and the same counted refusals.
+    #[test]
+    fn the_refactored_publication_selection_matches_the_shared_selection() {
+        let signer = bundle(0x790);
+        let eligible = bundle(0x791);
+        let below_floor = bundle(0x792);
+        let unknown_version = bundle(0x793);
+        let uncomparable = bundle(0x794);
+        let mut store = RouterInfoStore::default();
+        store.insert(floodfill_helper(&eligible));
+        store.insert(floodfill_helper_with_version(&below_floor, "0.9.61"));
+        store.insert(floodfill_helper_without_version(&unknown_version));
+        store.insert(floodfill_helper_with_version(&uncomparable, "0.9.62."));
+        let local = local_router_info(&signer);
+        let local_key = local.router_hash();
+        let policy = PublicationCoordinator::default_policy();
+        let mut coordinator = PublicationCoordinator::new(policy);
+        coordinator.register_local(local);
+        let selection = coordinator.nearest_eligible_floodfills(&store);
+        let shared = crate::lookup_policy::select_version_gated_floodfills(
+            &store,
+            &local_key,
+            &[local_key],
+            &policy,
+        );
+        assert_eq!(selection.targets(), shared.targets());
+        assert_eq!(selection.refusals(), shared.refusals());
+        // The pre-refactor expectations are unchanged.
+        assert_eq!(
+            selection.targets(),
+            &[router_hash(eligible.identity()).unwrap()]
+        );
+        assert_eq!(selection.refusals().below_floor, 1);
+        assert_eq!(selection.refusals().unknown_version, 1);
+        assert_eq!(selection.refusals().uncomparable_version, 1);
+        assert_eq!(selection.refusals().total(), 3);
+    }
+
     #[test]
     fn unknown_peer_token_returns_unknown_request() {
         let mut coordinator = PublicationCoordinator::new(PublicationCoordinator::default_policy());
@@ -676,8 +857,42 @@ mod tests {
     }
 
     fn floodfill_helper(b: &RouterIdentityBundle) -> crate::router_info::ValidatedRouterInfo {
+        floodfill_helper_with_optional_version(b, Some(crate::local::CONTROLLED_ROUTER_VERSION))
+    }
+
+    /// A floodfill record that publishes an explicit API version.
+    ///
+    /// Plan 491: a publication target must publish a comparable API version
+    /// at or above the DSM floor, so the fixture states one explicitly.
+    fn floodfill_helper_with_version(
+        b: &RouterIdentityBundle,
+        version: &str,
+    ) -> crate::router_info::ValidatedRouterInfo {
+        floodfill_helper_with_optional_version(b, Some(version))
+    }
+
+    /// A floodfill record that publishes no API version at all.
+    ///
+    /// The `router.version` option is absent rather than empty: the signed
+    /// RouterInfo validation rejects an empty value, so "no version" and
+    /// "malformed version" are the only two non-comparable cases.
+    fn floodfill_helper_without_version(
+        b: &RouterIdentityBundle,
+    ) -> crate::router_info::ValidatedRouterInfo {
+        floodfill_helper_with_optional_version(b, None)
+    }
+
+    fn floodfill_helper_with_optional_version(
+        b: &RouterIdentityBundle,
+        version: Option<&str>,
+    ) -> crate::router_info::ValidatedRouterInfo {
         let mut options = i2pr_proto::Mapping::builder();
         options.insert("caps".to_owned(), "f".to_owned()).unwrap();
+        if let Some(version) = version {
+            options
+                .insert("router.version".to_owned(), version.to_owned())
+                .unwrap();
+        }
         let info = b
             .sign_router_info(
                 Date::from_millis(1),
