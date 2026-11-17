@@ -184,3 +184,69 @@ there was nothing to discover.**
 That the router can join the public network; that it can serve as a floodfill;
 that its published record is reachable from the Internet; that it survives a
 hostile peer; or that any of G1–G9 is closer than the table says.
+
+## 6. Continuation check — 2026-11-17
+
+Checked against the tree, not against notes. Three things changed since the
+diagnostic was written:
+
+1. **The lab is stopped.** None of the three routers is running, and `.20` still
+   carries the `d4034efd` binary (`768d2c84…`). The gate-refusal build
+   (`4b77cf03`, CI run `43559091584`, **success**) was built but **never
+   deployed**, so the last unproven link in the role flap — whether
+   `publication_material` refused with `ReachabilityUnqualified` or
+   `InvalidPublication` — is still unconfirmed.
+2. **The floor harness is gone.** `/tmp/floor.py`, the 78-step runner, did not
+   survive; it has to be rebuilt before Plan 549 can be closed, because the last
+   full floor run was **76/78** with two failures that have since been fixed
+   *separately* and never re-verified together.
+3. **Plan 549 is still `registered`.** The lane, the guard, the docs, the
+   inventory surface and the amendment log exist; there is **no closure record**
+   and the registry/roadmap rows are still `registered`.
+
+### 6.1 The next four pieces of work, in order
+
+| # | Work | Size | Why it is next |
+| --- | --- | --- | --- |
+| C1 | Deploy `4b77cf03`, restart the three hosts, read `publication_material_refused` | ~40 min | It is the only remaining guess in the role-flap diagnosis, and Plan 549's own §14 escape clause ("if the role still withdraws, the record states which class lapsed and why") cannot be honoured without it |
+| C2 | Rebuild the 78-step floor harness and run it once at the final tree | ~75 min | Closure evidence; the previous run's two failures were fixed in separate commits and never certified together |
+| C3 | Write `plans/closure/network-participation/549-status.md` and move the registry/roadmap rows | ~2 h | The plan cannot stay `registered` — its mechanism is measured as working and its sustained-role criterion is measured as not met, which is exactly what a closure record exists to separate |
+| C4 | Register **Plan 550** — the SSU2 in-band peer test | scoping below | It is the only fix that both removes the flap structurally and stops the router using an I2NP `TunnelTest` as a stand-in for the protocol's own peer test |
+
+### 6.2 Plan 550's scope is smaller than it looks
+
+The protocol surface already exists and is **gated to controlled
+qualification**, not missing:
+
+| Piece | Location |
+| --- | --- |
+| `PeerTestBlock` (type 13) encode/decode, "in-session Data or out-of-session" | `crates/i2pr-transport-ssu2/src/block.rs:1021` |
+| In-session send | `session.rs:1145` `queue_peer_test` |
+| In-session receive → `SessionEvent::PeerTest` | `ssu2_runtime.rs` |
+| Out-of-session msgs 5–7 | `send_controlled_peer_test` |
+| Ingestion | `ingest_controlled_session_block` (`:4409`), gated on `controlled_peer_test` + `state.controlled_test` |
+
+So the work is an **ordinary three-role driver** plus the correlation that ties
+an answer back to the pending test, and — the point of the plan — consuming the
+**Address block in message 6**, which is the reference's steady-state producer
+for reachability class 1 (`libi2pd/SSU2OutOfSession.cpp:179`). With class 1
+produced, the count sits at four, one expiry leaves three, and the gate stops
+sampling a threshold it is standing on.
+
+### 6.3 The disposition question Plan 549 has to answer honestly
+
+Plan 549 §5.2 put class 1's producer **out of scope** and §14 then required the
+role not to withdraw across two observation TTLs. The measurement shows those
+two are incompatible: with exactly three classes the role *must* withdraw at each
+class boundary, because the publication gate samples "three or more, now". The
+plan therefore has to close either as passed-with-a-recorded-outcome (using its
+own escape clause), or as blocked-on-the-class-it-excluded — not as a clean pass.
+Naming that inconsistency is part of the closure, not a footnote to it.
+
+### 6.4 What is deliberately not next
+
+Discovery (G1 RouterInfo lookup) and reseed (G4) are the bigger live-network
+prizes, but starting them now would leave two half-finished lines: a plan whose
+role still flaps under measurement, and a join path with no closure evidence.
+Finish the LAN line first; then G1 and G4 are the only two items between this
+tree and a router that can find peers at all.
